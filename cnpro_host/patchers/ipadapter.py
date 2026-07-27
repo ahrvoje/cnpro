@@ -108,6 +108,7 @@ class IPAdapterPatcher(CNProModelPatcher):
             balance_profile=self.balance_profile,
             band_profiles=self.band_weight_profiles,
             depth_profile=self.depth_profile,
+            drift_profile=self.drift_profile,
             **cond,
         )[0]
 

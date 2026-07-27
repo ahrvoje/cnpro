@@ -16,10 +16,11 @@
 //
 // stdin:  {"cases": ["0@1;1@0.5|2", ...], "samples": 21}
 // stdout: {"results": [{"scaleLo":0,"scaleHi":2,"main":[...],"bands":{...},
-//                       "depth":[...]|null}, ...]}
+//                       "depth":[...]|null,"drift":[...]|null}, ...]}
 // Values are EFFECTIVE (scale-mapped), sampled on an even grid over [0, 1].
-// Main and the bands share the step plot's range; the depth curve is a plot of
-// its own and is sampled on the range its '#D' segment carries.
+// Main and the bands share the step plot's range; the depth curve and the drift
+// curve are each a plot of their own and are sampled on the range their '#D' /
+// '#S' segment carries.
 
 global.window = { devicePixelRatio: 1 };
 global.document = { documentElement: {} };
@@ -27,12 +28,43 @@ global.getComputedStyle = function () {
     return { getPropertyValue: function () { return ''; } };
 };
 
-const { WeightProfileEditor } = require('../javascript/weight_profile.js');
+const { WeightProfileEditor, driftedDepth } = require('../javascript/weight_profile.js');
 
 function bareEditor(isBalance) {
     const ed = Object.create(WeightProfileEditor.prototype);
     ed.isBalance = !!isBalance;
     return ed;
+}
+
+/** One profile's EFFECTIVE value at a single x (the sample() loop's body). */
+function valueAt(ed, profile, lo, hi, x) {
+    ed.points = profile.points;
+    ed.cosOn = !!profile.cosOn;
+    ed.cosN = profile.cosN || 0;
+    ed.cosPhase = profile.cosPhase || 0;
+    ed.gamma = profile.gamma || 1;
+    ed.phaseFamily = profile.phaseFamily || null;
+    ed.kappa = profile.kappa || 0;
+    ed._phaseCount = 2;
+    return lo + ed.gammaAt(ed.envelopeAt(x) * ed.waveFactor(x, 0)) * (hi - lo);
+}
+
+/**
+ * The COMPOSITE the drift exists to produce: the depth curve's multiplier for a
+ * layer at `depth`, at step `x`, with the drift moving where depth is read.
+ *
+ * This is what actually runs, and it is the one thing the per-curve comparisons
+ * cannot see: two sides can agree on both curves and still disagree on the sign
+ * of the shift, on the clamp, or on which axis the shift is measured in. Twin of
+ * cnpro_core.weight_profile.depth_multiplier.
+ */
+function depthMultiplier(ed, packed, depth, x) {
+    if (!packed.depth) return 1;
+    const shift = packed.drift
+        ? valueAt(ed, packed.drift, packed.driftLo, packed.driftHi, x)
+        : 0;
+    return valueAt(ed, packed.depth, packed.depthLo, packed.depthHi,
+                   driftedDepth(depth, shift));
 }
 
 /** Effective values of one parsed profile object, sampled over [0, 1]. */
@@ -74,8 +106,8 @@ process.stdin.on('end', () => {
         const hi = packed.scaleHi;
         const bands = {};
         // only the MAIN profile can be multi-phase (python inspects no other
-        // segment), so the bands and the depth curve are always sampled as
-        // Input 1 of a non-splitting profile
+        // segment), so the bands, the depth curve and the drift curve are always
+        // sampled as Input 1 of a non-splitting profile
         for (const key of Object.keys(packed.bands)) {
             bands[key] = sample(ed, packed.bands[key], lo, hi, samples, 0, 0);
         }
@@ -87,6 +119,27 @@ process.stdin.on('end', () => {
             bands: bands,
             depth: packed.depth
                 ? sample(ed, packed.depth, packed.depthLo, packed.depthHi, samples, 0, 0)
+                : null,
+            drift: packed.drift
+                ? sample(ed, packed.drift, packed.driftLo, packed.driftHi, samples, 0, 0)
+                : null,
+            // depth-under-drift on a (depth, step) grid, flattened row-major
+            // over the same `samples` grid in both coordinates. Null when there
+            // is no depth curve, which is also when the drift cannot do
+            // anything - the python twin returns its neutral 1.0 there and the
+            // comparison would be vacuous.
+            depthField: packed.depth
+                ? (() => {
+                    const out = [];
+                    for (let i = 0; i < samples; i++) {
+                        const d = samples === 1 ? 0 : i / (samples - 1);
+                        for (let j = 0; j < samples; j++) {
+                            const x = samples === 1 ? 0 : j / (samples - 1);
+                            out.push(depthMultiplier(ed, packed, d, x));
+                        }
+                    }
+                    return out;
+                })()
                 : null,
             selected: packed.selected,
         };

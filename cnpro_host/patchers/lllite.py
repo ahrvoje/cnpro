@@ -73,6 +73,7 @@ class ControlLLLitePatcher(CNProModelPatcher):
             weight_profile=self.weight_profile,
             band_profiles=self.band_weight_profiles,
             depth_profile=self.depth_profile,
+            drift_profile=self.drift_profile,
         )[0]
 
         process.sd_model.forge_objects.unet = unet

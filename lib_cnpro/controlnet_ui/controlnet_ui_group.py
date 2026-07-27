@@ -758,29 +758,82 @@ class ControlNetUiGroup(object):
             # One shared editor markup for the weight and the balance profile;
             # javascript/weight_profile.js attaches the same editor class to
             # every '.cnet-weight-profile-editor' block.
-            # bands: the weight editor additionally carries four thin band
-            # selector buttons at the bottom of the presets column - main
-            # (orange, the whole-unit profile) and coarse/mid/fine
-            # (red/green/blue), per-step multipliers of those injection bands
-            # (same bands the C/M/F weight masks address). Exactly one is
-            # pressed, and that selection is the MODE, not just an edit
-            # target: the selected profile is the one the unit runs on (main
-            # or the bands - never both), which is also the only one drawn.
-            # The editor writes the pressed selector into the profile string
-            # as '#B<band>' so the mode survives reloads; python reads it with
-            # external_code.band_mode_active.
-            # band colors come from the shared CSS variables (style.css
-            # :root), the same ones weight_profile.js resolves for the plot
-            # lines - one source, no drift between button and line color
+            # bands: the weight editor additionally carries six thin selector
+            # buttons at the bottom of the presets column, in TWO GROUPS split by
+            # a separator. Exactly one is pressed, and that selection is the
+            # MODE, not just an edit target: it decides what the unit runs on,
+            # which is also the only thing drawn.
+            #
+            #   main | depth | drift   ASSEMBLE. None of them replaces another:
+            #     the unit runs main(step) x depth(layer - drift(step)), so
+            #     pressing any of the three runs the same field and only changes
+            #     which factor is on screen. Depth multiplies the main profile;
+            #     drift moves WHERE the depth curve is read as sampling proceeds,
+            #     which is the only thing that couples the step and depth axes.
+            #   coarse | mid | fine    REPLACE. Each is a whole per-step curve
+            #     for its third of the same depth axis the depth curve covers
+            #     continuously, so the two are alternatives - a per-bucket curve
+            #     times a per-depth curve would count depth twice.
+            #
+            # The separator carries that distinction and nothing else does, so it
+            # is a real element rather than a margin: reading order is the model,
+            # and the flat row it replaced said all of them were siblings.
+            #
+            # The editor writes the pressed selector into the profile string as
+            # '#B<band>' so the mode survives reloads (the three main-mode ones
+            # write no marker - main is what runs for all of them); python reads
+            # it with external_code.band_mode_active.
+            #
+            # Colors come from the shared CSS variables (style.css :root), the
+            # same ones weight_profile.js resolves for the plot lines - one
+            # source, no drift between button and line color.
             band_buttons = (
                 '<div class="cnet-profile-bands">'
                 '<button type="button" class="cnet-profile-band cnet-profile-band-active"'
                 ' data-band="main" style="--band-color:#ffffff"'
                 ' title="Main weight profile: per-step strength of the whole unit.'
                 ' Selected = this is the profile the unit runs on; select a band'
-                ' below to run on the band profiles instead.'
+                ' below the separator to run on the band profiles instead.'
                 ' Its spatial half is the G weight mask on the canvas toolbar: while main'
-                ' (or depth) is selected, G is the mask that applies and C/M/F are dormant."></button>'
+                ' (or depth, or drift) is selected, G is the mask that applies and C/M/F'
+                ' are dormant."></button>'
+                # Depth profile: the same depth axis the three bands quantize,
+                # un-quantized. It does NOT replace the main profile the way a
+                # band does - it multiplies it, so the unit runs on
+                # main(step) x depth(layer). Purple keeps it visually apart
+                # from the three band colors.
+                '<button type="button" class="cnet-profile-band" data-band="depth"'
+                ' style="--band-color:var(--cnet-depth-line, #9c4dff)"'
+                ' title="Depth profile (D): per-LAYER multiplier over UNet depth'
+                ' (left = fine/texture, right = coarse/composition).'
+                ' Unlike a band it does not replace the main profile - it multiplies it,'
+                ' so the unit runs on main(step) x depth(layer). Flat 1 = off.'
+                ' Its own plot, so the range selects switch to the depth multiplier range'
+                ' (default 0..2, neutral 1 in the middle) while it is selected.'
+                ' Bands and depth are alternatives: selecting a band runs the band profiles instead.'
+                ' Because depth multiplies MAIN, the G weight mask is the one that applies while'
+                ' it is selected, exactly as in main mode."></button>'
+                # Depth-DRIFT profile: the third degree of freedom of the
+                # main x depth pair. Without it that product is separable, so the
+                # depth shape is frozen in time - the one thing the band profiles
+                # could express and it could not. Green, and a plot of its own
+                # again because its neutral is 0 rather than the multiplier 1.
+                '<button type="button" class="cnet-profile-band" data-band="drift"'
+                ' style="--band-color:var(--cnet-drift-line, #00c853)"'
+                ' title="Depth-drift profile (S): per-STEP shift of the depth profile along'
+                ' the depth axis, so the unit runs main(step) x depth(layer - drift(step)).'
+                ' X is the sampling step like the main profile; Y is the shift - up moves the'
+                ' depth curve toward coarse/composition, down toward fine/texture. A descending'
+                ' curve therefore sweeps the control from composition to texture as sampling'
+                ' proceeds. Flat 0 = off, and it does nothing at all unless a depth curve is'
+                ' drawn for it to move.'
+                ' Its own plot (default -1..1, neutral 0 in the middle).'
+                ' This is the one thing main x depth cannot otherwise express: without a drift'
+                ' the depth shape cannot change while sampling. The bands buy that same freedom'
+                ' by quantizing depth into three buckets; this keeps depth continuous."></button>'
+                # The group boundary. Above: three curves that multiply into one
+                # field. Below: three that each replace it.
+                '<div class="cnet-profile-band-sep" aria-hidden="true"></div>'
                 '<button type="button" class="cnet-profile-band" data-band="coarse"'
                 ' style="--band-color:var(--cnet-band-coarse, #e53935)"'
                 ' title="Coarse band profile (C): per-step strength of the deepest injection'
@@ -802,22 +855,6 @@ class ControlNetUiGroup(object):
                 ' toolbar, which multiplies it where painted.'
                 ' While a band is selected the unit runs on the band profiles rather than the'
                 ' main one, and on the C/M/F masks rather than G."></button>'
-                # Depth profile: the same depth axis the three bands quantize,
-                # un-quantized. It does NOT replace the main profile the way a
-                # band does - it multiplies it, so the unit runs on
-                # main(step) x depth(layer). Purple keeps it visually apart
-                # from the three band colors.
-                '<button type="button" class="cnet-profile-band" data-band="depth"'
-                ' style="--band-color:var(--cnet-depth-line, #9c4dff)"'
-                ' title="Depth profile (D): per-LAYER multiplier over UNet depth'
-                ' (left = fine/texture, right = coarse/composition), constant over steps.'
-                ' Unlike a band it does not replace the main profile - it multiplies it,'
-                ' so the unit runs on main(step) x depth(layer). Flat 1 = off.'
-                ' Its own plot, so the range selects switch to the depth multiplier range'
-                ' (default 0..2, neutral 1 in the middle) while it is selected.'
-                ' Bands and depth are alternatives: selecting a band runs the band profiles instead.'
-                ' Because depth multiplies MAIN, the G weight mask is the one that applies while'
-                ' it is selected, exactly as in main mode."></button>'
                 '</div>'
             ) if bands else ''
             return (

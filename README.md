@@ -27,7 +27,7 @@ built to play it.
 
 |  |  |
 |---|---|
-| **Space** — paint control strength straight onto the image. Rainbow hue is the weight, red 1 → violet 0; brush size, feathering and an eraser are in the same menu. Four independent mask slots per input: one global, three per depth band. Anything painted means the control never escapes the paint. | ![weight mask](resources/ui-weight-mask.png) |
+| **Space** — paint control strength straight onto the image. Rainbow hue is the weight, red 1 → violet 0; brush size, feathering and an eraser are in the same menu. Four independent mask slots per input: one global, three per depth band — a mask is a profile's spatial half, so which slots are live follows the profile selector rather than being a second switch to keep in sync. Anything painted means the control never escapes the paint. | ![weight mask](resources/ui-weight-mask.png) |
 | **Steps** — a curve editor. Click to add points, drag to move, double-click to delete; drag a segment's green midpoint to bend it into a parabola. Down the left: the step preset, and one oscillatory button cycled through cosine and the three multi-phase partitions. A vertical response slider bends the whole curve toward high or low values, and the range selects reach down to **−1**, where the control actively pushes away. The dotted verticals are your real step cells; the dot on each curve is the value that step reads. | ![the weight editor in multi-phase](resources/ui-profile-multiphase.png) |
 | **Depth** — its own plot, its own axis: X is the injection layer from fine to coarse, Y a per-layer multiplier. Draw it and the unit runs your step curve *times* your depth curve — a time curve and a depth curve, separable, both yours. | ![depth](resources/ui-profile-depth.png) |
 
@@ -36,6 +36,24 @@ profiles** — coarse / mid / fine, one step curve each, drawn together on one
 plot, selected by the coloured buttons under the presets.
 
 ![bands](resources/ui-profile-bands.png)
+
+### The two axes, coupled
+
+A step curve *times* a depth curve is separable, and separable has a cost: the
+depth shape is frozen in time. Whatever leads on step 1 still leads on the last
+step — you can say "the deep layers matter more", never "the deep layers matter
+first". The band profiles buy that freedom by quantizing depth into three
+buckets. The green **S** selector buys it without quantizing anything.
+
+Draw a curve over the steps and its height shifts *where the depth curve is
+read*: the unit runs **main(step) × depth(layer − drift(step))**. A descending
+drift sweeps the control from composition to texture as sampling proceeds — the
+deep layers lead while the image is being decided, the shallow ones take over
+while it is being finished, and the depth curve you drew is the shape that
+travels. Its neutral is 0, not 1, so it gets its own plot and its own range.
+
+It moves a depth curve and nothing else, so a drift with a flat depth curve does
+nothing at all — and says so in the log rather than failing quietly.
 
 ---
 
@@ -323,13 +341,17 @@ Requires `opencv-python`. The OpenPose editor additionally needs the
 
 ## Model support
 
-| Type | Step | Bands | Depth | Weight masks | Output mask | Balance | Unit prompt |
+| Type | Step | Bands | Depth + drift | Weight masks | Output mask | Balance | Unit prompt |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | ControlNet / ControlLora | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | T2I-Adapter | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | IP-Adapter (incl. InstantID) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | ControlLLLite | ✓ | ✓ | ✓ | — | — | — | — |
 | Z-Image Fun-ControlNet Union v1 / v2.1 / lite / Tile / SAM | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
+
+Depth and drift share a column because they share a requirement: both need a
+model whose control is injected at more than one depth. A patcher with a single
+whole-UNet hook has nothing to scale per layer and nothing to shift.
 
 Capabilities are declared per model family, **including the noes** — an
 unsupported control warns you, it never silently does nothing. Only true

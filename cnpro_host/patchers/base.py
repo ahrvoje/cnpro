@@ -78,11 +78,16 @@ class CNProModelPatcher(patcher_base()):
         self.weight_profile = None
         self.balance_profile = None
         self.band_weight_profiles = None
-        # Step-INVARIANT per-layer multiplier over normalized model depth.
-        # Multiplies the main profile: the unit runs main(step) x depth(layer),
-        # a separable product. Mutually exclusive with band profiles by UI
-        # contract -- combining them would count depth twice.
+        # Per-layer multiplier over normalized model depth. Multiplies the main
+        # profile: the unit runs main(step) x depth(layer). Mutually exclusive
+        # with band profiles by UI contract -- combining them would count depth
+        # twice.
         self.depth_profile = None
+        # Depth DRIFT: a curve over the step axis whose y shifts where the
+        # depth curve above is read, making the otherwise separable product
+        # above a genuinely 2D field -- main(step) x depth(layer - drift(step)).
+        # Inert without a depth profile; see cnpro_core.weight_profile.
+        self.drift_profile = None
 
         # --- per-site / per-row weighting inputs ---------------------------
         # CNPro's own surface, consumed by cnpro_host.patchers.weighting. The

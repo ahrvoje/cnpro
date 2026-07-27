@@ -128,6 +128,7 @@ class ControlNetPatcher(CNProModelPatcher):
             balance_profile=self.balance_profile,
             band_weight_profiles=self.band_weight_profiles,
             depth_profile=self.depth_profile,
+            drift_profile=self.drift_profile,
             unit_context=self.unit_prompt_cond,
             unit_uncond_context=self.unit_negative_prompt_cond,
             unit_emb_strength=self.unit_prompt_emb_strength,

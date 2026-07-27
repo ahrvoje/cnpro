@@ -346,8 +346,10 @@
     min-width: 0;
 }
 
-/* preset buttons: vertical column left of the plot, together spanning
-   its full height (applied by javascript/weight_profile.js) */
+/* preset buttons: vertical column left of the plot. The two icon buttons are
+   square (they carry one 18px glyph each and stretching them taller said
+   nothing); the column is therefore shorter than the plot and packs from the
+   top, which is what keeps the band selectors right under them. */
 .cnet-weight-profile-presets {
     display: flex;
     flex-direction: column;
@@ -356,9 +358,9 @@
 }
 
 .cnet-profile-preset {
-    flex: 1 1 0;
-    min-height: 0;
+    flex: 0 0 auto;
     width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -478,17 +480,32 @@
     line-height: 18px;
 }
 
-/* band selector: four thin bars at the bottom of the presets column (weight
-   editor only). main (orange) = the whole-unit profile; coarse/mid/fine
-   (red/green/blue) = per-step multipliers of those injection bands. Exactly
-   one is pressed: main mode shows only the main line, band mode shows all
-   three C/M/F lines and edits the selected one. */
+/* profile selector: six thin bars at the bottom of the presets column (weight
+   editor only), in two groups. main (white) / depth (purple) / drift (green)
+   ASSEMBLE - the unit runs main(step) x depth(layer - drift(step)), so all three
+   are factors of one field; coarse/mid/fine (red/yellow/blue) each REPLACE the
+   main profile with a per-step curve for their third of the depth axis. Exactly
+   one bar is pressed: the three main-mode plots each show their own curve alone,
+   band mode shows all three C/M/F lines and edits the selected one. */
 .cnet-profile-bands {
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     gap: 3px;
     margin-top: 2px;
+}
+
+/* The boundary between the two groups above. A rule rather than extra gap:
+   "these three combine, those three are alternatives" is the only thing the row
+   has to say beyond the colors, and a slightly larger gap does not say it -
+   several of the existing gaps are already 3px of nothing. Sized to the buttons
+   so the column keeps one width. */
+.cnet-profile-band-sep {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 1px;
+    margin: 2px 0;
+    background: rgba(127, 127, 127, 0.55);
 }
 
 /* each button IS its profile line: a solid, full-color bar (the "icon"), so
@@ -1094,6 +1111,13 @@
        NOT one of the three band colors - purple reads as "a different kind of
        object" (a multiplier of the main profile, not a replacement for it) */
     --cnet-depth-line: #9c4dff;
+    /* depth-drift profile: green, and specifically a saturated emerald rather
+       than the muted #4caf50 of the parabola mid handles - those are small dots
+       ON whichever curve is selected, so the two greens do share a plot and have
+       to be told apart at a glance. Holds up on light and dark backgrounds,
+       which the yellow band already does not, so it is not worth losing here
+       too. */
+    --cnet-drift-line: #00c853;
 }
 
 /* denied-click feedback: flashed on tool buttons whose action needs an image

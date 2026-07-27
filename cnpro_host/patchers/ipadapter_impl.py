@@ -18,8 +18,9 @@ import math
 from backend import memory_management, attention, utils
 from backend.misc.image_resize import adaptive_resize
 from backend.patcher.clipvision import clip_preprocess
-from cnpro_core.weight_profile import (build_weight_profile_lookup, lookup_weight_profile_strength,
-                                            balance_factors, band_of_unet_block, evaluate_weight_profile,
+from cnpro_core.weight_profile import (build_weight_profile_lookup, build_depth_profile_lookup,
+                                            lookup_weight_profile_strength,
+                                            balance_factors, band_of_unet_block,
                                             depth_fraction_of_unet_block)
 from modules_forge.shared import controlnet_dir, models_path
 
@@ -385,7 +386,7 @@ class CrossAttentionPatch:
     # block, see apply_ipadapter): the per-band profiles are per-layer strength
     # exactly like they are for ControlNet residuals, the layers here just
     # happen to be attention blocks instead of skip connections.
-    def __init__(self, weight, ipadapter, number, cond, uncond, weight_type, mask=None, sigma_start=0.0, sigma_end=1.0, unfold_batch=False, weight_profile_lut=None, balance_lut=None, band_lut=None, depth_weight=1.0):
+    def __init__(self, weight, ipadapter, number, cond, uncond, weight_type, mask=None, sigma_start=0.0, sigma_end=1.0, unfold_batch=False, weight_profile_lut=None, balance_lut=None, band_lut=None, depth_lut=None):
         self.weights = [weight]
         self.ipadapters = [ipadapter]
         self.conds = [cond]
@@ -399,15 +400,18 @@ class CrossAttentionPatch:
         self.weight_profile_luts = [weight_profile_lut]
         self.balance_luts = [balance_lut]
         self.band_luts = [band_lut]
-        # depth profile value at THIS site's UNet depth: a step-invariant
-        # multiplier, so it is resolved once at install time (unlike the band
-        # LUT next to it, which is a curve over steps)
-        self.depth_weights = [depth_weight]
+        # depth profile evaluated at THIS site's UNet depth, as a curve over
+        # steps rather than the single scalar it used to be: the depth-drift
+        # profile moves where the depth curve is read as sampling proceeds, so
+        # a site's depth multiplier is step-dependent whenever a drift is set.
+        # Built by cnpro_core.build_depth_profile_lookup, which produces a
+        # constant table when there is no drift - one path, not two.
+        self.depth_luts = [depth_lut]
 
         self.k_key = str(self.number * 2 + 1) + "_to_k_ip"
         self.v_key = str(self.number * 2 + 1) + "_to_v_ip"
 
-    def set_new_condition(self, weight, ipadapter, number, cond, uncond, weight_type, mask=None, sigma_start=0.0, sigma_end=1.0, unfold_batch=False, weight_profile_lut=None, balance_lut=None, band_lut=None, depth_weight=1.0):
+    def set_new_condition(self, weight, ipadapter, number, cond, uncond, weight_type, mask=None, sigma_start=0.0, sigma_end=1.0, unfold_batch=False, weight_profile_lut=None, balance_lut=None, band_lut=None, depth_lut=None):
         self.weights.append(weight)
         self.ipadapters.append(ipadapter)
         self.conds.append(cond)
@@ -420,7 +424,7 @@ class CrossAttentionPatch:
         self.weight_profile_luts.append(weight_profile_lut)
         self.balance_luts.append(balance_lut)
         self.band_luts.append(band_lut)
-        self.depth_weights.append(depth_weight)
+        self.depth_luts.append(depth_lut)
 
     def __call__(self, n, context_attn2, value_attn2, extra_options):
         org_dtype = n.dtype
@@ -452,7 +456,7 @@ class CrossAttentionPatch:
         # weight scales K/V BEFORE the softmax, where a sign flip is not a
         # clean subtraction - if those are ever exposed, gate this there.)
         EPS = 1e-4
-        for weight, cond, uncond, ipadapter, mask, weight_type, sigma_start, sigma_end, unfold_batch, weight_profile_lut, balance_lut, band_lut, depth_weight in zip(self.weights, self.conds, self.unconds, self.ipadapters, self.masks, self.weight_type, self.sigma_start, self.sigma_end, self.unfold_batch, self.weight_profile_luts, self.balance_luts, self.band_luts, self.depth_weights):
+        for weight, cond, uncond, ipadapter, mask, weight_type, sigma_start, sigma_end, unfold_batch, weight_profile_lut, balance_lut, band_lut, depth_lut in zip(self.weights, self.conds, self.unconds, self.ipadapters, self.masks, self.weight_type, self.sigma_start, self.sigma_end, self.unfold_batch, self.weight_profile_luts, self.balance_luts, self.band_luts, self.depth_luts):
             if sigma > sigma_start or sigma < sigma_end:
                 continue
 
@@ -473,12 +477,15 @@ class CrossAttentionPatch:
                 if abs(weight) < EPS:
                     continue
 
-            if depth_weight != 1.0:
-                # depth profile at this site's UNet depth: step-invariant, so
-                # it was resolved at install time. Multiplies the per-step
-                # strength above - the separable strength(step) * depth(layer)
-                # product described in backend apply_controlnet_advanced.
-                weight = weight * depth_weight
+            if depth_lut is not None:
+                # depth profile at this site's UNet depth, looked up by sigma
+                # like the two curves above. Without a depth-drift profile the
+                # table is constant and this is the separable
+                # strength(step) * depth(layer) product described in
+                # apply_controlnet_advanced; with one, the depth curve is read
+                # at a step-dependent position and the product stops being
+                # separable. Same lookup either way.
+                weight = weight * lookup_weight_profile_strength(depth_lut[0], depth_lut[1], sigma)
                 if abs(weight) < EPS:
                     continue
 
@@ -684,7 +691,8 @@ class IPAdapterApply:
     def apply_ipadapter(self, ipadapter, model, weight, clip_vision=None, image=None, weight_type="original",
                         noise=None, embeds=None, attn_mask=None, start_at=0.0, end_at=1.0, unfold_batch=False,
                         insightface=None, faceid_v2=False, weight_v2=False, instant_id=False, weight_profile=None,
-                        balance_profile=None, band_profiles=None, depth_profile=None):
+                        balance_profile=None, band_profiles=None, depth_profile=None,
+                        drift_profile=None):
 
         self.dtype = torch.float16 if memory_management.should_use_fp16() else torch.float32
         self.device = memory_management.get_torch_device()
@@ -871,14 +879,19 @@ class IPAdapterApply:
                 return None
             return band_luts.get(band_of_unet_block(block_type, block_id, group_ids))
 
-        def depth_weight_for(block_type, block_id, group_ids):
-            # step-invariant, so the curve is evaluated once per site here
-            # rather than per step in the patch
+        def depth_lut_for(block_type, block_id, group_ids):
+            # One sigma lookup per SITE, not one scalar: with a depth-drift
+            # profile the depth curve is read at a moving position, so a site's
+            # depth multiplier is a curve over steps. Built even without a
+            # drift (the table is then constant) so the patch has a single path
+            # through the depth axis rather than a scalar branch and a LUT
+            # branch that have to keep agreeing.
             if not depth_profile:
-                return 1.0
-            return evaluate_weight_profile(
-                depth_profile,
-                depth_fraction_of_unet_block(block_type, block_id, group_ids))
+                return None
+            return build_depth_profile_lookup(
+                depth_profile, drift_profile,
+                depth_fraction_of_unet_block(block_type, block_id, group_ids),
+                model.model.predictor.percent_to_sigma)
 
         def site_mask_for(block_type, block_id, group_ids):
             """(mask, patch_this_site) for one attention site.
@@ -908,7 +921,7 @@ class IPAdapterApply:
             "balance_lut": balance_lut,
             # all three replaced per site in the install loops below
             "band_lut": None,
-            "depth_weight": 1.0,
+            "depth_lut": None,
         }
 
         # The band is a property of the BLOCK, not of the transformer index:
@@ -925,7 +938,7 @@ class IPAdapterApply:
             if patch_it:
                 patch_kwargs["mask"] = mask
                 patch_kwargs["band_lut"] = band_lut_for(block_type, block_id, group_ids)
-                patch_kwargs["depth_weight"] = depth_weight_for(block_type, block_id, group_ids)
+                patch_kwargs["depth_lut"] = depth_lut_for(block_type, block_id, group_ids)
                 set_model_patch_replace(work_model, patch_kwargs, address)
             patch_kwargs["number"] += 1
 

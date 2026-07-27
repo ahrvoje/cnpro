@@ -42,6 +42,9 @@ WHAT A CALLER MAY SET ON `cnet` (all optional, all default to "no effect"):
     balance_sigmas + balance_values      (from a balance profile)
     band_profile_lookup                  dict band -> (sigmas, strengths)
     depth_profile                        point list over normalized depth
+    drift_sigmas + drift_values          (from a depth-drift profile; shifts
+                                          where `depth_profile` is read, so it
+                                          does nothing without one)
     transformer_options                  (set per step by the host sampler)
     residual_layout                      (defaults to the UNet layout)
 """
@@ -52,6 +55,7 @@ import torch
 
 from cnpro_core.weight_profile import (
     balance_factors,
+    drifted_depth,
     evaluate_weight_profile,
     lookup_weight_profile_strength,
 )
@@ -71,6 +75,7 @@ WEIGHTING_INPUTS = (
     'balance_sigmas',
     'band_profile_lookup',
     'depth_profile',
+    'drift_sigmas',
 )
 
 
@@ -191,13 +196,26 @@ def _step_factor(cfg, cnet, to, cond_mark):
     return factor
 
 
-def _site_factor(cfg, layout, sigma_now, group, index, count):
+def _drift_shift(cfg, cnet, sigma_now):
+    """This step's shift along the depth axis, or 0.0 when no drift is set.
+
+    Resolved ONCE per step rather than once per site: the shift is a property of
+    the step, and the binary search behind it would otherwise run for every
+    injection layer in the model on every step to return the same number.
+    """
+    if cfg['drift_sigmas'] is None:
+        return 0.0
+    return lookup_weight_profile_strength(
+        cfg['drift_sigmas'], cnet.drift_values, sigma_now)
+
+
+def _site_factor(cfg, layout, sigma_now, drift, group, index, count):
     """The multiplier that varies per injection site but not per batch row.
 
     Band and depth are the same depth axis -- quantized to three buckets with a
-    time curve each, or continuous and step-invariant. The UI keeps them
-    mutually exclusive (combining them would count depth twice), but nothing
-    here depends on that: they simply multiply.
+    time curve each, or continuous. The UI keeps them mutually exclusive
+    (combining them would count depth twice), but nothing here depends on that:
+    they simply multiply.
     """
     factor = 1.0
 
@@ -209,11 +227,15 @@ def _site_factor(cfg, layout, sigma_now, group, index, count):
         # a band with no profile of its own keeps its neutral 1.0
 
     if cfg['depth_profile'] is not None:
-        # step-INVARIANT per-layer multiplier: it multiplies whatever per-step
-        # strength is already in force, i.e. the separable product
-        # strength(step) * depth(layer).
+        # per-layer multiplier on whatever per-step strength is already in
+        # force. Without a drift this is the separable product
+        # strength(step) * depth(layer); the drift moves WHERE the depth curve
+        # is read as sampling proceeds, which is the only thing that couples the
+        # two axes (see cnpro_core.weight_profile.drifted_depth). `drift` is
+        # 0.0 when none is set, and drifted_depth is then the identity.
         factor *= evaluate_weight_profile(
-            cfg['depth_profile'], layout.depth_fraction(group, index, count))
+            cfg['depth_profile'],
+            drifted_depth(layout.depth_fraction(group, index, count), drift))
 
     return factor
 
@@ -235,6 +257,7 @@ def compute_controlnet_weighting(control, cnet):
     sigma_now = float(to['sigmas'][0])
 
     step_factor = _step_factor(cfg, cnet, to, cond_mark)
+    drift = _drift_shift(cfg, cnet, sigma_now)
     cond_weights = cfg['cond_layer_weights'] or {}
     uncond_weights = cfg['uncond_layer_weights'] or {}
     masks = cfg['region_masks']
@@ -263,7 +286,8 @@ def compute_controlnet_weighting(control, cnet):
                       + site_weight(uncond_weights, group, index) * cond_mark)
             if step_factor is not None:
                 weight = weight * step_factor
-            weight = weight * _site_factor(cfg, layout, sigma_now, group, index, count)
+            weight = weight * _site_factor(cfg, layout, sigma_now, drift,
+                                           group, index, count)
 
             if isinstance(mask, torch.Tensor):
                 signal = signal * layer_mask_for(cnet, mask, signal, layout)

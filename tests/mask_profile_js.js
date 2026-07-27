@@ -24,8 +24,12 @@ global.getComputedStyle = function () {
 const wmask = require('../javascript/weight_mask.js');
 const {WeightProfileEditor} = require('../javascript/weight_profile.js');
 
-// Every selector the editor can be in, including the two that are not bands.
-const SELECTORS = ['main', 'coarse', 'mid', 'fine', 'depth'];
+// Every selector the editor can be in, including the three that are not bands.
+// TAKEN FROM THE EDITOR, not restated here: a list written in this file would
+// keep testing the selectors that existed when it was written, and the one it
+// omitted would be the newest - i.e. the one most likely to have the mask
+// coupling wrong. See weight_profile.js::SELECTOR_ORDER.
+const SELECTORS = require('../javascript/weight_profile.js').SELECTOR_ORDER;
 
 // ---- 1. what weight_mask.js says is live, per selector ---------------------
 const js = {};
@@ -58,6 +62,8 @@ function editorFor(band) {
     ed.scaleHi = 1;
     ed.depthLo = 0;
     ed.depthHi = 2;
+    ed.driftLo = -1;
+    ed.driftHi = 1;
     const curve = (y0, y1) => ({
         points: [{x: 0, y: y0}, {x: 1, y: y1}],
         cosOn: false, cosN: 1, cosPhase: 0, multiPhase: false, gamma: 1,
@@ -68,6 +74,7 @@ function editorFor(band) {
         mid: curve(0.8, 0.3),
         fine: curve(0.7, 0.4),
         depth: curve(0.6, 0.1),
+        drift: curve(0.9, 0.1),
     };
     ed.band = band;
     // serialize() re-snapshots the working copy into store[band] first, so the
@@ -96,12 +103,18 @@ function neutralString(band) {
     ed.scaleHi = 1;
     ed.depthLo = 0;
     ed.depthHi = 2;
+    ed.driftLo = -1;
+    ed.driftHi = 1;
     const flat = (y) => ({
         points: [{x: 0, y: y}, {x: 1, y: y}],
         cosOn: false, cosN: 1, cosPhase: 0, multiPhase: false, gamma: 1,
     });
+    // each at ITS OWN neutral, expressed on its own axis: the multiplier 1 is
+    // the top of the step plot's [0, 1] and the middle of the depth plot's
+    // [0, 2]; the drift's neutral shift 0 is the middle of its [-1, 1]
     ed.store = {
-        main: flat(1), coarse: flat(1), mid: flat(1), fine: flat(1), depth: flat(0.5),
+        main: flat(1), coarse: flat(1), mid: flat(1), fine: flat(1),
+        depth: flat(0.5), drift: flat(0.5),
     };
     ed.band = band;
     const P = ed.store[band];

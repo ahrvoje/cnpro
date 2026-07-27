@@ -117,6 +117,21 @@ CASES = [
     ("0@1;1@0.5|2#D0@0.5;1@1", 1e-9),             # depth narrower than main
     ("0@1;1@1#D0@0;1@1|0~2", 1e-9),               # depth wider than main
     ("0@0.5;1@1|0.5~1.5#C0@1;1@0.5|0.5~1.5#D0@0.25;1@0.75|-1~2", 1e-9),
+    # drift segment: the third plot. Same grammar again, its own range again,
+    # and - the part worth pinning - a NEUTRAL OF 0 rather than the multiplier 1,
+    # so the two sides have to agree about which strings are omitted as no-ops
+    # and which are real curves. Its default axis is [-1, 1], where a drawn 0.5
+    # is the neutral shift 0 and the flat line sits mid-plot.
+    ("0@1;1@1#S0@1;1@0|-1~1", 1e-9),              # full sweep coarse -> fine
+    ("0@1;1@1#S0@0.75;1@0.25|-1~1", 1e-9),        # half sweep
+    ("0@1;1@0.5|2#D0@0.25;1@0.75|2#S0@1;1@0|-1~1", 1e-9),
+    ("0@1;1@1#S0@0;M0.5@0.9;1@0.5|-1~1", 5e-3),   # mid control on the drift
+    ("0@1;1@1#S0@1;1@0;G2|-1~1", 5e-3),           # ...and the response exponent
+    ("0@1;1@1#S0@0.5;1@1|0~2", 1e-9),             # drift on a non-default axis
+    # every segment at once, each on a different axis, plus band mode: the '#S'
+    # segment must survive a fold it takes no part in and stay readable by python
+    ("0@0.5;1@1|0.5~1.5#C0@1;1@0.5|0.5~1.5#D0@0.25;1@0.75|-1~2"
+     "#S0@0.75;1@0.25|-1~1#BC", 1e-9),
 ]
 
 
@@ -137,6 +152,30 @@ def sampled(external_code, points):
     return [evaluate_weight_profile(points, i / (SAMPLES - 1)) for i in range(SAMPLES)]
 
 
+def depth_field(external_code, case):
+    """Depth-under-drift on the same (depth, step) grid the JS harness uses.
+
+    The composite is what RUNS - every injector multiplies by exactly this - and
+    it is the only thing the per-curve comparisons cannot check: both sides can
+    parse the depth curve and the drift curve identically and still disagree
+    about the sign of the shift, the clamp at the axis ends, or which of the two
+    arguments the drift is measured in. Compared through the shared
+    cnpro_core.depth_multiplier, so a divergence here is a real divergence and
+    not this test's own arithmetic.
+    """
+    from cnpro_core.weight_profile import depth_multiplier
+    depth = external_code.parse_depth_profile(case)
+    if depth is None:
+        return None
+    drift = external_code.parse_drift_profile(case)
+    out = []
+    for i in range(SAMPLES):
+        d = i / (SAMPLES - 1)
+        for j in range(SAMPLES):
+            out.append(depth_multiplier(depth, drift, d, j / (SAMPLES - 1)))
+    return out
+
+
 def compare(name, case, py_values, js_values, tol, failures):
     if (py_values is None) != (js_values is None):
         failures.append(f"{case!r}: {name} present on one side only "
@@ -144,12 +183,22 @@ def compare(name, case, py_values, js_values, tol, failures):
         return
     if py_values is None:
         return
+    if len(py_values) != len(js_values):
+        failures.append(f"{case!r}: {name} sampled at {len(py_values)} points by python "
+                        f"and {len(js_values)} by the editor")
+        return
     worst = max(abs(a - b) for a, b in zip(py_values, js_values))
     if not math.isfinite(worst) or worst > tol:
-        bad = max(range(SAMPLES), key=lambda i: abs(py_values[i] - js_values[i]))
+        # index over the WHOLE series, not over SAMPLES: the depth field is a
+        # SAMPLES x SAMPLES grid, and a fixed range would have reported the
+        # worst point of its first row as if it were the worst point overall
+        bad = max(range(len(py_values)), key=lambda i: abs(py_values[i] - js_values[i]))
+        where = (f"x={bad / (SAMPLES - 1):.2f}" if len(py_values) == SAMPLES
+                 else f"depth={(bad // SAMPLES) / (SAMPLES - 1):.2f}, "
+                      f"x={(bad % SAMPLES) / (SAMPLES - 1):.2f}")
         failures.append(
             f"{case!r}: {name} diverges by {worst:.2g} (tolerance {tol:g}) "
-            f"at x={bad / (SAMPLES - 1):.2f}: python {py_values[bad]:.6f} "
+            f"at {where}: python {py_values[bad]:.6f} "
             f"vs editor {js_values[bad]:.6f}")
 
 
@@ -182,6 +231,15 @@ def main():
         compare("depth profile", case,
                 sampled(external_code, external_code.parse_depth_profile(case)),
                 js.get("depth"), tol, failures)
+
+        compare("drift profile", case,
+                sampled(external_code, external_code.parse_drift_profile(case)),
+                js.get("drift"), tol, failures)
+
+        # ...and the composite the two of them produce, which is the thing that
+        # actually multiplies residuals
+        compare("depth field (depth x drift)", case,
+                depth_field(external_code, case), js.get("depthField"), tol, failures)
 
     print(f"{len(CASES)} profile strings compared, "
           f"{SAMPLES} samples each, python vs editor")

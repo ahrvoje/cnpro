@@ -181,6 +181,12 @@ the division is already reflected in the code.
   percent→timestep map. `build_weight_profile_lookup` is schedule-agnostic.
 * **Cosine, multi-phase (cosine / Fejér / von Mises), response exponent, scale
   range** — pure shape features on the step axis.
+* **The depth-drift curve.** It only reparameterizes the depth curve's argument,
+  so it inherits whatever the depth axis means on the host. On a DiT it is
+  arguably the more honest of the two controls: "the control migrates from
+  abstract blocks to concrete ones as sampling proceeds" says nothing about
+  resolution, which is the claim the coarse/mid/fine labels cannot support
+  there.
 * **Weight masks.** DiT residuals are per-token and tokens are a 2D latent grid,
   so a spatial mask scales them exactly as it scales pixels.
 
@@ -490,11 +496,21 @@ the shape is what recurs — the individual bugs never look alike.
 | `canvas_nodes.js` injects mask buttons with `.forge-wmask-control` | `canvas_extra.js` revealed `.forge-adjust-control` | the entire weight-mask UI absent from the toolbar |
 | `controlnet.py` called `memory_management.get_computation_dtype()` | no such function exists | every SD1.5/SDXL ControlNet reported as "unsupported file" |
 | `base.py` defaults every capability flag to `False` | a patcher forgets to declare one | that feature silently stops working for that patcher |
+| `lllite.py` passes `depth_profile=` to `load_lllite` | `load_lllite` never declared the keyword | `TypeError` on **every** ControlLLLite generation (found 2026-07-27) |
 
-In all three, **nothing raised.** An empty `querySelectorAll` is not an error, a
-swallowed `AttributeError` is not an error, and an inherited `False` is not an
-error. Each failure was invisible until someone happened to look for a feature
-and notice it was gone.
+In the first three, **nothing raised.** An empty `querySelectorAll` is not an
+error, a swallowed `AttributeError` is not an error, and an inherited `False` is
+not an error. Each failure was invisible until someone happened to look for a
+feature and notice it was gone.
+
+The fourth row is the same shape with the opposite volume, and it is worth
+keeping for that: a declaration honoured nowhere raised on the very first call,
+loudly, with a perfect message — and still survived, because ControlLLLite is
+rare enough that nobody ran it. Silence is what usually hides these; obscurity
+does the job just as well. The seam that mattered is that `lllite.py` calls
+`load_lllite`, not the `load_control_net_lllite_patch` underneath it, so the
+profile had been added to the function that reads it and not to the one that is
+called. Both new profiles are now named in both.
 
 The common cause is not carelessness. It is a **default that means "absent"**,
 combined with **no check that the declaration was made deliberately**. Both parts

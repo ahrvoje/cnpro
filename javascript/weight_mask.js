@@ -19,9 +19,10 @@
 //
 // WHICH SLOTS ARE LIVE IS THE PROFILE EDITOR'S BAND SELECTOR. The four slots
 // are the four weight profiles' spatial half: G belongs to the MAIN profile,
-// C/M/F to the coarse/mid/fine band profiles. So main mode (and depth, which
-// multiplies main) runs on G and leaves C/M/F dormant, and a band selection
-// runs on C/M/F and leaves G dormant. One switch, not two - see
+// C/M/F to the coarse/mid/fine band profiles. So main mode - and depth, which
+// multiplies main, and drift, which moves where depth is read - runs on G and
+// leaves C/M/F dormant, and a band selection runs on C/M/F and leaves G
+// dormant. One switch, not two - see
 // external_code.masks_in_force for why the masks having their own precedence
 // was a bug rather than a feature.
 //
@@ -796,7 +797,13 @@
                 if (slot.baseTitle === undefined) slot.baseTitle = slot.button.title;
                 slot.button.title = isLive ? slot.baseTitle
                     : slot.baseTitle + '\n\nNOT IN USE: the ' +
-                      (band === 'main' || band === 'depth' ? 'main' : band) +
+                      // the same test liveSlotKeys makes, not a second list of
+                      // the non-band selectors: every selector that is not
+                      // coarse/mid/fine runs MAIN (depth and drift shape the
+                      // main profile rather than replacing it), and spelling
+                      // them out here is how 'drift' would have kept naming
+                      // itself in a sentence that says G is what runs
+                      (PROFILE_BANDS.indexOf(band) === -1 ? 'main' : band) +
                       ' weight profile is selected, and the mask slots follow ' +
                       'that selector (' +
                       (live.indexOf('global') !== -1 ? 'G' : 'C/M/F') +

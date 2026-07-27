@@ -49,7 +49,7 @@
  * control).
  *
  * The range belongs to the PLOT, not to a curve - and a "plot" is one
- * COORDINATE SYSTEM, of which this editor has two. The step plot (X = relative
+ * COORDINATE SYSTEM, of which this editor has three. The step plot (X = relative
  * sampling step, Y = weight) carries the main white curve and all three band
  * lines: they are drawn together, so per-curve limits would make them mean
  * different things at the same height, and they share one range. The depth
@@ -57,10 +57,15 @@
  * ALONE and has its own range: nothing is ever drawn beside it, its Y is a
  * multiplier rather than a weight, and coupling the two axes made a weight
  * range of e.g. 0..0.8 unable to even express the depth curve's neutral 1.
+ * The drift plot (X = relative sampling step again, Y = a SHIFT along the depth
+ * axis) carries the drift curve alone for the same reasons and one more: its
+ * neutral is 0, not the multiplier 1, so it is the only curve here that a
+ * multiplier axis could not express at all.
  * The selects always show the range of the axis on screen. Serialization
  * follows the same split: every step-domain segment carries the same
- * '|lo~hi' suffix, the '#D' segment carries its own (python parses each
- * segment on its own anyway, so it needs no notion of which axis it was on).
+ * '|lo~hi' suffix, the '#D' and '#S' segments carry their own (python parses
+ * each segment on its own anyway, so it needs no notion of which axis it was
+ * on).
  *
  * The profile is serialized as 'x@y;x@y;...' (with a '|hi' or '|lo~hi'
  * suffix when the range is not [0, 1]) into a hidden gradio textbox
@@ -148,6 +153,7 @@
             BAND_COLORS[b] = v || BAND_COLOR_FALLBACK[b];
         }
         DEPTH_COLOR = styles.getPropertyValue("--cnet-depth-line").trim() || DEPTH_COLOR_FALLBACK;
+        DRIFT_COLOR = styles.getPropertyValue("--cnet-drift-line").trim() || DRIFT_COLOR_FALLBACK;
     }
     const BAND_LABELS = { coarse: "C", mid: "M", fine: "F" };
     const BAND_LABEL_X = { coarse: 0.08, mid: 0.5, fine: 0.92 };
@@ -179,11 +185,76 @@
     const DEPTH_RANGE_DEFAULT = { lo: 0, hi: 2 };
     let DEPTH_COLOR = null;
 
-    function defaultBandProfile(lo, hi) {
-        // flat 1.0 = neutral multiplier: the curve leaves its layers alone.
-        // "1" is a position on the axis it is drawn on - at the step plot's
-        // default [0, 1] the top, at the depth plot's [0, 2] the middle.
-        const y = neutralY(lo, hi);
+    // Depth-DRIFT profile (weight editor only): the third plot, and the only
+    // one that couples the other two. X is the relative sampling step like the
+    // main profile's; Y is a SHIFT along the depth axis, so the unit runs
+    //
+    //     main(step) x depth(layer - drift(step))
+    //
+    // Positive shift reads the depth curve further left and therefore moves
+    // whatever it draws toward the DEEP (coarse) end, so a descending drift
+    // sweeps the control from composition to texture as sampling proceeds.
+    // The definition is cnpro_core.weight_profile.drifted_depth - mirrored in
+    // driftedDepth() below, and pinned by tests/test_profile_parity.py.
+    //
+    // Why it exists: main x depth is a rank-1 (separable) field, so the depth
+    // shape it expresses is frozen in time. The three band profiles CAN vary
+    // depth over steps, at the price of quantizing depth into three buckets.
+    // The drift is the missing degree of freedom rather than a fourth curve on
+    // an existing axis, which is why it gets its own plot and why it multiplies
+    // nothing: it only moves the depth curve's argument, so it cannot count
+    // depth twice the way a band-times-depth product would.
+    //
+    // Its NEUTRAL IS 0, not 1 - it is a shift, not a multiplier - and its plot
+    // defaults to [-1, 1] so the neutral line sits in the middle and either
+    // direction is reachable. That is the one thing every neutrality helper
+    // below had to stop assuming.
+    //
+    // A drift with no depth curve to move does nothing: that falls out of the
+    // arithmetic (shifting a flat curve is the identity), so the editor keeps
+    // the two independent and scripts/cnpro.py is where the user is TOLD.
+    // Serialized as an '#S<profile>' segment; neutral is omitted like a band's.
+    const DRIFT_KEY = "drift";
+    const DRIFT_PREFIX = "S";
+    const DRIFT_COLOR_FALLBACK = "#00c853";
+    const DRIFT_RANGE_DEFAULT = { lo: -1, hi: 1 };
+    let DRIFT_COLOR = null;
+
+    /**
+     * Every selector the editor can be in, in the order its buttons appear:
+     * the three that ASSEMBLE into one field first, then the three that each
+     * REPLACE the main profile. COMPOSED from the constants above rather than
+     * typed out, so it cannot name a curve the editor does not have or miss one
+     * it does. Exported for tests/mask_profile_js.js, which has to exercise the
+     * mask coupling on every selector - and a hand-written list there would
+     * quietly skip whichever selector was added last, i.e. exactly the one most
+     * likely to have got the coupling wrong.
+     */
+    const SELECTOR_ORDER = ["main", DEPTH_KEY, DRIFT_KEY].concat(BAND_ORDER);
+
+    /** Neutral EFFECTIVE value of a stored curve: 0 for the drift shift, 1 for
+     *  every multiplier curve (the bands and the depth curve). The main profile
+     *  is never asked - it is not omitted from the string and has no neutral to
+     *  re-anchor to. Single source, so a segment cannot be dropped by one
+     *  neutrality test and drawn by another. */
+    function neutralValueOf(name) {
+        return name === DRIFT_KEY ? 0 : 1;
+    }
+
+    /** The depth position a depth curve is READ AT under a shift - the JS twin
+     *  of cnpro_core.weight_profile.drifted_depth, clamped the same way (the
+     *  depth axis has two ends, not a period, so a wrapped shift would teleport
+     *  the deepest layer's multiplier onto the shallowest). */
+    function driftedDepth(depth, shift) {
+        return clamp01(depth - shift);
+    }
+
+    function defaultBandProfile(lo, hi, neutral) {
+        // flat neutral: the curve leaves its layers alone. Where that line sits
+        // is a position on the axis it is drawn on - the multiplier 1 is the top
+        // of the step plot's default [0, 1] and the middle of the depth plot's
+        // [0, 2]; the drift's 0 is the middle of its own [-1, 1].
+        const y = neutralY(lo, hi, neutral);
         return {
             points: [{ x: 0, y: y }, { x: 1, y: y }],
             cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
@@ -259,13 +330,15 @@
         return 0.5 + 0.5 * Math.cos(theta - offset);
     }
 
-    /** Normalized y whose EFFECTIVE value is 1 - where a neutral multiplier
-     *  line sits on the axis it is drawn on. A zero-width range expresses a
-     *  single value and cannot place 1 anywhere in particular; keep the top. */
-    function neutralY(lo, hi) {
+    /** Normalized y whose EFFECTIVE value is `neutral` (default the multiplier
+     *  1) - where a neutral line sits on the axis it is drawn on. A zero-width
+     *  range expresses a single value and cannot place anything in particular;
+     *  keep the top. */
+    function neutralY(lo, hi, neutral) {
+        const n = neutral === undefined ? 1 : neutral;
         const span = hi - lo;
         if (Math.abs(span) < 1e-9) return 1;
-        return clamp01((1 - lo) / span);
+        return clamp01((n - lo) / span);
     }
 
     /** Same effective value, expressed on another range. */
@@ -327,6 +400,8 @@
             this.scaleHi = packed.scaleHi;
             this.depthLo = packed.depthLo;
             this.depthHi = packed.depthHi;
+            this.driftLo = packed.driftLo;
+            this.driftHi = packed.driftHi;
             // cosine mode: the drawn polyline becomes the envelope of a wave
             // with cosN oscillations over the step range and phase cosPhase
             this.cosOn = parsed.cosOn;
@@ -355,6 +430,10 @@
             // DEPTH axis, which is not the one the bands ride.
             this.store[DEPTH_KEY] = packed.depth
                 || defaultBandProfile(this.depthLo, this.depthHi);
+            // drift curve: a third plot again, and the only one whose neutral is
+            // 0 rather than the multiplier 1 (see DRIFT_KEY)
+            this.store[DRIFT_KEY] = packed.drift
+                || defaultBandProfile(this.driftLo, this.driftHi, 0);
             this.snapshot();
             this.lastSerialized = textarea.value;
             this.dragPoint = null;
@@ -400,11 +479,12 @@
          * written the string back they all carry the same suffix and this is
          * the identity.
          *
-         * The '#D' segment takes NO part in that fold: depth is its own plot
-         * with its own axis (see DEPTH_KEY above), so its suffix is adopted
-         * verbatim - which is also what makes the split invisible to strings
-         * written before it, since the shared suffix they carry on '#D' IS the
-         * axis that curve was drawn on. Absent segment = the depth default.
+         * The '#D' and '#S' segments take NO part in that fold: depth and drift
+         * are each their own plot with their own axis (see DEPTH_KEY and
+         * DRIFT_KEY above), so their suffixes are adopted verbatim - which is
+         * also what makes the split invisible to strings written before it,
+         * since the shared suffix they carry on '#D' IS the axis that curve was
+         * drawn on. Absent segment = that plot's default.
          */
         parsePacked(text) {
             const segments = (text || "").split("#");
@@ -419,27 +499,33 @@
                 }
                 const key = segment[0] === DEPTH_PREFIX
                     ? DEPTH_KEY
-                    : BAND_ORDER.find((b) => BAND_PREFIX[b] === segment[0]);
+                    : (segment[0] === DRIFT_PREFIX
+                        ? DRIFT_KEY
+                        : BAND_ORDER.find((b) => BAND_PREFIX[b] === segment[0]));
                 if (!key) continue;
                 const p = this.parse(segment.slice(1));
                 if (p) raw[key] = p;
             }
             const main = this.parse(segments[0]);
             if (!main) {
-                return { main: null, bands: {}, depth: null, selected: selected,
+                return { main: null, bands: {}, depth: null, drift: null,
+                         selected: selected,
                          scaleLo: 0, scaleHi: 1,
-                         depthLo: DEPTH_RANGE_DEFAULT.lo, depthHi: DEPTH_RANGE_DEFAULT.hi };
+                         depthLo: DEPTH_RANGE_DEFAULT.lo, depthHi: DEPTH_RANGE_DEFAULT.hi,
+                         driftLo: DRIFT_RANGE_DEFAULT.lo, driftHi: DRIFT_RANGE_DEFAULT.hi };
             }
             const toProfile = (p) => ({
                 points: p.points,
                 cosOn: p.cosOn, cosN: p.cosN, cosPhase: p.cosPhase,
                 gamma: p.gamma,
             });
-            // step axis: covers main + the band segments, never the depth one
+            // step axis: covers main + the band segments; never the depth or
+            // drift ones, each of which is a plot of its own
+            const ownPlot = (key) => key === DEPTH_KEY || key === DRIFT_KEY;
             let lo = main.scaleLo;
             let hi = main.scaleHi;
             for (const key in raw) {
-                if (key === DEPTH_KEY) continue;
+                if (ownPlot(key)) continue;
                 lo = Math.min(lo, raw[key].scaleLo);
                 hi = Math.max(hi, raw[key].scaleHi);
             }
@@ -447,34 +533,68 @@
             renormalizePoints(main.points, { lo: main.scaleLo, hi: main.scaleHi }, to);
             const bands = {};
             for (const key in raw) {
-                if (key === DEPTH_KEY) continue;
+                if (ownPlot(key)) continue;
                 const p = raw[key];
                 renormalizePoints(p.points, { lo: p.scaleLo, hi: p.scaleHi }, to);
                 bands[key] = toProfile(p);
             }
-            // depth axis: whatever its own segment says, untouched
+            // depth and drift axes: whatever their own segments say, untouched
             const rawDepth = raw[DEPTH_KEY];
+            const rawDrift = raw[DRIFT_KEY];
             return {
                 main: main, bands: bands,
                 depth: rawDepth ? toProfile(rawDepth) : null,
+                drift: rawDrift ? toProfile(rawDrift) : null,
                 selected: selected,
                 scaleLo: lo, scaleHi: hi,
                 depthLo: rawDepth ? rawDepth.scaleLo : DEPTH_RANGE_DEFAULT.lo,
                 depthHi: rawDepth ? rawDepth.scaleHi : DEPTH_RANGE_DEFAULT.hi,
+                driftLo: rawDrift ? rawDrift.scaleLo : DRIFT_RANGE_DEFAULT.lo,
+                driftHi: rawDrift ? rawDrift.scaleHi : DRIFT_RANGE_DEFAULT.hi,
             };
         }
 
-        /** The Y axis a stored profile lives on: the depth curve has its own,
-         *  everything else rides the step plot's. */
+        /** The Y axis a stored profile lives on: the depth and drift curves each
+         *  have their own, everything else rides the step plot's. */
         rangeFor(name) {
-            return name === DEPTH_KEY
-                ? { lo: this.depthLo, hi: this.depthHi }
-                : { lo: this.scaleLo, hi: this.scaleHi };
+            if (name === DEPTH_KEY) return { lo: this.depthLo, hi: this.depthHi };
+            if (name === DRIFT_KEY) return { lo: this.driftLo, hi: this.driftHi };
+            return { lo: this.scaleLo, hi: this.scaleHi };
         }
 
         /** The axis currently on screen - what the two range selects edit. */
         activeRange() {
             return this.rangeFor(this.band);
+        }
+
+        /**
+         * True for the three selectors that all run MAIN mode: main itself, the
+         * depth curve and the drift curve. They are one group because none of
+         * them REPLACES the main profile - depth multiplies it, drift moves
+         * where depth is read - so the unit runs main(step) x depth(...) with
+         * whichever of the three is pressed. The C/M/F selectors are the other
+         * group: each is a whole alternative to the main profile.
+         *
+         * That distinction decides three separate things (the '#B' mode marker,
+         * which curves are drawn and grabbable, and which weight-mask slots are
+         * live), and it used to be spelled out as `band !== "main" && band !==
+         * DEPTH_KEY` at each of them. Adding a third main-mode selector to a
+         * repeated condition is exactly how one call site keeps the old
+         * two-member group - see ARCHITECTURE.md section 8.
+         */
+        mainModeSelector(name) {
+            return name === "main" || name === DEPTH_KEY || name === DRIFT_KEY;
+        }
+
+        /** The line color of one stored curve. Single lookup, so the plot line,
+         *  the drag readout and the button (which takes the same CSS variable
+         *  through --band-color) cannot end up disagreeing about which curve is
+         *  which color. */
+        curveColorOf(name) {
+            if (name === "main") return MAIN_COLOR;
+            if (name === DEPTH_KEY) return DEPTH_COLOR;
+            if (name === DRIFT_KEY) return DRIFT_COLOR;
+            return BAND_COLORS[name];
         }
 
         /** Refresh the store slot of the selected profile from the working copy.
@@ -507,14 +627,28 @@
         }
 
         /**
-         * Band selector: four thin bars at the presets column bottom. Radio
-         * semantics - exactly one pressed. main shows/edits only the main
-         * profile; a band button shows all three C/M/F lines and routes every
-         * edit (points, presets, pad, invert) to the selected band. The range
-         * selects are the axis of the PLOT, not of the selected curve: in
-         * main / band mode they move the main profile and all three bands
-         * together, in depth mode the depth curve alone (see the header - the
-         * two are different coordinate systems and never share a range).
+         * Band selector: six thin bars at the presets column bottom, in two
+         * groups. Radio semantics - exactly one pressed.
+         *
+         *   main | depth | drift    the three that ASSEMBLE into one unit: the
+         *                           unit runs main(step) x depth(layer -
+         *                           drift(step)), so pressing any of them runs
+         *                           the same thing and only changes which factor
+         *                           is on screen (mainModeSelector).
+         *   coarse | mid | fine     the three that REPLACE the main profile:
+         *                           each is a whole per-step curve for its third
+         *                           of the depth axis.
+         *
+         * The separator between the groups is the whole of that distinction on
+         * screen, which is why it is markup (a real element in the row) rather
+         * than a margin: the row's reading order is the model.
+         *
+         * A band button shows all three C/M/F lines and routes every edit
+         * (points, presets, pad, invert) to the selected band. The range selects
+         * are the axis of the PLOT, not of the selected curve: in main / band
+         * mode they move the main profile and all three bands together, in depth
+         * or drift mode that one curve alone (see the header - the three are
+         * different coordinate systems and never share a range).
          */
         attachBands() {
             this.bandButtons = {};
@@ -557,11 +691,11 @@
          * which is the only warning a user gets before painting into a mask
          * that will not be applied.
          *
-         * The RAW selector is published, depth included: the reader decides
-         * what depth means for it (for masks it means main, because depth
-         * multiplies main rather than replacing it). Publishing a
-         * pre-interpreted value would put that rule in the writer, where the
-         * next reader cannot see it.
+         * The RAW selector is published, depth and drift included: the reader
+         * decides what they mean for it (for masks both mean main, because they
+         * shape main rather than replacing it). Publishing a pre-interpreted
+         * value would put that rule in the writer, where the next reader cannot
+         * see it.
          */
         publishMode() {
             if (this.isBalance || !this.unitRoot) return;
@@ -710,18 +844,21 @@
             return base + "|" + fmt(lo) + "~" + fmt(hi);
         }
 
-        /** Flat 1.0 with no wave = neutral multiplier: not worth serializing.
-         *  Compares EFFECTIVE (scale-mapped) values with the same 5e-4
-         *  epsilon as python's band_points_are_neutral - a band nudged to
-         *  0.9997 must be neutral on both sides, or the editor would show
+        /** Flat at its neutral value with no wave = a no-op: not worth
+         *  serializing. Compares EFFECTIVE (scale-mapped) values with the same
+         *  5e-4 epsilon as python's profile_points_are_neutral - a band nudged
+         *  to 0.9997 must be neutral on both sides, or the editor would show
          *  band mode engaged while the backend runs the main profile. The
          *  mapping is the range of the profile's own plot, so where a neutral
-         *  line sits depends on those limits (top at [0, 1], middle at
-         *  [0, 2]) - which is why the caller says which axis P is on. */
-        bandNeutral(P, range) {
+         *  line sits depends on those limits (the multiplier 1 is the top at
+         *  [0, 1] and the middle at [0, 2]) - which is why the caller says which
+         *  axis P is on. `neutral` defaults to the multiplier 1; the drift curve
+         *  is the one caller that passes 0, because it is a shift. */
+        bandNeutral(P, range, neutral) {
+            const n = neutral === undefined ? 1 : neutral;
             const value = (y) => range.lo + y * (range.hi - range.lo);
             return !P.cosOn
-                && P.points.every((p) => Math.abs(value(p.y) - 1) <= 5e-4 && !p.mid);
+                && P.points.every((p) => Math.abs(value(p.y) - n) <= 5e-4 && !p.mid);
         }
 
         serialize() {
@@ -744,15 +881,23 @@
             if (depth && !this.bandNeutral(depth, depthRange)) {
                 out += "#" + DEPTH_PREFIX + this.serializeProfile(depth, depthRange);
             }
+            // the drift rides the STEP axis in x but its own axis in y, and its
+            // neutral is 0 rather than the multiplier 1 (see DRIFT_KEY)
+            const driftRange = this.rangeFor(DRIFT_KEY);
+            const drift = this.store[DRIFT_KEY];
+            if (drift && !this.bandNeutral(drift, driftRange, 0)) {
+                out += "#" + DRIFT_PREFIX + this.serializeProfile(drift, driftRange);
+            }
             // Which selector is pressed IS the mode, and the mode is behaviour,
             // so it has to survive a reload: '#B<band>' says "bands drive the
             // weights, this one is being edited", no marker says "main drives".
-            // The DEPTH selector writes no marker - depth does not replace the
-            // main profile, it multiplies it, so main mode is what runs either
-            // way and the '#D' segment alone says whether it is doing anything.
-            // Every curve stays serialized in all modes, so switching back
-            // finds the others exactly as they were left.
-            if (this.band !== "main" && this.band !== DEPTH_KEY) {
+            // The DEPTH and DRIFT selectors write no marker - neither replaces
+            // the main profile, they shape it, so main mode is what runs
+            // whichever of the three is pressed and the '#D' / '#S' segments
+            // alone say whether they are doing anything. Every curve stays
+            // serialized in all modes, so switching back finds the others
+            // exactly as they were left.
+            if (!this.mainModeSelector(this.band)) {
                 out += "#B" + BAND_PREFIX[this.band];
             }
             return out;
@@ -885,14 +1030,16 @@
             const packed = this.parsePacked(value);
             this.lastSerialized = value;
             if (packed.main) {
-                // both ranges come with the string: the step one covers every
-                // step-domain segment in it (parsePacked folds divergent
-                // suffixes onto one axis), the depth one is the '#D' segment's
-                // own
+                // all three ranges come with the string: the step one covers
+                // every step-domain segment in it (parsePacked folds divergent
+                // suffixes onto one axis), the depth and drift ones are the '#D'
+                // and '#S' segments' own
                 this.scaleLo = packed.scaleLo;
                 this.scaleHi = packed.scaleHi;
                 this.depthLo = packed.depthLo;
                 this.depthHi = packed.depthHi;
+                this.driftLo = packed.driftLo;
+                this.driftHi = packed.driftHi;
                 this.store.main = {
                     points: packed.main.points,
                     cosOn: packed.main.cosOn, cosN: packed.main.cosN,
@@ -906,6 +1053,8 @@
                 }
                 this.store[DEPTH_KEY] = packed.depth
                     || defaultBandProfile(this.depthLo, this.depthHi);
+                this.store[DRIFT_KEY] = packed.drift
+                    || defaultBandProfile(this.driftLo, this.driftHi, 0);
                 this.loadBand(this.band); // refresh the working copy in place
                 // the incoming string also carries the mode (which profile
                 // drives the weights), so follow it
@@ -926,11 +1075,14 @@
                 this.scaleHi = 1;
                 this.depthLo = DEPTH_RANGE_DEFAULT.lo;
                 this.depthHi = DEPTH_RANGE_DEFAULT.hi;
+                this.driftLo = DRIFT_RANGE_DEFAULT.lo;
+                this.driftHi = DRIFT_RANGE_DEFAULT.hi;
                 this.store.main = this.defaultMainProfile();
                 for (const b of BAND_ORDER) {
                     this.store[b] = defaultBandProfile(this.scaleLo, this.scaleHi);
                 }
                 this.store[DEPTH_KEY] = defaultBandProfile(this.depthLo, this.depthHi);
+                this.store[DRIFT_KEY] = defaultBandProfile(this.driftLo, this.driftHi, 0);
                 // ...and the MODE resets with them. An empty value means "this
                 // unit has no profile", which is main mode - keeping a band
                 // selector pressed would leave the string about to be written
@@ -1096,18 +1248,24 @@
                 // be read BEFORE it moves - neutrality is an effective value,
                 // and the old range is the one they were drawn on
                 this.snapshot();
-                const depthMode = this.band === DEPTH_KEY;
                 const range = this.activeRange();
+                // the depth and the drift plot each carry ONE curve; the step
+                // plot carries the main profile and all three bands
+                const ownPlot = this.band === DEPTH_KEY || this.band === DRIFT_KEY;
                 const onAxis = this.isBalance
                     ? []
-                    : (depthMode ? [DEPTH_KEY] : BAND_ORDER);
+                    : (ownPlot ? [this.band] : BAND_ORDER);
                 const untouched = onAxis.filter(
-                    (b) => this.store[b] && this.bandNeutral(this.store[b], range));
+                    (b) => this.store[b]
+                        && this.bandNeutral(this.store[b], range, neutralValueOf(b)));
                 const lo = which === "lo" ? value : Math.min(range.lo, value);
                 const hi = which === "hi" ? value : Math.max(range.hi, value);
-                if (depthMode) {
+                if (this.band === DEPTH_KEY) {
                     this.depthLo = lo;
                     this.depthHi = hi;
+                } else if (this.band === DRIFT_KEY) {
+                    this.driftLo = lo;
+                    this.driftHi = hi;
                 } else {
                     this.scaleLo = lo;
                     this.scaleHi = hi;
@@ -1122,18 +1280,23 @@
         }
 
         /**
-         * Put the flat line of untouched multiplier curves (bands, or the
-         * depth curve) back where the multiplier is 1 on their axis, after its
+         * Put the flat line of untouched curves (bands, or the depth or drift
+         * curve) back where their NEUTRAL value sits on their axis, after its
          * limits moved. One that was left alone must keep doing nothing -
          * unlike a DRAWN curve, which keeps its shape and takes the new
          * weights, the whole point of the range. Points are shared by
          * reference with the working copy, so mutating them in place covers
          * the selected curve too.
+         *
+         * The neutral is read PER CURVE, not per plot: the drift's is 0 and
+         * every multiplier curve's is 1, so a single y computed for the whole
+         * list would park a drift wherever the multiplier 1 happens to fall on
+         * [-1, 1] - a shift of +1, i.e. the exact opposite of doing nothing.
          */
         reanchorNeutral(names, range) {
             if (!names || !names.length) return;
-            const y = neutralY(range.lo, range.hi);
             for (const b of names) {
+                const y = neutralY(range.lo, range.hi, neutralValueOf(b));
                 for (const p of this.store[b].points) {
                     p.y = y;
                     if (p.mid) p.mid.y = y;
@@ -1478,12 +1641,12 @@
          * profile; in band mode the points of ALL THREE band lines are
          * directly editable - the band buttons only pick which profile the
          * presets, pad and invert act on. The selected band is iterated first
-         * and wins distance ties. Depth mode shows one curve and only that
-         * curve is grabbable (the bands are not on the plot - they are the
-         * alternative to it, not companions of it).
+         * and wins distance ties. Depth and drift mode each show one curve and
+         * only that curve is grabbable (the bands are not on those plots - they
+         * are the alternative to them, not companions of them).
          */
         editableBands() {
-            if (this.band === "main" || this.band === DEPTH_KEY) {
+            if (this.mainModeSelector(this.band)) {
                 return [{ band: this.band, pts: this.points }];
             }
             const out = [{ band: this.band, pts: this.points }];
@@ -1596,7 +1759,7 @@
                 // points, margin edits and mid controls go to the selected one
                 this.dragPts = hit ? hit.pts : this.points;
                 this.dragColor = hit && hit.band !== "main"
-                    ? (hit.band === DEPTH_KEY ? DEPTH_COLOR : BAND_COLORS[hit.band])
+                    ? this.curveColorOf(hit.band)
                     : null;
                 if (!point) {
                     // grabbing a (passive or active) segment midpoint starts a
@@ -2024,7 +2187,9 @@
             // timestep range is the scheduler's business, not the editor's.
             // Depth mode is excluded: there X is the injection layer, not the
             // step, so both the separators and the per-step dots below would
-            // be marking something that axis does not measure.
+            // be marking something that axis does not measure. DRIFT mode is
+            // NOT excluded - its x IS the step axis (only its y is a depth
+            // shift), so the separators mark exactly what they always do.
             const steps = this.band === DEPTH_KEY ? 0 : this.stepsCount();
             if (steps > 1 && r.w / steps >= STEP_LINE_MIN_SPACING) {
                 ctx.save();
@@ -2055,19 +2220,22 @@
             ctx.textBaseline = "top";
             // depth mode retitles the axis: same plot, different X meaning
             // (0 = shallowest injection layer, 1 = deepest), and the arrow
-            // says which way it runs
-            ctx.fillText(this.band === DEPTH_KEY ? "Depth   fine → coarse" : "Steps",
-                         r.left + 0.5 * r.w, r.top + r.h + 7);
+            // says which way it runs. Drift mode keeps the STEP axis - the
+            // depth direction is what its Y says, so the label names that
+            // instead (up = toward coarse, matching the depth plot's own
+            // fine -> coarse direction).
+            ctx.fillText(
+                this.band === DEPTH_KEY ? "Depth   fine → coarse"
+                    : (this.band === DRIFT_KEY ? "Steps   ↑ coarse  ↓ fine" : "Steps"),
+                r.left + 0.5 * r.w, r.top + r.h + 7);
 
             // the selected profile draws full-strength below in its color:
-            // white for main, purple for depth, the band color otherwise. In
-            // band mode the two NON-selected band lines go first, as thin
-            // underlays; depth mode shows its curve alone (the bands are its
-            // alternative, not its companions).
-            const curveColor = this.band === "main"
-                ? MAIN_COLOR
-                : (this.band === DEPTH_KEY ? DEPTH_COLOR : BAND_COLORS[this.band]);
-            if (this.band !== "main" && this.band !== DEPTH_KEY) {
+            // white for main, purple for depth, green for drift, the band color
+            // otherwise. In band mode the two NON-selected band lines go first,
+            // as thin underlays; depth and drift mode each show their curve
+            // alone (the bands are their alternative, not their companions).
+            const curveColor = this.curveColorOf(this.band);
+            if (!this.mainModeSelector(this.band)) {
                 for (const b of BAND_ORDER) {
                     if (b !== this.band) this.drawBandOverlay(this.store[b], BAND_COLORS[b]);
                 }
@@ -2221,9 +2389,9 @@
             }
 
             // Band mode: C / M / F letters riding their lines (staggered x
-            // positions, since untouched bands all sit flat at 1.0). Depth
-            // mode draws one curve and needs no letters.
-            if (this.band !== "main" && this.band !== DEPTH_KEY) {
+            // positions, since untouched bands all sit flat at 1.0). The three
+            // main-mode plots each draw one curve and need no letters.
+            if (!this.mainModeSelector(this.band)) {
                 ctx.font = "bold 11px sans-serif";
                 ctx.textAlign = "center";
                 ctx.textBaseline = "bottom";
@@ -2245,8 +2413,16 @@
     // which needs the class without any of the DOM wiring below. Exporting it
     // and guarding the registrations is all that takes - keep both, or the
     // parity test silently stops running.
+    // driftedDepth rides along because it is the DEFINITION of the drift, not a
+    // drawing detail: the parity test compares the composite
+    // depth(layer - drift(step)) against python's depth_multiplier, and a test
+    // that recomputed the shift itself would agree with whatever it recomputed.
     if (typeof module !== "undefined" && module.exports) {
-        module.exports = { WeightProfileEditor: WeightProfileEditor };
+        module.exports = {
+            WeightProfileEditor: WeightProfileEditor,
+            driftedDepth: driftedDepth,
+            SELECTOR_ORDER: SELECTOR_ORDER,
+        };
     }
     if (typeof onUiUpdate !== "function") return;
 

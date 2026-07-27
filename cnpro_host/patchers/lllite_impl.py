@@ -9,7 +9,8 @@ a ComfyUI port reuses unchanged.
 import math
 import torch
 
-from cnpro_core.weight_profile import (evaluate_weight_profile, band_of_unet_block,
+from cnpro_core.weight_profile import (evaluate_weight_profile, depth_multiplier,
+                                            band_of_unet_block,
                                             depth_fraction_of_unet_block)
 
 
@@ -104,7 +105,7 @@ def lllite_module_depths(module_names):
     return depths
 
 
-def load_control_net_lllite_patch(ctrl_sd, cond_image, multiplier, num_steps, start_percent, end_percent, model_dtype, weight_profile=None, band_profiles=None, depth_profile=None):
+def load_control_net_lllite_patch(ctrl_sd, cond_image, multiplier, num_steps, start_percent, end_percent, model_dtype, weight_profile=None, band_profiles=None, depth_profile=None, drift_profile=None):
     # calculate start and end step
     start_step = math.floor(num_steps * start_percent) if start_percent > 0 else 0
     end_step = math.floor(num_steps * end_percent) if end_percent > 0 else num_steps
@@ -124,14 +125,11 @@ def load_control_net_lllite_patch(ctrl_sd, cond_image, multiplier, num_steps, st
     # its own UNet block falls in (one LLLite module per attention projection,
     # so 'per band' is as expressible here as it is for ControlNet residuals)
     module_bands = lllite_module_bands(module_weights.keys()) if band_profiles else {}
-    # depth profile: one step-invariant multiplier per module, resolved from
-    # the same block mapping the bands use
-    module_depth_weights = {}
-    if depth_profile:
-        module_depth_weights = {
-            name: evaluate_weight_profile(depth_profile, depth)
-            for name, depth in lllite_module_depths(module_weights.keys()).items()
-        }
+    # depth profile: each module's POSITION on the depth axis, resolved from the
+    # same block mapping the bands use. The curve itself is evaluated per step
+    # in LLLiteModule.forward rather than once here, because a depth-drift
+    # profile moves where it is read as sampling proceeds.
+    module_depths = lllite_module_depths(module_weights.keys()) if depth_profile else {}
 
     # load each module
     modules = {}
@@ -158,7 +156,9 @@ def load_control_net_lllite_patch(ctrl_sd, cond_image, multiplier, num_steps, st
             dtype=model_dtype,
             weight_profile=weight_profile,
             band_profile=(band_profiles or {}).get(module_bands.get(module_name)),
-            depth_weight=module_depth_weights.get(module_name, 1.0)
+            depth_profile=depth_profile,
+            drift_profile=drift_profile,
+            site_depth=module_depths.get(module_name, 0.5)
         )
         info = module.load_state_dict(weights)
         modules[module_name] = module
@@ -224,7 +224,9 @@ class LLLiteModule(torch.nn.Module):
         dtype: torch.dtype = torch.float32,
         weight_profile=None,
         band_profile=None,
-        depth_weight=1.0
+        depth_profile=None,
+        drift_profile=None,
+        site_depth=0.5
     ):
         super().__init__()
         self.name = name
@@ -236,9 +238,17 @@ class LLLiteModule(torch.nn.Module):
         self.weight_profile = weight_profile
         # profile of the band this module's UNet block belongs to, or None
         self.band_profile = band_profile
-        # depth profile evaluated at this module's UNet depth: step-invariant,
-        # so it is a plain number rather than a curve
-        self.depth_weight = depth_weight
+        # The depth axis, carried as the two CURVES plus this module's position
+        # on it rather than as the single pre-evaluated number it used to be:
+        # the depth-drift profile moves where the depth curve is read as
+        # sampling proceeds, so this module's depth multiplier is only constant
+        # when no drift is set. Evaluated per step in forward() through
+        # cnpro_core.weight_profile.depth_multiplier, which is also what the
+        # ControlNet and IP-Adapter paths go through - one definition of the
+        # coupling, three injectors.
+        self.depth_profile = depth_profile
+        self.drift_profile = drift_profile
+        self.site_depth = site_depth
         self.is_first = False
 
         modules = []
@@ -298,19 +308,25 @@ class LLLiteModule(torch.nn.Module):
 
     def forward(self, x):
         multiplier = self.multiplier
+        # relative sampling position, the x axis of every curve below. Without a
+        # step count there is no position to speak of; 0.0 then reads each curve
+        # at its start, which is the same value the horizontal extension gives
+        # the first step anyway.
+        step_percent = (self.current_step / max(self.num_steps - 1, 1)
+                        if self.num_steps > 0 else 0.0)
         if self.num_steps > 0 and (self.weight_profile is not None or self.band_profile is not None):
-            # per-step strength from the weight profile, x axis = relative step
-            step_percent = self.current_step / max(self.num_steps - 1, 1)
             if self.weight_profile is not None:
                 multiplier = evaluate_weight_profile(self.weight_profile, step_percent)
             if self.band_profile is not None:
                 # in band mode the extension sends no main profile and
                 # strength 1, so this is the per-step strength of this layer
                 multiplier = multiplier * evaluate_weight_profile(self.band_profile, step_percent)
-        if self.depth_weight != 1.0:
-            # depth profile at this module's UNet depth (step-invariant):
-            # multiplies whatever per-step strength is in force above
-            multiplier = multiplier * self.depth_weight
+        if self.depth_profile is not None:
+            # depth curve at this module's UNet depth, read at the position the
+            # drift curve puts it at this step (identity with no drift).
+            # Multiplies whatever per-step strength is in force above.
+            multiplier = multiplier * depth_multiplier(
+                self.depth_profile, self.drift_profile, self.site_depth, step_percent)
         if self.num_steps > 0:
             if self.current_step < self.start_step:
                 self.current_step += 1
@@ -384,14 +400,22 @@ class LLLiteLoader:
     FUNCTION = "load_lllite"
     CATEGORY = "loaders"
 
+    # Every profile the patcher sends has to be named HERE as well as in
+    # load_control_net_lllite_patch: this is the seam lllite.py actually calls,
+    # and a keyword it does not declare is a TypeError at sampling time rather
+    # than an ignored curve. `depth_profile` was missing and every ControlLLLite
+    # run raised on it, because the patcher passes it unconditionally - see
+    # ARCHITECTURE.md section 8's declared-here / honoured-there table, of which
+    # this is the loudest instance so far.
     def load_lllite(self, model, state_dict, cond_image, strength, steps, start_percent, end_percent, weight_profile=None,
-                    band_profiles=None):
+                    band_profiles=None, depth_profile=None, drift_profile=None):
         # cond_image is b,h,w,3, 0-1
 
         model_lllite = model.clone()
         patch = load_control_net_lllite_patch(state_dict, cond_image, strength, steps, start_percent, end_percent,
                                               model.model.diffusion_model.computation_dtype, weight_profile=weight_profile,
-                                              band_profiles=band_profiles)
+                                              band_profiles=band_profiles, depth_profile=depth_profile,
+                                              drift_profile=drift_profile)
         if patch is not None:
             model_lllite.set_model_attn1_patch(patch)
             model_lllite.set_model_attn2_patch(patch)

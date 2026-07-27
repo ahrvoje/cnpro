@@ -151,6 +151,7 @@ class ZImageControlNetPatcher(CNProModelPatcher):
         control.region_masks = self.region_masks
         control.weight_profile = self.weight_profile
         control.depth_profile = self.depth_profile
+        control.drift_profile = self.drift_profile
         if self.band_weight_profiles is not None:
             assert all(b in ('coarse', 'mid', 'fine') for b in self.band_weight_profiles)
             control.band_weight_profiles = self.band_weight_profiles

@@ -34,12 +34,16 @@ pieces would move.
   maximum, bottom = minimum, -1..2 in steps of 0.25), replacing the old
   two-handle gutter slider. The range is the PLOT's, not the selected
   curve's (2026-07-25) — where a "plot" is one COORDINATE SYSTEM, and the
-  editor has TWO of them (2026-07-25, second pass): the STEP plot (X =
-  relative step, Y = weight) carries the main profile and all three band
-  profiles, which are drawn together and therefore share one axis, so every
-  step-domain segment carries the same `|lo~hi` suffix; the DEPTH plot
-  (X = UNet depth, Y = per-layer multiplier) carries the depth curve alone
-  and has its own range, and its `#D` segment carries its own suffix. Per-
+  editor has THREE of them (2026-07-25, second pass; a third added
+  2026-07-27): the STEP plot (X = relative step, Y = weight) carries the main
+  profile and all three band profiles, which are drawn together and therefore
+  share one axis, so every step-domain segment carries the same `|lo~hi`
+  suffix; the DEPTH plot (X = UNet depth, Y = per-layer multiplier) carries the
+  depth curve alone and has its own range, and its `#D` segment carries its own
+  suffix; the DRIFT plot (X = relative step again, Y = a shift along the depth
+  axis) carries the drift curve alone, with its own range on its own `#S`
+  suffix — and it is the one plot no multiplier axis could have hosted, because
+  its neutral is 0 rather than 1. Per-
   curve limits inside ONE plot made the three band lines mean different
   things at the same height — that is what the rule prevents, and it never
   covered depth: nothing is ever drawn beside the depth curve, its Y is a
@@ -271,29 +275,63 @@ pieces would move.
   already exploits elsewhere. `supports_band_profiles` remains on the base
   class as False so a patcher with a single whole-UNet hook (Fooocus inpaint)
   still warns rather than silently ignoring a drawn profile.
-- **Depth profile** (2026-07-25) — fifth selector button (purple line,
+- **Depth profile** (2026-07-25) — second selector button (purple line,
   `--cnet-depth-line`), serialized as a `#D<profile>` segment. X is normalized
   UNET DEPTH (0 = shallowest injection layer = fine/texture, 1 = deepest =
   coarse/composition), Y a per-layer MULTIPLIER, neutral flat 1 like a band's
   (neutral is not serialized, not forwarded). It is NOT a fourth band: a band
   carries its own step curve and therefore REPLACES the main profile, while
-  the depth curve has no step dimension and MULTIPLIES it — the unit runs on
-  `main(step) x depth(layer)`, the separable product of a time curve and a
-  depth curve. Bands and depth are alternative quantizations of the same 2D
-  field and stay mutually exclusive: pressing a band selector runs the bands
-  (`#B<band>` marker), pressing main or depth runs main x depth (no marker —
-  depth mode IS main mode, and the `#D` segment alone says whether it does
-  anything). A per-bucket curve multiplied by a per-depth curve would count
-  depth twice and no drawn value could be read literally any more; do not
-  "improve" it into a combination. Layer depth comes from
+  the depth curve MULTIPLIES it — the unit runs on `main(step) x depth(layer)`,
+  the product of a time curve and a depth curve, separable unless a drift is
+  drawn (next bullet). Bands and depth are alternative quantizations of the
+  same 2D field and stay mutually exclusive: pressing a band selector runs the
+  bands (`#B<band>` marker), pressing main, depth or drift runs main x depth
+  (no marker — all three ARE main mode, and the `#D` / `#S` segments alone say
+  whether they do anything). A per-bucket curve multiplied by a per-depth curve
+  would count depth twice and no drawn value could be read literally any more;
+  do not "improve" it into a combination. Layer depth comes from
   `depth_fraction_of_residual` / `depth_fraction_of_unet_block`, the
   un-quantized twins of `band_of` / `band_of_unet_block` (same flip
   conventions, opposite per group — see those docstrings). Applied in
   `compute_controlnet_weighting` (residuals), at IP-Adapter patch install
-  (`depth_weight` per site, step-invariant so it is resolved once) and per
-  LLLite module. It is its OWN PLOT and carries its own Y range (see the
-  weight-profile bullet above) — different semantics, different axis, and
-  nothing is ever drawn next to it.
+  (`depth_lut` per site) and per LLLite module. It is its OWN PLOT and carries
+  its own Y range (see the weight-profile bullet above) — different semantics,
+  different axis, and nothing is ever drawn next to it.
+- **Depth-drift profile** (2026-07-27) — third selector button (green line,
+  `--cnet-drift-line`), serialized as an `#S<profile>` segment. X is the
+  relative sampling step like the main profile's; Y is a SHIFT along the depth
+  axis, so its NEUTRAL IS 0, not the multiplier 1, and its plot defaults to
+  [-1, 1] with the neutral line in the middle. The unit runs
+
+      main(step) x depth(layer - drift(step))
+
+  and that is the whole of it, defined once in
+  `cnpro_core.weight_profile.drifted_depth` / `depth_multiplier` and mirrored
+  in the editor's `driftedDepth`. Positive shift reads the depth curve further
+  left and therefore moves what it draws toward the DEEP (coarse) end, so a
+  DESCENDING drift sweeps the control from composition to texture as sampling
+  proceeds. Clamped, not wrapped: the depth axis has two ends, not a period.
+
+  **Why it exists.** `main(step) x depth(layer)` is rank-1 — separable — so the
+  depth shape it expresses is frozen in time. That is the one thing the three
+  band profiles CAN say and it could not, at the price of quantizing depth into
+  three buckets. The drift is the missing degree of freedom, and it is a
+  reparameterization rather than a fourth multiplier, which is exactly why it
+  cannot count depth twice the way a band-times-depth product would.
+
+  It is inert without a depth curve (shifting a flat curve is the identity).
+  That falls out of the arithmetic, so nothing guards it — but `scripts/cnpro.py`
+  does NOT forward it in that case and says why in a warning, because "drift is
+  set" and "drift does something" must not be two states that look the same.
+
+  Applied per step: `weighting.py` resolves the shift ONCE per step
+  (`_drift_shift`, from a `drift_sigmas`/`drift_values` LUT built in `pre_run`)
+  and `_site_factor` reads the depth curve at the shifted position. The two
+  injectors that used to precompute one depth SCALAR per site now build a
+  per-site LUT over steps instead (`build_depth_profile_lookup`) — constant
+  when no drift is set, deliberately not special-cased into a second path.
+  It is its OWN PLOT again, for the range reason above and one more: no
+  multiplier axis can express a neutral of 0.
   Main mode draws NOTHING of it (2026-07-25, user decision). It briefly drew
   two thin dashed purple guides at `main(step) x min(depth)` / `x max(depth)`,
   the honest envelope of the product. They were dropped: they carried only the
@@ -920,8 +958,16 @@ support) keep patchers that only understand constant weight behaving sanely.
    one segment resolve FIRST-wins on both sides; non-finite numbers
    (nan/inf) are REJECTED on both sides (`_finite` in external_code — NaN
    used to sail through into per-step strengths and silently corrupt the
-   image); band neutrality compares effective (scale-mapped) values with
-   epsilon 5e-4 on both sides; the python envelope is
+   image); neutrality compares effective (scale-mapped) values with epsilon
+   5e-4 on both sides, through ONE helper per side that takes the neutral
+   VALUE as a parameter (`profile_points_are_neutral` ↔ `bandNeutral`) — 1 for
+   the multiplier curves, 0 for the drift shift, 0.5 for balance, because a
+   second copy of the test is how one side omits a segment the other draws;
+   the drift coupling `depth(layer - drift(step))` is `depth_multiplier` ↔ the
+   harness's `depthMultiplier`, and the parity test compares the COMPOSITE on a
+   (depth, step) grid as well as the two curves — agreeing on both curves and
+   still disagreeing on the sign of the shift is the failure that check exists
+   for, and it does catch it; the python envelope is
    `evaluate_weight_profile` imported from backend.patcher.weight_profile —
    never re-implemented inline.
 3. The format must never contain `,` or `:` (infotext survival) — that is
@@ -945,13 +991,22 @@ support) keep patchers that only understand constant weight behaving sanely.
 6. **THE MASK SLOTS FOLLOW THE PROFILE SELECTOR.** The four slots are the
    four weight profiles' spatial half — G belongs to the MAIN profile, C/M/F
    to the coarse/mid/fine band profiles — so the editor's band selector picks
-   which slots a generation uses, and nothing else does: main (and depth,
-   which multiplies main rather than replacing it) runs on G with C/M/F
-   dormant; a band selection runs on C/M/F with G dormant. One decision,
-   two readers: `external_code.masks_in_force` (applied, python) and
+   which slots a generation uses, and nothing else does: main — and depth,
+   which multiplies main rather than replacing it, and drift, which moves
+   where depth is read — runs on G with C/M/F dormant; a band selection runs
+   on C/M/F with G dormant. One decision, two readers:
+   `external_code.masks_in_force` (applied, python) and
    `weight_mask.js::liveSlotKeys` (shown, JS), which
    `tests/test_mask_profile_coupling.py` runs against each other over the
    strings the editor really writes.
+
+   Both readers decide by asking whether the selector IS a band, never by
+   listing the ones that are not — `liveSlotKeys` always did; its dormant-slot
+   tooltip did not, and named `main`/`depth` explicitly until the drift arrived
+   to be left out of the sentence. The test's selector list is likewise taken
+   from `weight_profile.js::SELECTOR_ORDER` rather than written out, so a
+   seventh curve is covered the moment it exists: a hand-kept list omits
+   whichever selector is newest, which is the one most likely to be wrong.
 
    The masks used to carry their own precedence — "a painted global mask
    governs everything, otherwise any painted band does" — which is a SECOND
@@ -1025,6 +1080,15 @@ support) keep patchers that only understand constant weight behaving sanely.
    profile math and both mean coarse = deepest. A new patcher type adds
    itself by resolving the band of each of its injection sites and setting
    `supports_band_profiles` — never by widening a UI whitelist.
+
+   A site's depth multiplier is NOT a scalar. It reads as one whenever no
+   drift is drawn, and both attention injectors used to precompute it that way
+   — which is precisely what had to be undone when the drift arrived, because
+   the depth curve is then read at a moving position. Every injector now goes
+   through `cnpro_core.depth_multiplier` (LLLite, which already has the step
+   percent) or `build_depth_profile_lookup` (IP-Adapter, which has a sigma),
+   with no scalar fast path: a per-site weight computed two different ways is
+   a per-site weight that will eventually be computed two different ways.
 17. Strip-injected controls mirror hidden gradio channels 1:1 by id suffix:
    `_input_tab_<n>` ↔ `_input_enabled_<n>` (mute checkbox). The channel is
    authoritative and clicks forward to it with stopPropagation.

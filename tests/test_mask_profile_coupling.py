@@ -109,6 +109,10 @@ def run_js():
 EXPECTED_LIVE = {
     "main": ["global"],
     "depth": ["global"],
+    # drift shifts where the DEPTH curve is read, so like depth it shapes the
+    # main profile instead of replacing it: main mode as far as the masks are
+    # concerned, and G is what runs
+    "drift": ["global"],
     "coarse": ["coarse", "mid", "fine"],
     "mid": ["coarse", "mid", "fine"],
     "fine": ["coarse", "mid", "fine"],

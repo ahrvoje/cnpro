@@ -529,6 +529,7 @@ def weight_profile_support(points) -> Tuple[float, float]:
 PROFILE_BAND_PREFIXES = {'C': 'coarse', 'M': 'mid', 'F': 'fine'}
 PROFILE_BAND_MODE_PREFIX = 'B'
 PROFILE_DEPTH_PREFIX = 'D'
+PROFILE_DRIFT_PREFIX = 'S'
 
 
 def band_mode_active(profile) -> bool:
@@ -575,6 +576,19 @@ def masks_in_force(global_mask, band_masks, band_selected: bool):
     return global_mask, {}
 
 
+def profile_points_are_neutral(points, neutral: float) -> bool:
+    """True when parsed points are the flat line at `neutral`, i.e. a no-op.
+
+    The neutral ELEMENT differs per curve - 1 for the multiplier curves (bands,
+    depth), 0 for the drift shift, 0.5 for balance - but the test never does,
+    and the 5e-4 epsilon has to stay the same number the editor's `bandNeutral`
+    uses or one side omits a segment the other still draws (MAINTENANCE.md
+    invariant 2). One implementation, one epsilon, a parameter for the only
+    thing that actually varies.
+    """
+    return points is None or all(abs(y - neutral) <= 5e-4 for _, y in points)
+
+
 def band_points_are_neutral(points) -> bool:
     """True when parsed band-profile points are flat 1.0, i.e. a no-op.
 
@@ -582,7 +596,7 @@ def band_points_are_neutral(points) -> bool:
     neutral element is 1 (unlike the balance profile's 0.5). Neutral bands are
     neither serialized by the editor nor forwarded to the patchers.
     """
-    return points is None or all(abs(y - 1.0) <= 5e-4 for _, y in points)
+    return profile_points_are_neutral(points, 1.0)
 
 
 def parse_band_profiles(profile) -> Optional[dict]:
@@ -638,6 +652,41 @@ def parse_depth_profile(profile) -> Optional[List[Tuple[float, float]]]:
     return None
 
 
+def parse_drift_profile(profile) -> Optional[List[Tuple[float, float]]]:
+    """Depth-drift profile from a packed profile string ('#S<profile>' segment).
+
+    X is the relative sampling step like the main profile's, but y is a SHIFT
+    along the depth axis rather than a weight, so its neutral element is 0 and
+    its plot's default range is [-1, 1] instead of a multiplier's [0, 2].
+
+    What it does is defined once, in cnpro_core.weight_profile.drifted_depth:
+    the depth curve is read at ``depth - drift(step)``, so the whole unit runs
+
+        effective(step, layer) = main(step) * depth(depth(layer) - drift(step))
+
+    This is the ONLY coupling between the two axes. Without it, main x depth is
+    separable and the depth shape cannot change while sampling - which is
+    exactly the one thing the three band profiles could express and it could
+    not, at the cost of quantizing depth into three buckets.
+
+    Returns None when the segment is absent or flat 0. A drift with no depth
+    curve to move is also a no-op, but that is NOT decided here: this parses one
+    segment and says what it holds. The coupling is applied in scripts/cnpro.py,
+    where both curves are in hand.
+    """
+    if not isinstance(profile, str) or '#' not in profile:
+        return None
+    for segment in profile.split('#')[1:]:
+        segment = segment.strip()
+        if not segment or segment[0] != PROFILE_DRIFT_PREFIX:
+            continue
+        points = parse_weight_profile(segment[1:])
+        if points is None or profile_points_are_neutral(points, 0.0):
+            return None
+        return points
+    return None
+
+
 def balance_points_are_neutral(points) -> bool:
     """True when parsed balance-profile points are flat 0.5, i.e. a no-op.
 
@@ -645,7 +694,7 @@ def balance_points_are_neutral(points) -> bool:
     forwarded to the patchers (needless per-layer weighting every step) nor
     written into infotext (meaningless token in every image).
     """
-    return points is None or all(abs(y - 0.5) <= 5e-4 for _, y in points)
+    return profile_points_are_neutral(points, 0.5)
 
 
 def weight_profile_from_scalars(weight, guidance_start=0.0, guidance_end=1.0) -> str:

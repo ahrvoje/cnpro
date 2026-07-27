@@ -68,6 +68,64 @@ def lookup_weight_profile_strength(sigmas, strengths, sigma):
     return strengths[lo] + (strengths[hi] - strengths[lo]) * f
 
 
+def drifted_depth(depth, shift):
+    """The depth position a depth profile is READ AT under a drift of `shift`.
+
+    THE definition of the drift curve, and the reason it lives here rather than
+    at any of its four call sites (the weighting engine, the IP-Adapter and
+    ControlLLLite injectors, and - mirrored - the editor's JS). The depth curve
+    D and the drift curve S combine as
+
+        effective(step, layer) = main(step) * D(depth(layer) - S(step))
+
+    so a POSITIVE shift reads D further left and therefore moves whatever D
+    draws toward the DEEP (coarse) end, and a descending S sweeps the control
+    from composition to texture as sampling proceeds. This is the one piece of
+    coupling between the step axis and the depth axis: without it main x depth
+    is a rank-1 (separable) field and can only express a depth shape frozen in
+    time, which is the single thing the three band profiles could say and it
+    could not.
+
+    Clamped rather than wrapped: the depth axis has two ENDS, not a period, and
+    a wrapped shift would teleport the deepest layer's multiplier onto the
+    shallowest. Clamping means a curve driven off the axis holds its edge value,
+    which is what the plot's own horizontal extension beyond the first and last
+    point already does.
+    """
+    return min(max(depth - shift, 0.0), 1.0)
+
+
+def depth_multiplier(depth_profile, drift_profile, depth, x):
+    """The depth curve's multiplier for a layer at `depth`, at step position x.
+
+    Neutral 1.0 with no depth profile: the drift alone has nothing to move, so
+    it is a no-op by construction rather than by a guard somewhere. A drift with
+    no depth curve is therefore harmless everywhere, which is what lets the
+    editor keep the two curves independent.
+    """
+    if not depth_profile:
+        return 1.0
+    shift = evaluate_weight_profile(drift_profile, x) if drift_profile else 0.0
+    return evaluate_weight_profile(depth_profile, drifted_depth(depth, shift))
+
+
+def build_depth_profile_lookup(depth_profile, drift_profile, depth,
+                               percent_to_timestep_function, n=256):
+    """Sigma lookup of one SITE's depth multiplier over the step axis.
+
+    The drift makes the depth curve step-dependent, so a site's multiplier is no
+    longer the single scalar the injectors used to precompute - it is a curve,
+    and this builds it in exactly the shape `lookup_weight_profile_strength`
+    already consumes. With no drift every entry is the same number; that is
+    deliberately NOT special-cased into a scalar path, because two paths through
+    a per-site weight is how one of them silently stops matching the other.
+    """
+    sigmas = [float(percent_to_timestep_function(i / n)) for i in range(n + 1)]
+    values = [depth_multiplier(depth_profile, drift_profile, depth, i / n)
+              for i in range(n + 1)]
+    return sigmas, values
+
+
 BANDS = ('coarse', 'mid', 'fine')
 
 

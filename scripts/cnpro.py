@@ -825,9 +825,36 @@ class ControlNetForForgeOfficial(scripts.Script):
                            f"per-depth sites to scale.")
             depth_profile = None
         params.model.depth_profile = depth_profile
+
+        # Depth DRIFT: a curve over the step axis whose y shifts where the depth
+        # curve above is read, so the unit runs
+        # main(step) x depth(layer - drift(step)). It is the only thing that
+        # couples the two axes: without it main x depth is separable and the
+        # depth shape cannot change while sampling.
+        #
+        # Gated on the depth profile HERE rather than in the engine. A drift with
+        # nothing to move is arithmetically inert either way, but forwarding it
+        # would build a per-step lookup nothing reads and - worse - would make
+        # "drift is set" and "drift does something" two different states that
+        # look identical in a log line. Saying so once, out loud, is the whole
+        # point: a user who drew a drift and left depth flat gets told why
+        # nothing happened, instead of nothing happening.
+        drift_profile = None if band_mode else external_code.parse_drift_profile(unit.weight_profile)
+        if drift_profile and not per_depth_capable:
+            logger.warning(f"Depth-drift profile ignored: {type(params.model).__name__} "
+                           f"injects through a single whole-UNet hook, so there are no "
+                           f"per-depth sites to shift.")
+            drift_profile = None
+        if drift_profile and not depth_profile:
+            logger.warning("Depth-drift profile ignored: it shifts WHERE the depth "
+                           "profile is read, and this unit's depth profile is flat "
+                           "(neutral). Draw a depth curve for the drift to move.")
+            drift_profile = None
+        params.model.drift_profile = drift_profile
         if depth_profile:
             logger.info(f"ControlNet depth profile on {type(params.model).__name__} "
-                        f"(per-layer multiplier on the per-step strength)")
+                        f"(per-layer multiplier on the per-step strength"
+                        f"{', swept over steps by a depth-drift profile' if drift_profile else ''})")
 
         if band_mode:
             active = ', '.join(band_profiles or {}) or 'all neutral'

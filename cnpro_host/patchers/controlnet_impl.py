@@ -86,6 +86,7 @@ def apply_controlnet_advanced(
         balance_profile=None,
         band_weight_profiles=None,
         depth_profile=None,
+        drift_profile=None,
         unit_context=None,
         unit_uncond_context=None,
         unit_emb_strength=1.0,
@@ -119,8 +120,8 @@ def apply_controlnet_advanced(
 
     A list of (x, y) points where x is normalized UNET DEPTH (0 = shallowest
     injection layer = fine/texture, 1 = deepest = coarse/composition) and y a
-    multiplier on that layer's injection. It does NOT vary with the step, so
-    it multiplies whatever per-step strength is in force:
+    multiplier on that layer's injection. On its own it does not vary with the
+    step, so it multiplies whatever per-step strength is in force:
 
         effective(step, layer) = weight_profile(step) * depth_profile(depth)
 
@@ -131,6 +132,22 @@ def apply_controlnet_advanced(
     per-depth curve would count depth twice and no drawn value could be read
     literally any more). Layer depth comes from depth_fraction_of_residual,
     the un-quantized twin of the band mapping.
+
+    # drift_profile
+
+    A list of (x, y) points over the same relative sampling position as
+    `weight_profile`, but y is a SHIFT along the depth axis rather than a
+    weight (neutral 0, drawn on a [-1, 1] plot). It moves where the depth curve
+    is read as sampling proceeds:
+
+        effective(step, layer) =
+            weight_profile(step) * depth_profile(depth - drift_profile(step))
+
+    which is the ONE thing the separable product above cannot express: a depth
+    shape that changes over time. A descending drift sweeps the control from
+    composition to texture. Ignored without a `depth_profile` - there is
+    nothing to move - and that falls out of the arithmetic rather than being
+    guarded for; see cnpro_core.weight_profile.drifted_depth.
 
     # balance_profile
 
@@ -198,6 +215,7 @@ def apply_controlnet_advanced(
     cnet.weight_profile = weight_profile
     cnet.balance_profile = balance_profile
     cnet.depth_profile = depth_profile
+    cnet.drift_profile = drift_profile
     cnet.unit_context = unit_context
     cnet.unit_uncond_context = unit_uncond_context
     cnet.unit_emb_strength = unit_emb_strength
@@ -313,10 +331,16 @@ class ControlBase(HostControlBase):
         # multipliers on that band's injection layers (see band_of)
         self.band_weight_profiles = None
         self.band_profile_lookup = None
-        # depth profile: point list over normalized UNet depth, a step-invariant
-        # multiplier per injection layer (see apply_controlnet_advanced). Needs
-        # no sigma lookup - depth does not change while sampling.
+        # depth profile: point list over normalized UNet depth, a per-injection
+        # layer multiplier (see apply_controlnet_advanced). Needs no sigma
+        # lookup of its own - depth does not change while sampling.
         self.depth_profile = None
+        # depth-drift profile: point list over the STEP axis whose y shifts
+        # where the depth curve above is read, so unlike the depth curve it
+        # does need a sigma lookup (built in pre_run, same as balance).
+        self.drift_profile = None
+        self.drift_sigmas = None
+        self.drift_values = None
         # Per-unit prompt embeddings; replace the sampled prompt as the control
         # branch's cross-attention context (consumed by ControlNet.get_control
         # only - the other control types have no text input). unit_context
@@ -362,6 +386,16 @@ class ControlBase(HostControlBase):
             }
         else:
             self.band_profile_lookup = None
+        # the drift only exists to move the depth curve, so a drift with no
+        # depth curve builds no lookup at all rather than a live one nothing
+        # reads - the engine's `drift_sigmas` input is then inert and
+        # `_gather`'s early-out can still fire on a unit that has neither
+        if self.drift_profile and self.depth_profile:
+            self.drift_sigmas, self.drift_values = build_weight_profile_lookup(
+                self.drift_profile, percent_to_timestep_function)
+        else:
+            self.drift_sigmas = None
+            self.drift_values = None
         if getattr(self, 'unit_retention', 0.0):
             # identity profile: looking it up at the current sigma yields the
             # relative sampling position the retention ramp needs
@@ -380,6 +414,8 @@ class ControlBase(HostControlBase):
         self.balance_sigmas = None
         self.balance_values = None
         self.band_profile_lookup = None
+        self.drift_sigmas = None
+        self.drift_values = None
         self.retention_sigmas = None
         self.retention_progress = None
         self._layer_mask_cache = None
@@ -444,6 +480,7 @@ class ControlBase(HostControlBase):
         c.balance_profile = self.balance_profile
         c.band_weight_profiles = self.band_weight_profiles
         c.depth_profile = self.depth_profile
+        c.drift_profile = self.drift_profile
         c.unit_context = self.unit_context
         c.unit_uncond_context = self.unit_uncond_context
         c.unit_emb_strength = self.unit_emb_strength
