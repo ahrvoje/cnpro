@@ -673,6 +673,22 @@ class ControlNet(ControlBase):
 
     def cleanup(self):
         self.model_sampling_current = None
+        # MUST mirror the host's ControlNet.cleanup. `copy()` builds a FRESH
+        # ModelPatcher around the SAME `control_model` for every generation, and
+        # `get_models()` hands it to the sampler, which registers a LoadedModel
+        # holding weakrefs to both. When this copy is dropped the patcher is the
+        # only thing that dies -- `control_model` stays alive in the patcher
+        # cache -- so the entry becomes `LoadedModel.is_dead()`: real model
+        # present, patcher gone. That entry is never removed (only the real
+        # model's finalizer removes entries) and `free_memory` SKIPS dead
+        # entries, so those weights can no longer be evicted from VRAM. One more
+        # accumulates per generation, each logging "Memory Leak with model
+        # ControlNet !" and forcing a gc.collect() on every subsequent load.
+        # The getattr guard is the host's too, and it is load-bearing: ControlLora
+        # inherits this cleanup but has no wrapper (its control model is built in
+        # pre_run and torn down by HostControlLora.cleanup further up the chain).
+        if getattr(self, 'control_model_wrapped', None) is not None:
+            memory_management.unload_model(self.control_model_wrapped)
         super().cleanup()
 
 
