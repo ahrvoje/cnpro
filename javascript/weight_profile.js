@@ -1,0 +1,2132 @@
+/**
+ * Control Weight Profile editor.
+ *
+ * Replaces the Control Weight slider + Timestep Range slider with a single
+ * piecewise-linear profile: X axis is relative sampling step [0, 1], Y axis is
+ * control strength [0, 1].
+ *
+ * - Click on empty plot area: add a point (and drag it while held).
+ * - Click near an existing point: pick it up and move it.
+ * - Double-click a point: delete it (the last remaining point cannot be deleted).
+ * - Every segment carries a small green midpoint handle. By default it is
+ *   passive: it sits on the literal linear midpoint and just follows the two
+ *   main vertices. Dragging it makes it an active control: the segment turns
+ *   into the parabola (second-order) through the two vertices and the handle,
+ *   clamped to the [0, 1] plot range. Double-clicking an active handle turns
+ *   it back into the passive linear midpoint.
+ * - Click/drag on a margin pins the corresponding coordinate to its extreme:
+ *   left margin edits Y of the profile start (x = 0), right margin edits Y of
+ *   the profile end (x = 1), bottom margin places a point at y = 0 at the
+ *   clicked X, top margin places a point at y = 1.
+ * - Presets in a column left of the plot - step (button) and cosine mode
+ *   (toggle) - plus a square parameter pad next to them carrying TWO
+ *   parameters of whichever preset holds focus.
+ *   Click rule follows how destructive the preset is:
+ *     step REPLACES the drawn profile, so the first click only aims the pad at
+ *       it and a confirming second click rebuilds the profile;
+ *     cos only decides whether the drawn polyline is read as an envelope, so
+ *       it toggles (and draws the wave) on the very first click.
+ *   Moving the pad point always rewrites the focused preset's parameters.
+ *     step: pad x = jump position; pad y = height AND direction. Above the
+ *       pad's middle the raised part is on the RIGHT (0 then h), below it on
+ *       the LEFT (h then 0); the height is the distance from the middle, so
+ *       the middle row is flat 0 from either side and the pad is continuous
+ *       across it. At full height the two halves are exact vertical mirrors,
+ *       which is why there is no invert toggle any more - the pad reaches
+ *       both directions on its own, with no hidden mode to remember. The
+ *       degenerate ends stay two points, not four: on the upper half full
+ *       left is a constant at h (the jump already happened at 0) and full
+ *       right a flat 0 (it never happens); on the lower half they swap.
+ *     cos:  pad x = phase over [0, 2pi], pad y = oscillations over [0, 4].
+ *       The drawn polyline becomes the ENVELOPE of the wave and stays
+ *       editable point by point; the wave itself pulses between 0 and that
+ *       envelope, so it never flips sign.
+ *
+ * Two range selects sit right of the plot - the upper one is the range top,
+ * the lower one the range bottom - mapping the normalized profile [0, 1] onto
+ * [lo, hi] within [-1, 2] in steps of 0.25. The profile shape stays as drawn;
+ * only the weights used for calculation are remapped (lo < 0 means repulsive
+ * control).
+ *
+ * The range belongs to the PLOT, not to a curve - and a "plot" is one
+ * COORDINATE SYSTEM, of which this editor has two. The step plot (X = relative
+ * sampling step, Y = weight) carries the main white curve and all three band
+ * lines: they are drawn together, so per-curve limits would make them mean
+ * different things at the same height, and they share one range. The depth
+ * plot (X = UNet depth, Y = per-layer multiplier) carries the depth curve
+ * ALONE and has its own range: nothing is ever drawn beside it, its Y is a
+ * multiplier rather than a weight, and coupling the two axes made a weight
+ * range of e.g. 0..0.8 unable to even express the depth curve's neutral 1.
+ * The selects always show the range of the axis on screen. Serialization
+ * follows the same split: every step-domain segment carries the same
+ * '|lo~hi' suffix, the '#D' segment carries its own (python parses each
+ * segment on its own anyway, so it needs no notion of which axis it was on).
+ *
+ * The profile is serialized as 'x@y;x@y;...' (with a '|hi' or '|lo~hi'
+ * suffix when the range is not [0, 1]) into a hidden gradio textbox
+ * (.cnet-weight-profile-state) read by the python side. An active segment
+ * mid control adds an 'Mx@y' token between its two vertices' tokens; passive
+ * midpoints are derived state and are not serialized. Cosine mode adds one
+ * 'C<oscillations>@<phase>' token: the stored points stay the envelope and
+ * parse_weight_profile expands the wave into a dense polyline, so infotext
+ * stays short and every consumer keeps receiving plain points. The same editor is
+ * instantiated for the Control Balance Profile (its block carries the
+ * cnet-balance-profile-editor class: neutral is flat 0.5, the scale grid is
+ * limited to [0, 1] and there are no band buttons).
+ */
+(function () {
+    const SCALE_MIN = -1;
+    const SCALE_MAX = 2;
+    const SCALE_STEP = 0.25;
+    const MARGIN = { left: 16, right: 16, top: 22, bottom: 24 };
+    // step separators disappear below this cell width - denser dotted lines
+    // read as haze, not as cells
+    const STEP_LINE_MIN_SPACING = 4;
+    // Per-step value dots ON the curve (the separators say where a step is,
+    // the dots say what it gets). They are a READING AID, not a series of
+    // markers: a fraction of the mid handle's radius so they can never be
+    // mistaken for something grabbable (or drown it - with N steps x N waves
+    // there are far more of them than there are handles), and quieter than the
+    // lines they ride, so a glance sees the curves and only a closer look
+    // resolves the samples. Each sits on a translucent background halo that
+    // mutes the line under it instead of cutting it: enough separation to tell
+    // dots apart where the multi-phase waves cross, without punching the
+    // curves full of holes. Dots vanish a little earlier than the separators
+    // do, since touching halos would chew up the shape they exist to sample.
+    const STEP_DOT_RADIUS = 1.15;
+    const STEP_DOT_HALO_RADIUS = 2.1;
+    const STEP_DOT_HALO_ALPHA = 0.6;   // relative to the dot's own alpha
+    const STEP_DOT_MIN_SPACING = 5;
+    // The SELECTED profile's own samples get the opposite treatment: a bead in
+    // the curve's own color, WIDER than its 2px line and with no halo at all.
+    // A muted dot that is barely wider than the line only darkens it, and a
+    // line pitted with dark notches is painful to follow - the mark has to add
+    // thickness, not take it away. Affordable here because it is one series of
+    // N, where the sibling waves are (waves - 1) x N and must stay context.
+    const MAIN_DOT_RADIUS = 2.1;
+    const MAIN_DOT_ALPHA = 1;
+    // sibling (multi-phase) dots, well down from the selected profile's: they
+    // are context, and there are (waves - 1) times as many of them
+    const PHASE_DOT_ALPHA = 0.45;
+    const GRAB_RADIUS = 12;
+    const POINT_RADIUS = 5;
+    // segment mid controls (parabola handles): smaller than main vertices and
+    // with a tighter grab radius, so they steal as few clicks as possible
+    const MID_POINT_RADIUS = 3.5;
+    const MID_GRAB_RADIUS = 9;
+    const MID_MIN_T = 0.05;    // handle x stays strictly inside its segment
+    const MID_MAX_T = 0.95;
+    const MID_MIN_DX = 0.02;   // no handle on (nearly) vertical segments
+    const MID_COLOR = "#4caf50";
+    const MID_CURVE_STEPS = 24; // parabola sub-sampling for drawing
+
+    // Injection-band profiles (weight editor only): besides the MAIN profile
+    // (white button/line - per-step strength of the whole unit) the editor
+    // holds one profile per coarse/mid/fine band (red/yellow/blue), per-step
+    // strengths of those bands' injection layers - the same bands the
+    // C/M/F weight masks address. Main and bands are EXCLUSIVE and the band
+    // SELECTOR is the switch (MAINTENANCE.md invariant 21): whichever button
+    // is pressed is what the plot draws and what the backend runs.
+    // Serialized as '#C...#M...#F...' segments appended to the main profile
+    // string; neutral (flat 1) bands are omitted, so the classic
+    // single-profile format stays the common case. A band's neutral is the
+    // MULTIPLIER 1, so on a plot whose range is not [0, 1] its flat line sits
+    // wherever 1 falls on the shared axis, not at the top.
+    const BAND_ORDER = ["coarse", "mid", "fine"];
+    const BAND_PREFIX = { coarse: "C", mid: "M", fine: "F" };
+    // single source of the band colors: CSS variables in style.css (the band
+    // buttons use the same ones); resolved lazily because this module
+    // evaluates before stylesheets are guaranteed applied
+    const BAND_COLOR_FALLBACK = { coarse: "#e53935", mid: "#fdd835", fine: "#1e88e5" };
+    let BAND_COLORS = null;
+    function resolveBandColors() {
+        if (BAND_COLORS) return;
+        const styles = getComputedStyle(document.documentElement);
+        BAND_COLORS = {};
+        for (const b of BAND_ORDER) {
+            const v = styles.getPropertyValue(`--cnet-band-${b}`).trim();
+            BAND_COLORS[b] = v || BAND_COLOR_FALLBACK[b];
+        }
+        DEPTH_COLOR = styles.getPropertyValue("--cnet-depth-line").trim() || DEPTH_COLOR_FALLBACK;
+    }
+    const BAND_LABELS = { coarse: "C", mid: "M", fine: "F" };
+    const BAND_LABEL_X = { coarse: 0.08, mid: 0.5, fine: 0.92 };
+    const MAIN_COLOR = "#ffffff";
+    const BAND_CURVE_SAMPLES = 96;
+
+    // Depth profile (weight editor only): the SAME depth axis the three bands
+    // quantize, un-quantized. X is normalized UNet depth (0 = shallowest =
+    // fine/texture, 1 = deepest = coarse/composition), Y a per-layer
+    // MULTIPLIER, so its neutral is flat 1 exactly like a band's.
+    //
+    // It is NOT a fourth band: a band carries its own step curve and therefore
+    // REPLACES the main profile, while this one has no step dimension and
+    // multiplies it - the unit runs on main(step) * depth(layer). Bands and
+    // depth are alternative shapes of the same 2D field and stay mutually
+    // exclusive (a per-bucket curve times a per-depth curve would count depth
+    // twice, and no drawn value could be read literally any more): pressing a
+    // band selector runs the bands, pressing main or depth runs main x depth.
+    // Serialized as a '#D<profile>' segment; neutral is omitted like a band.
+    //
+    // Its Y RANGE is its own, decoupled from the step plot's (see the header):
+    // different semantics, different axis, and nothing is ever drawn next to
+    // it. Default 0..2 puts the neutral multiplier 1 in the middle of the
+    // plot, so drawing up boosts a layer and drawing down attenuates it - on
+    // the step plot's default 0..1 a depth curve could only ever attenuate.
+    const DEPTH_KEY = "depth";
+    const DEPTH_PREFIX = "D";
+    const DEPTH_COLOR_FALLBACK = "#9c4dff";
+    const DEPTH_RANGE_DEFAULT = { lo: 0, hi: 2 };
+    let DEPTH_COLOR = null;
+
+    function defaultBandProfile(lo, hi) {
+        // flat 1.0 = neutral multiplier: the curve leaves its layers alone.
+        // "1" is a position on the axis it is drawn on - at the step plot's
+        // default [0, 1] the top, at the depth plot's [0, 2] the middle.
+        const y = neutralY(lo, hi);
+        return {
+            points: [{ x: 0, y: y }, { x: 1, y: y }],
+            cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
+            multiPhase: false, gamma: 1,
+        };
+    }
+
+    const TAU = Math.PI * 2;
+    const GAMMA_MAX = 10;         // response slider ends: x^10 ... x^(1/10)
+    const COS_MAX_OSC = 4;        // pad top = 4 oscillations over the step range
+    const COS_DEFAULT_OSC = 1;
+    const PAD_MAX_SHARE = 0.4;  // pad never eats more than this of the free width
+    const PAD_MIN_SIDE = 46;
+    const COS_CURVE_SAMPLES = 480; // dense enough for 4 oscillations across the plot
+
+    function clamp01(v) {
+        return Math.min(Math.max(v, 0), 1);
+    }
+
+    /** Normalized y whose EFFECTIVE value is 1 - where a neutral multiplier
+     *  line sits on the axis it is drawn on. A zero-width range expresses a
+     *  single value and cannot place 1 anywhere in particular; keep the top. */
+    function neutralY(lo, hi) {
+        const span = hi - lo;
+        if (Math.abs(span) < 1e-9) return 1;
+        return clamp01((1 - lo) / span);
+    }
+
+    /** Same effective value, expressed on another range. */
+    function renormalize(y, from, to) {
+        const span = to.hi - to.lo;
+        if (Math.abs(span) < 1e-9) return clamp01(y);
+        return clamp01((from.lo + y * (from.hi - from.lo) - to.lo) / span);
+    }
+
+    /** Move a profile's points (mid controls included - their y is normalized
+     *  too) onto another range IN PLACE, keeping what they evaluate to. Used
+     *  once per incoming string: the limits are the plot's, so a string that
+     *  carries a different suffix per segment has to be folded onto one axis
+     *  without changing a single weight. */
+    function renormalizePoints(points, from, to) {
+        if (from.lo === to.lo && from.hi === to.hi) return points;
+        for (const p of points) {
+            p.y = renormalize(p.y, from, to);
+            if (p.mid) p.mid.y = renormalize(p.mid.y, from, to);
+        }
+        return points;
+    }
+
+    function fmt(v) {
+        // 4 decimals = python's round(x, 4):g, so a python-authored string
+        // (infotext conversion, API) survives the first editor edit unchanged
+        return String(+v.toFixed(4));
+    }
+
+    function notifyGradio(textarea) {
+        if (typeof updateInput === "function") {
+            updateInput(textarea);
+        } else {
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+    }
+
+    class WeightProfileEditor {
+        constructor(container, textarea) {
+            resolveBandColors();
+            this.container = container;
+            this.textarea = textarea;
+            // the balance editor shares this class but has different neutral
+            // semantics (flat 0.5) and a [0, 1] meaningful scale range
+            this.isBalance = !!container.closest(".cnet-balance-profile-editor");
+            this.unitRoot = container.closest(".input-accordion");
+            this.canvas = container.querySelector(".cnet-weight-profile-canvas");
+            this.canvas.tabIndex = 0;  // keyboard access (arrows / Delete)
+            this.ctx = this.canvas.getContext("2d");
+            const packed = this.parsePacked(textarea.value);
+            const parsed = packed.main || this.defaultMainProfile();
+            this.points = parsed.points;
+            // ONE range per plot (see parsePacked), and this editor holds two
+            // plots: the STEP axis below is the Y axis of the main curve and
+            // the three band lines (they share one coordinate system), the
+            // DEPTH axis further down belongs to the depth curve alone. The
+            // two selects right of the canvas always edit the axis on screen.
+            this.scaleLo = packed.scaleLo;
+            this.scaleHi = packed.scaleHi;
+            this.depthLo = packed.depthLo;
+            this.depthHi = packed.depthHi;
+            // cosine mode: the drawn polyline becomes the envelope of a wave
+            // with cosN oscillations over the step range and phase cosPhase
+            this.cosOn = parsed.cosOn;
+            this.cosN = parsed.cosN || COS_DEFAULT_OSC;
+            this.cosPhase = parsed.cosPhase;
+            // multi-phase: the cosine profile is replicated per Input, each
+            // shifted by 2pi/n (serialized as a bare 'P' token)
+            this.multiPhase = !!parsed.multiPhase;
+            // response exponent (vertical slider in the range column): bends
+            // the normalized [0, 1] profile with y -> y^gamma BEFORE the
+            // scale mapping; 1 = linear (neutral), serialized as 'G<e>'
+            this.gamma = parsed.gamma || 1;
+            // the four selectable profiles: the working copy above IS
+            // store[band] (points shared by reference; scalar fields are
+            // re-snapshotted before anything reads the store)
+            this.band = "main";
+            this.store = { main: null };
+            for (const b of BAND_ORDER) {
+                this.store[b] = packed.bands[b] || defaultBandProfile(this.scaleLo, this.scaleHi);
+            }
+            // depth curve: same store, same neutral, but it is not a band -
+            // see the DEPTH_KEY notes at the top. Its flat default sits on the
+            // DEPTH axis, which is not the one the bands ride.
+            this.store[DEPTH_KEY] = packed.depth
+                || defaultBandProfile(this.depthLo, this.depthHi);
+            this.snapshot();
+            this.lastSerialized = textarea.value;
+            this.dragPoint = null;
+            this.dragMid = null;   // left vertex of the segment whose mid control is held
+            this.dragPointerId = null;  // only this pointer moves the drag (multitouch)
+            this.selPoint = null;  // last touched point, target of keyboard nudges
+            this.attachEvents();
+            this.attachKeyboard();
+            this.attachPresets();
+            this.attachScaleSelects();
+            this.attachGammaSlider();
+            this.attachBands();
+            this.attachStepsWatch();
+            // restore the mode the string was saved in (which selector is
+            // pressed decides which profile drives the weights AND which
+            // weight-mask slots are live - see publishMode)
+            if (!this.isBalance && packed.selected !== "main") this.selectBand(packed.selected);
+            this.publishMode();
+            new ResizeObserver(() => this.resize()).observe(this.canvas);
+            this.resize();
+        }
+
+        /** Default main profile: flat 1 (weight) / flat 0.5 (balance). */
+        defaultMainProfile() {
+            const y = this.isBalance ? 0.5 : 1;
+            return {
+                points: [{ x: 0, y: y }, { x: 1, y: y }],
+                cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
+                multiPhase: false, gamma: 1,
+            };
+        }
+
+        /**
+         * Split a packed 'main#Cband#Mband#Fband#Ddepth' string into its
+         * profiles, plus the range of each of the two plots they live on.
+         *
+         * The STEP-domain segments (main + the three bands) share one axis, so
+         * a string whose suffixes disagree - hand-written, produced by python,
+         * or saved before the limits became a property of the plot - is folded
+         * onto the range COVERING all of them and every curve re-normalized
+         * into it. That conversion is by effective value, so nothing that runs
+         * changes; only the axis those curves share does. Once the editor has
+         * written the string back they all carry the same suffix and this is
+         * the identity.
+         *
+         * The '#D' segment takes NO part in that fold: depth is its own plot
+         * with its own axis (see DEPTH_KEY above), so its suffix is adopted
+         * verbatim - which is also what makes the split invisible to strings
+         * written before it, since the shared suffix they carry on '#D' IS the
+         * axis that curve was drawn on. Absent segment = the depth default.
+         */
+        parsePacked(text) {
+            const segments = (text || "").split("#");
+            const raw = {};
+            let selected = "main";
+            for (const segment of segments.slice(1)) {
+                if (segment[0] === "B") {
+                    // mode marker (see serialize): which selector is pressed
+                    const named = BAND_ORDER.find((b) => BAND_PREFIX[b] === segment[1]);
+                    selected = named || "coarse";
+                    continue;
+                }
+                const key = segment[0] === DEPTH_PREFIX
+                    ? DEPTH_KEY
+                    : BAND_ORDER.find((b) => BAND_PREFIX[b] === segment[0]);
+                if (!key) continue;
+                const p = this.parse(segment.slice(1));
+                if (p) raw[key] = p;
+            }
+            const main = this.parse(segments[0]);
+            if (!main) {
+                return { main: null, bands: {}, depth: null, selected: selected,
+                         scaleLo: 0, scaleHi: 1,
+                         depthLo: DEPTH_RANGE_DEFAULT.lo, depthHi: DEPTH_RANGE_DEFAULT.hi };
+            }
+            const toProfile = (p) => ({
+                points: p.points,
+                cosOn: p.cosOn, cosN: p.cosN, cosPhase: p.cosPhase,
+                gamma: p.gamma,
+            });
+            // step axis: covers main + the band segments, never the depth one
+            let lo = main.scaleLo;
+            let hi = main.scaleHi;
+            for (const key in raw) {
+                if (key === DEPTH_KEY) continue;
+                lo = Math.min(lo, raw[key].scaleLo);
+                hi = Math.max(hi, raw[key].scaleHi);
+            }
+            const to = { lo: lo, hi: hi };
+            renormalizePoints(main.points, { lo: main.scaleLo, hi: main.scaleHi }, to);
+            const bands = {};
+            for (const key in raw) {
+                if (key === DEPTH_KEY) continue;
+                const p = raw[key];
+                renormalizePoints(p.points, { lo: p.scaleLo, hi: p.scaleHi }, to);
+                bands[key] = toProfile(p);
+            }
+            // depth axis: whatever its own segment says, untouched
+            const rawDepth = raw[DEPTH_KEY];
+            return {
+                main: main, bands: bands,
+                depth: rawDepth ? toProfile(rawDepth) : null,
+                selected: selected,
+                scaleLo: lo, scaleHi: hi,
+                depthLo: rawDepth ? rawDepth.scaleLo : DEPTH_RANGE_DEFAULT.lo,
+                depthHi: rawDepth ? rawDepth.scaleHi : DEPTH_RANGE_DEFAULT.hi,
+            };
+        }
+
+        /** The Y axis a stored profile lives on: the depth curve has its own,
+         *  everything else rides the step plot's. */
+        rangeFor(name) {
+            return name === DEPTH_KEY
+                ? { lo: this.depthLo, hi: this.depthHi }
+                : { lo: this.scaleLo, hi: this.scaleHi };
+        }
+
+        /** The axis currently on screen - what the two range selects edit. */
+        activeRange() {
+            return this.rangeFor(this.band);
+        }
+
+        /** Refresh the store slot of the selected profile from the working copy.
+         *  The range is NOT part of a slot - it belongs to the plot. */
+        snapshot() {
+            this.store[this.band] = {
+                points: this.points,
+                cosOn: this.cosOn, cosN: this.cosN, cosPhase: this.cosPhase,
+                multiPhase: !!this.multiPhase, gamma: this.gamma || 1,
+            };
+        }
+
+        /** Load a stored profile into the working copy (the editable one). */
+        loadBand(name) {
+            const P = this.store[name];
+            this.band = name;
+            this.points = P.points;
+            this.cosOn = P.cosOn;
+            this.cosN = P.cosN;
+            this.cosPhase = P.cosPhase;
+            this.multiPhase = !!P.multiPhase;
+            this.gamma = P.gamma || 1;
+            if (this.padPos) {
+                this.padPos.cos.x = this.cosPhase / TAU;
+                this.padPos.cos.y = this.cosN / COS_MAX_OSC;
+            }
+            this.setCosButtonState();
+            this.updatePad();
+            this.updateScaleSelects();
+            this.updateGammaSlider();
+        }
+
+        /**
+         * Band selector: four thin bars at the presets column bottom. Radio
+         * semantics - exactly one pressed. main shows/edits only the main
+         * profile; a band button shows all three C/M/F lines and routes every
+         * edit (points, presets, pad, invert) to the selected band. The range
+         * selects are the axis of the PLOT, not of the selected curve: in
+         * main / band mode they move the main profile and all three bands
+         * together, in depth mode the depth curve alone (see the header - the
+         * two are different coordinate systems and never share a range).
+         */
+        attachBands() {
+            this.bandButtons = {};
+            this.container.querySelectorAll(".cnet-profile-band").forEach((button) => {
+                this.bandButtons[button.dataset.band] = button;
+                button.setAttribute("aria-pressed", String(button.dataset.band === this.band));
+                button.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    this.selectBand(button.dataset.band);
+                });
+            });
+        }
+
+        selectBand(name) {
+            if (!(name in this.store) || name === this.band) return;
+            this.snapshot();
+            this.loadBand(name);
+            for (const key in this.bandButtons) {
+                const pressed = key === name;
+                this.bandButtons[key].classList.toggle("cnet-profile-band-active", pressed);
+                this.bandButtons[key].setAttribute("aria-pressed", String(pressed));
+            }
+            this.draw();
+            // the selection is the mode, not just an edit target: push it so
+            // the backend switches with the button
+            this.sync();
+            this.publishMode();
+        }
+
+        /**
+         * Publish the pressed selector on the unit root, for the parts of the
+         * widget that are not this editor.
+         *
+         * THE WEIGHT MASKS FOLLOW THIS SELECTOR. The four mask slots are the
+         * four profiles' spatial half - G belongs to the main profile, C/M/F to
+         * the band profiles - so which slots are live is decided here and
+         * nowhere else (python reads the same thing out of the profile string
+         * as '#B<band>'; see external_code.masks_in_force). weight_mask.js
+         * reads this attribute to dim the slots the selection does not use,
+         * which is the only warning a user gets before painting into a mask
+         * that will not be applied.
+         *
+         * The RAW selector is published, depth included: the reader decides
+         * what depth means for it (for masks it means main, because depth
+         * multiplies main rather than replacing it). Publishing a
+         * pre-interpreted value would put that rule in the writer, where the
+         * next reader cannot see it.
+         */
+        publishMode() {
+            if (this.isBalance || !this.unitRoot) return;
+            if (this.unitRoot.dataset.cnetProfileBand !== this.band) {
+                this.unitRoot.dataset.cnetProfileBand = this.band;
+            }
+        }
+
+        parse(text) {
+            if (!text || !text.trim()) return null;
+            const parts = text.split("|");
+            let scaleLo = 0;
+            let scaleHi = 1;
+            if (parts.length > 1) {
+                // scale-range suffix: '|hi' (legacy, lo = 0) or '|lo~hi'
+                const clampScale = (v) => Math.min(Math.max(v, SCALE_MIN), SCALE_MAX);
+                const bounds = parts[1].split("~");
+                if (bounds.length > 1) {
+                    scaleLo = parseFloat(bounds[0]);
+                    scaleHi = parseFloat(bounds[1]);
+                } else {
+                    scaleHi = parseFloat(bounds[0]);
+                }
+                if (!isFinite(scaleLo) || !isFinite(scaleHi)) return null;
+                scaleLo = clampScale(scaleLo);
+                scaleHi = clampScale(scaleHi);
+                if (scaleLo > scaleHi) {
+                    const swap = scaleLo;
+                    scaleLo = scaleHi;
+                    scaleHi = swap;
+                }
+            }
+            const points = [];
+            const mids = [];
+            let cosOn = false;
+            let cosN = 0;
+            let cosPhase = 0;
+            let multiPhase = false;
+            let gamma = 1;
+            for (const pair of parts[0].split(";")) {
+                let token = pair.trim();
+                if (!token) continue;
+                // bare 'P' = multi-phase marker: with several Inputs each one
+                // runs this cosine profile shifted by 2pi/n (see the multi
+                // preset toggle); parsed before the M/C prefixes because it
+                // has no parameters
+                if (token === "P") {
+                    multiPhase = true;
+                    continue;
+                }
+                // 'C<oscillations>@<phase>' = cosine mode; the drawn points are
+                // the envelope of that wave (see cosFactor / evaluate)
+                if (token[0] === "C") {
+                    const co = token.slice(1).split("@");
+                    if (co.length !== 2) return null;
+                    const n = parseFloat(co[0]);
+                    const ph = parseFloat(co[1]);
+                    if (!isFinite(n) || !isFinite(ph)) return null;
+                    cosOn = true;
+                    cosN = Math.min(Math.max(n, 0), COS_MAX_OSC);
+                    cosPhase = ((ph % TAU) + TAU) % TAU;
+                    continue;
+                }
+                // 'G<exponent>' = response exponent: the normalized profile is
+                // bent with y -> y^e BEFORE the scale mapping (see gammaAt)
+                if (token[0] === "G") {
+                    const g = parseFloat(token.slice(1));
+                    if (!isFinite(g)) return null;
+                    gamma = Math.min(Math.max(g, 1 / GAMMA_MAX), GAMMA_MAX);
+                    continue;
+                }
+                // 'Mx@y' = active mid control of the segment containing x
+                const isMid = token[0] === "M";
+                if (isMid) token = token.slice(1);
+                const xy = token.split("@");
+                if (xy.length !== 2) return null;
+                const x = parseFloat(xy[0]);
+                const y = parseFloat(xy[1]);
+                if (!isFinite(x) || !isFinite(y)) return null;
+                (isMid ? mids : points).push({ x: clamp01(x), y: clamp01(y) });
+            }
+            if (!points.length) return null;
+            points.sort((a, b) => a.x - b.x);
+            // attach each mid control to the segment strictly containing its x
+            // (stored relative to the segment, so it follows the vertices);
+            // orphaned mids are dropped. FIRST mid in token order wins when a
+            // segment carries several - the same rule as python's
+            // _flatten_profile_mids (next(...)), so hand-edited strings parse
+            // identically on both sides.
+            for (const m of mids) {
+                for (let i = 0; i + 1 < points.length; i++) {
+                    const dx = points[i + 1].x - points[i].x;
+                    if (dx > 0 && m.x > points[i].x && m.x < points[i + 1].x) {
+                        if (!points[i].mid) points[i].mid = { t: (m.x - points[i].x) / dx, y: m.y };
+                        break;
+                    }
+                }
+            }
+            return {
+                points: points, scaleLo: scaleLo, scaleHi: scaleHi,
+                cosOn: cosOn, cosN: cosN, cosPhase: cosPhase,
+                multiPhase: multiPhase, gamma: gamma,
+            };
+        }
+
+        serializeProfile(P, range) {
+            const tokens = [];
+            for (let i = 0; i < P.points.length; i++) {
+                const p = P.points[i];
+                tokens.push(`${fmt(p.x)}@${fmt(p.y)}`);
+                const next = P.points[i + 1];
+                if (p.mid && next && next.x - p.x > 0) {
+                    tokens.push(`M${fmt(p.x + p.mid.t * (next.x - p.x))}@${fmt(p.mid.y)}`);
+                }
+            }
+            if (P.cosOn) tokens.push(`C${fmt(P.cosN)}@${fmt(P.cosPhase)}`);
+            if (P.cosOn && P.multiPhase) tokens.push("P");
+            if (Math.abs((P.gamma || 1) - 1) > 1e-4) tokens.push(`G${fmt(P.gamma)}`);
+            const base = tokens.join(";");
+            // the range is the PLOT's, so every segment of one plot gets the
+            // same suffix: python parses each one on its own and all of them
+            // have to land on the weights that plot is showing. The depth
+            // segment is a plot of its own and is passed its own range.
+            const lo = range.lo;
+            const hi = range.hi;
+            if (lo === 0 && hi === 1) return base;
+            if (lo === 0) return base + "|" + fmt(hi);
+            return base + "|" + fmt(lo) + "~" + fmt(hi);
+        }
+
+        /** Flat 1.0 with no wave = neutral multiplier: not worth serializing.
+         *  Compares EFFECTIVE (scale-mapped) values with the same 5e-4
+         *  epsilon as python's band_points_are_neutral - a band nudged to
+         *  0.9997 must be neutral on both sides, or the editor would show
+         *  band mode engaged while the backend runs the main profile. The
+         *  mapping is the range of the profile's own plot, so where a neutral
+         *  line sits depends on those limits (top at [0, 1], middle at
+         *  [0, 2]) - which is why the caller says which axis P is on. */
+        bandNeutral(P, range) {
+            const value = (y) => range.lo + y * (range.hi - range.lo);
+            return !P.cosOn
+                && P.points.every((p) => Math.abs(value(p.y) - 1) <= 5e-4 && !p.mid);
+        }
+
+        serialize() {
+            this.snapshot();
+            const stepRange = this.rangeFor("main");
+            const depthRange = this.rangeFor(DEPTH_KEY);
+            let out = this.serializeProfile(this.store.main, stepRange);
+            // the balance plot has no band buttons: its band slots are never
+            // reachable, so they must never reach the string either (they ride
+            // the shared range and a non-[0,1] balance range would push them
+            // off their neutral value and serialize three phantom segments)
+            if (this.isBalance) return out;
+            for (const b of BAND_ORDER) {
+                const P = this.store[b];
+                if (!this.bandNeutral(P, stepRange)) {
+                    out += "#" + BAND_PREFIX[b] + this.serializeProfile(P, stepRange);
+                }
+            }
+            const depth = this.store[DEPTH_KEY];
+            if (depth && !this.bandNeutral(depth, depthRange)) {
+                out += "#" + DEPTH_PREFIX + this.serializeProfile(depth, depthRange);
+            }
+            // Which selector is pressed IS the mode, and the mode is behaviour,
+            // so it has to survive a reload: '#B<band>' says "bands drive the
+            // weights, this one is being edited", no marker says "main drives".
+            // The DEPTH selector writes no marker - depth does not replace the
+            // main profile, it multiplies it, so main mode is what runs either
+            // way and the '#D' segment alone says whether it is doing anything.
+            // Every curve stays serialized in all modes, so switching back
+            // finds the others exactly as they were left.
+            if (this.band !== "main" && this.band !== DEPTH_KEY) {
+                out += "#B" + BAND_PREFIX[this.band];
+            }
+            return out;
+        }
+
+        sync() {
+            const serialized = this.serialize();
+            if (serialized !== this.lastSerialized) {
+                this.lastSerialized = serialized;
+                this.textarea.value = serialized;
+                notifyGradio(this.textarea);
+            }
+        }
+
+        /**
+         * Evaluate the profile at relative position x in [0, 1]. The python
+         * side matches this up to the documented approximations:
+         * parse_weight_profile (external_code.py) flattens parabola segments
+         * into a clamped 24-chord polyline (this evaluates the exact
+         * parabola; divergence < ~1e-3), and evaluate_weight_profile
+         * (cnpro_core/weight_profile.py) stays piecewise-linear.
+         */
+        evaluate(x) {
+            return this.gammaAt(this.envelopeAt(x) * this.cosFactor(x));
+        }
+
+        /**
+         * Response exponent: bends the NORMALIZED [0, 1] value with y -> y^g
+         * before the scale mapping (toScreen applies the range afterwards, so
+         * the bend is range-independent, matching python's
+         * _apply_profile_gamma). 1 = linear = no-op, bit-exactly.
+         */
+        gammaAt(v) {
+            const g = this.gamma || 1;
+            if (Math.abs(g - 1) <= 1e-4) return v;
+            return Math.pow(Math.min(Math.max(v, 0), 1), g);
+        }
+
+        /**
+         * Cosine mode multiplier, matching _apply_profile_cosine in
+         * lib_controlnet/external_code.py: the drawn profile is the ENVELOPE of
+         * the wave, and the wave pulses between 0 and that envelope (it never
+         * flips sign, so the scale range keeps its meaning). The phase is
+         * SUBTRACTED so that dragging the pad point right shifts the wave
+         * right, which is what the gesture reads as.
+         */
+        cosFactor(x) {
+            if (!this.cosOn) return 1;
+            return 0.5 + 0.5 * Math.cos(TAU * this.cosN * x - this.cosPhase);
+        }
+
+        /**
+         * Effective value of the sibling wave a further Input runs in
+         * multi-phase mode: same envelope and same response exponent, cosine
+         * shifted by `phase`. Its preview line and its per-step dots both go
+         * through here, so the dots cannot land off the line they sample.
+         */
+        phaseValueAt(x, phase) {
+            return this.gammaAt(this.envelopeAt(x)
+                * (0.5 + 0.5 * Math.cos(TAU * this.cosN * x - phase)));
+        }
+
+        /** The drawn/editable polyline itself (the envelope in cosine mode). */
+        envelopeAt(x) {
+            return this.envelopeOf(this.points, x);
+        }
+
+        /** Same, for an arbitrary stored profile's points (band overlays). */
+        envelopeOf(pts, x) {
+            if (x <= pts[0].x) return pts[0].y;
+            for (let i = 1; i < pts.length; i++) {
+                if (x <= pts[i].x) {
+                    const p0 = pts[i - 1];
+                    const p1 = pts[i];
+                    const dx = p1.x - p0.x;
+                    if (dx <= 0) return p1.y;
+                    if (p0.mid) {
+                        // parabola (Lagrange quadratic) through the two
+                        // vertices and the active mid control, clamped to the
+                        // plot range so the scale mapping stays valid
+                        const xm = p0.x + p0.mid.t * dx;
+                        const ym = p0.mid.y;
+                        const l0 = ((x - xm) * (x - p1.x)) / ((p0.x - xm) * (p0.x - p1.x));
+                        const lm = ((x - p0.x) * (x - p1.x)) / ((xm - p0.x) * (xm - p1.x));
+                        const l1 = ((x - p0.x) * (x - xm)) / ((p1.x - p0.x) * (p1.x - xm));
+                        return clamp01(p0.y * l0 + ym * lm + p1.y * l1);
+                    }
+                    return p0.y + ((p1.y - p0.y) * (x - p0.x)) / dx;
+                }
+            }
+            return pts[pts.length - 1].y;
+        }
+
+        /** Pick up changes made from the python side (e.g. infotext paste). */
+        maybeReload() {
+            const value = this.textarea.value;
+            if (value === this.lastSerialized) return;
+            const packed = this.parsePacked(value);
+            this.lastSerialized = value;
+            if (packed.main) {
+                // both ranges come with the string: the step one covers every
+                // step-domain segment in it (parsePacked folds divergent
+                // suffixes onto one axis), the depth one is the '#D' segment's
+                // own
+                this.scaleLo = packed.scaleLo;
+                this.scaleHi = packed.scaleHi;
+                this.depthLo = packed.depthLo;
+                this.depthHi = packed.depthHi;
+                this.store.main = {
+                    points: packed.main.points,
+                    cosOn: packed.main.cosOn, cosN: packed.main.cosN,
+                    cosPhase: packed.main.cosPhase,
+                    multiPhase: packed.main.multiPhase, gamma: packed.main.gamma,
+                };
+                for (const b of BAND_ORDER) {
+                    this.store[b] = packed.bands[b]
+                        || defaultBandProfile(this.scaleLo, this.scaleHi);
+                }
+                this.store[DEPTH_KEY] = packed.depth
+                    || defaultBandProfile(this.depthLo, this.depthHi);
+                this.loadBand(this.band); // refresh the working copy in place
+                // the incoming string also carries the mode (which profile
+                // drives the weights), so follow it
+                if (!this.isBalance && packed.selected !== this.band) {
+                    this.selectBand(packed.selected);
+                }
+                this.publishMode();
+                this.draw();            } else if (!value.trim()) {
+                // empty = neutral (e.g. an infotext paste of a unit that
+                // omitted the profile): reset to the default drawing instead
+                // of keeping the stale curve - otherwise the display would
+                // disagree with the unit and the next edit would resurrect
+                // the old curve into it
+                // the limits are part of what runs, so they reset with the
+                // curve - a default flat profile left on a [0, 2] axis would
+                // be weight 2, not the neutral the empty value asks for
+                this.scaleLo = 0;
+                this.scaleHi = 1;
+                this.depthLo = DEPTH_RANGE_DEFAULT.lo;
+                this.depthHi = DEPTH_RANGE_DEFAULT.hi;
+                this.store.main = this.defaultMainProfile();
+                for (const b of BAND_ORDER) {
+                    this.store[b] = defaultBandProfile(this.scaleLo, this.scaleHi);
+                }
+                this.store[DEPTH_KEY] = defaultBandProfile(this.depthLo, this.depthHi);
+                // ...and the MODE resets with them. An empty value means "this
+                // unit has no profile", which is main mode - keeping a band
+                // selector pressed would leave the string about to be written
+                // back carrying '#B<band>' that the value it came from does not
+                // have. That was cosmetic while the marker only chose a curve;
+                // it is not any more, because the marker also chooses which
+                // weight-mask slots are live (publishMode), so a stale band
+                // selection would silently switch off a painted G mask.
+                if (!this.isBalance) this.selectBand("main");
+                this.loadBand(this.band);
+                this.draw();            } else if (this._warnedInvalid !== value) {
+                // invalid non-empty: keep drawing the old profile, but say so
+                // once - the generation side will warn about it too
+                this._warnedInvalid = value;
+                console.warn("[controlnet profile] ignoring invalid profile value:", value);
+            }
+        }
+
+        /**
+         * Presets: 'step' (button) and 'cos' (cosine mode toggle). The square
+         * pad next to them carries the two parameters of whichever preset
+         * currently holds focus.
+         *
+         * Focus rule: clicking a preset that is NOT focused only binds the pad
+         * to it - the existing profile is kept, nothing is regenerated.
+         * Clicking a preset that IS already focused regenerates the profile
+         * from the pad. Moving the pad point always rewrites the profile of the
+         * focused preset.
+         *
+         * There is no invert toggle: the step preset spans both directions
+         * through the pad's vertical halves (see applyPadPreset), which is
+         * what invert was overwhelmingly used for, and a mode that silently
+         * mirrored every future preset was state the plot could not show.
+         */
+        attachPresets() {
+            this.activePreset = null;
+            this.presetButtons = {};
+            // pad position per preset, so switching back restores its parameters
+            this.padPos = {
+                step: { x: 0.5, y: 1 },
+                cos: { x: this.cosPhase / TAU, y: this.cosN / COS_MAX_OSC },
+            };
+            this.pad = this.container.querySelector(".cnet-profile-preset-pad");
+            this.padDot = this.container.querySelector(".cnet-profile-pad-dot");
+
+            this.container.querySelectorAll(".cnet-profile-preset").forEach((button) => {
+                this.presetButtons[button.dataset.preset] = button;
+                button.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    const name = button.dataset.preset;
+                    if (name === "cos") {
+                        // Non-destructive: switching the wave on or off keeps
+                        // the drawn polyline (it only becomes the envelope), so
+                        // there is nothing to protect the user from - the first
+                        // click acts immediately and draws the wave.
+                        this.cosOn = !this.cosOn;
+                        if (this.cosOn) {
+                            this.setActivePreset("cos");
+                            this.applyPadPreset();
+                        } else {
+                            // multi-phase rides on the wave, off with it
+                            this.multiPhase = false;
+                            this.setActivePreset(null);
+                            this.drawAndSync();
+                        }
+                        return;
+                    }
+                    if (name === "multi") {
+                        // Multi-phase toggle: a mode, not a shape - but it
+                        // needs the wave, so switching it on engages cosine
+                        // mode too (whose pad keeps carrying the shared
+                        // phase/oscillation parameters).
+                        this.multiPhase = !this.multiPhase;
+                        if (this.multiPhase && !this.cosOn) {
+                            this.cosOn = true;
+                            this.setActivePreset("cos");
+                        }
+                        this.drawAndSync();
+                        return;
+                    }
+                    // Step is DESTRUCTIVE - it replaces the drawn profile - so
+                    // it takes a confirming second click: the first one only
+                    // aims the pad at it.
+                    if (this.activePreset !== name) {
+                        this.setActivePreset(name);
+                        this.drawAndSync();
+                        return;
+                    }
+                    this.applyPadPreset();
+                });
+            });
+
+            if (this.pad) {
+                // during a drag only the DRAWING updates (defer = true);
+                // serialization + the ws listing wait for pointerup, exactly
+                // like canvas point drags - a pad sweep must not serialize at
+                // pointer rate
+                const padTo = (e, defer) => {
+                    const r = this.pad.getBoundingClientRect();
+                    if (!r.width || !r.height) return;
+                    const pos = this.padPos[this.activePreset];
+                    if (!pos) return;
+                    pos.x = clamp01((e.clientX - r.left) / r.width);
+                    // pad y is measured upwards, like the plot
+                    pos.y = clamp01(1 - (e.clientY - r.top) / r.height);
+                    this.applyPadPreset(defer);
+                };
+                this.pad.addEventListener("pointerdown", (e) => {
+                    if (!this.activePreset || this.padDragging) return;
+                    e.preventDefault();
+                    this.pad.setPointerCapture(e.pointerId);
+                    this.padDragging = true;
+                    this.padPointerId = e.pointerId;
+                    padTo(e, true);
+                });
+                this.pad.addEventListener("pointermove", (e) => {
+                    if (this.padDragging && e.pointerId === this.padPointerId) padTo(e, true);
+                });
+                const endDrag = (e) => {
+                    if (!this.padDragging || e.pointerId !== this.padPointerId) return;
+                    this.padDragging = false;
+                    this.padPointerId = null;
+                    try {
+                        this.pad.releasePointerCapture(e.pointerId);
+                    } catch (err) {}
+                    this.sync();                };
+                this.pad.addEventListener("pointerup", endDrag);
+                this.pad.addEventListener("pointercancel", endDrag);
+            }
+            this.updatePad();
+        }
+
+        /**
+         * Scale range as two selects right of the plot (top = range maximum,
+         * bottom = range minimum), replacing the old two-handle gutter slider.
+         * Both offer the same -1 .. 2 grid in steps of 0.25; picking a bottom
+         * above the current top (or vice versa) pushes the other one along, so
+         * the range can never invert.
+         *
+         * The pair is the PLOT's Y axis, not a property of the selected curve -
+         * but this editor has two plots, so it is the axis CURRENTLY ON SCREEN
+         * (see the header): in main / band mode it moves the main profile and
+         * all three band lines together, in depth mode it moves the depth
+         * curve alone. It never reaches across that boundary, which is the
+         * point of the split - a weight range is not a multiplier range.
+         * Drawn curves keep their shape and are remapped (that is what the
+         * range is for); a curve still sitting on its untouched flat default
+         * rides along instead, so "this one does nothing" survives a change of
+         * limits.
+         */
+        attachScaleSelects() {
+            this.scaleHiSelect = this.container.querySelector(".cnet-profile-scale-hi");
+            this.scaleLoSelect = this.container.querySelector(".cnet-profile-scale-lo");
+            if (!this.scaleHiSelect || !this.scaleLoSelect) return;
+
+            // the balance value is clamped to [0, 1] by balance_factors -
+            // offering the weight editor's -1..2 grid there would present 3x
+            // dead range as meaningful
+            const gridMax = this.isBalance ? 1 : SCALE_MAX;
+            const gridMin = this.isBalance ? 0 : SCALE_MIN;
+            const options = [];
+            for (let v = gridMax; v >= gridMin - 1e-9; v -= SCALE_STEP) {
+                options.push(Math.round(v / SCALE_STEP) * SCALE_STEP);
+            }
+            for (const select of [this.scaleHiSelect, this.scaleLoSelect]) {
+                select.innerHTML = "";
+                for (const v of options) {
+                    const option = document.createElement("option");
+                    option.value = String(v);
+                    option.textContent = fmt(v);
+                    select.appendChild(option);
+                }
+            }
+
+            const onChange = (which) => {
+                const value = parseFloat(
+                    (which === "hi" ? this.scaleHiSelect : this.scaleLoSelect).value);
+                if (!isFinite(value)) return;
+                // only the axis on screen moves, so only the curves ON it are
+                // candidates for re-anchoring. Which ones are untouched has to
+                // be read BEFORE it moves - neutrality is an effective value,
+                // and the old range is the one they were drawn on
+                this.snapshot();
+                const depthMode = this.band === DEPTH_KEY;
+                const range = this.activeRange();
+                const onAxis = this.isBalance
+                    ? []
+                    : (depthMode ? [DEPTH_KEY] : BAND_ORDER);
+                const untouched = onAxis.filter(
+                    (b) => this.store[b] && this.bandNeutral(this.store[b], range));
+                const lo = which === "lo" ? value : Math.min(range.lo, value);
+                const hi = which === "hi" ? value : Math.max(range.hi, value);
+                if (depthMode) {
+                    this.depthLo = lo;
+                    this.depthHi = hi;
+                } else {
+                    this.scaleLo = lo;
+                    this.scaleHi = hi;
+                }
+                this.reanchorNeutral(untouched, this.activeRange());
+                this.updateScaleSelects();
+                this.draw();
+                this.sync();            };
+            this.scaleHiSelect.addEventListener("change", () => onChange("hi"));
+            this.scaleLoSelect.addEventListener("change", () => onChange("lo"));
+            this.updateScaleSelects();
+        }
+
+        /**
+         * Put the flat line of untouched multiplier curves (bands, or the
+         * depth curve) back where the multiplier is 1 on their axis, after its
+         * limits moved. One that was left alone must keep doing nothing -
+         * unlike a DRAWN curve, which keeps its shape and takes the new
+         * weights, the whole point of the range. Points are shared by
+         * reference with the working copy, so mutating them in place covers
+         * the selected curve too.
+         */
+        reanchorNeutral(names, range) {
+            if (!names || !names.length) return;
+            const y = neutralY(range.lo, range.hi);
+            for (const b of names) {
+                for (const p of this.store[b].points) {
+                    p.y = y;
+                    if (p.mid) p.mid.y = y;
+                }
+            }
+        }
+
+        /**
+         * Response exponent slider: vertical, between the two range selects.
+         * Slider value v in [-100, 100] maps to exponent 10^(v/100) - log so
+         * both tenfold directions get equal travel: top -100 = x^0.1 (bias to
+         * high values), middle 0 = x^1 (linear, the default; marked by the
+         * center tick), bottom 100 = x^10 (bias to low values). Bends the
+         * NORMALIZED profile only - the range mapping is applied after, so
+         * the slider is fully independent of the limits above and below it.
+         * Drags redraw only; serialization waits for 'change' (pointer up),
+         * like the pad.
+         */
+        attachGammaSlider() {
+            this.gammaSlider = this.container.querySelector(".cnet-profile-gamma");
+            if (!this.gammaSlider) return;
+            const apply = (serialize) => {
+                const v = parseFloat(this.gammaSlider.value);
+                if (!isFinite(v)) return;
+                this.gamma = Math.pow(10, v / 100);
+                if (Math.abs(this.gamma - 1) <= 1e-3) this.gamma = 1; // snap the tick
+                this.draw();
+                if (serialize) this.sync();
+            };
+            this.gammaSlider.addEventListener("input", () => apply(false));
+            this.gammaSlider.addEventListener("change", () => apply(true));
+            // double-click = back to linear (the center tick). The two clicks
+            // may first jump the thumb (a track click seeks on range inputs)
+            // and serialize that value, but this reset lands last and wins.
+            this.gammaSlider.addEventListener("dblclick", () => {
+                this.gamma = 1;
+                this.updateGammaSlider();
+                this.draw();
+                this.sync();
+            });
+            this.updateGammaSlider();
+        }
+
+        updateGammaSlider() {
+            if (!this.gammaSlider) return;
+            this.gammaSlider.value = String(Math.round(100 * Math.log10(this.gamma || 1)));
+        }
+
+        /** Insert a (sorted) option for an off-grid value, so e.g. a legacy
+         *  '|1.35' scale DISPLAYS as 1.35 instead of a blank select. */
+        ensureScaleOption(select, v) {
+            const s = String(v);
+            const options = Array.from(select.options);
+            if (options.some((o) => o.value === s)) return;
+            const option = document.createElement("option");
+            option.value = s;
+            option.textContent = fmt(v);
+            // grid is ordered high -> low; keep the custom value in order
+            const before = options.find((o) => parseFloat(o.value) < v);
+            select.insertBefore(option, before || null);
+        }
+
+        /** Show the range of the axis on screen (loadBand calls this, so the
+         *  pair follows the selector into and out of depth mode). */
+        updateScaleSelects() {
+            if (!this.scaleHiSelect || !this.scaleLoSelect) return;
+            const range = this.activeRange();
+            this.ensureScaleOption(this.scaleHiSelect, range.hi);
+            this.ensureScaleOption(this.scaleLoSelect, range.lo);
+            this.scaleHiSelect.value = String(range.hi);
+            this.scaleLoSelect.value = String(range.lo);
+        }
+
+        setActivePreset(name) {
+            this.activePreset = name;
+            for (const key in this.presetButtons) {
+                if (key === "cos") continue;    // its highlight tracks cosOn, not focus
+                if (key === "multi") continue;  // its highlight tracks multiPhase, not focus
+                this.presetButtons[key].classList.toggle("cnet-profile-preset-active", key === name);
+            }
+            if (this.pad) {
+                this.pad.classList.toggle("cnet-profile-pad-armed", !!name);
+                this.pad.title = {
+                    step: "Step parameters: x = jump position, y = height AND direction - "
+                        + "above the middle the raised part is on the right, below it on the "
+                        + "left (the mirrored step); distance from the middle is the height, "
+                        + "the middle row itself is flat 0",
+                    cos: "Cosine parameters: x = phase (0 ... 2π), y = oscillations (0 ... 4)",
+                }[name] || "Preset parameters (click a preset first)";
+                // the halves only mean something for the step preset, so the
+                // centre line is shown only while it holds focus
+                this.pad.classList.toggle("cnet-profile-pad-split", name === "step");
+            }
+            this.updatePad();
+        }
+
+        /** Move the visible pad dot to the focused preset's parameters. */
+        updatePad() {
+            if (!this.pad || !this.padDot) return;
+            const pos = this.padPos[this.activePreset];
+            if (!pos) {
+                this.padDot.style.display = "none";
+                return;
+            }
+            this.padDot.style.display = "block";
+            this.padDot.style.left = (pos.x * 100) + "%";
+            this.padDot.style.top = ((1 - pos.y) * 100) + "%";
+        }
+
+        /** Visual refresh only - no serialization (mid-drag path). */
+        drawOnly() {
+            this.setCosButtonState();
+            this.updatePad();
+            this.draw();
+        }
+
+        drawAndSync() {
+            this.drawOnly();
+            this.sync();        }
+
+        setCosButtonState() {
+            const button = this.presetButtons.cos;
+            if (button) button.classList.toggle("cnet-profile-preset-active", this.cosOn);
+            const multi = this.presetButtons.multi;
+            if (multi) multi.classList.toggle("cnet-profile-preset-active", !!this.multiPhase);
+        }
+
+        /** Waves the multi-phase preview draws: one per Input tab holding an
+         *  image, at least two (with a single input the preview would show
+         *  nothing and the marker does nothing at generation either). Muted
+         *  inputs (tab-title checkbox off) are skipped: the generation
+         *  fan-out counts len(get_input_data(...)), which drops them, and the
+         *  preview must count the same thing that runs. The watch tick
+         *  re-checks this count and redraws when it moves, so the preview
+         *  follows uploads / clears / mutes without any edit to the curve. */
+        multiPhaseCount() {
+            let count = 0;
+            if (this.unitRoot) {
+                this.unitRoot
+                    .querySelectorAll("[id*='_input_image'] img.forge-image")
+                    .forEach((img) => {
+                        if (!img.src || img.naturalWidth <= 0) return;
+                        // same id mapping as tab_marks.js: the hidden gradio
+                        // checkbox _input_enabled_<n> is the authoritative
+                        // mute state of tab panel _input_tab_<n>
+                        const panel = img.closest("[id*='_input_tab_']");
+                        if (panel) {
+                            const state = document.getElementById(
+                                panel.id.replace("_input_tab_", "_input_enabled_"));
+                            const check = state && state.querySelector("input[type='checkbox']");
+                            if (check && !check.checked) return;
+                        }
+                        count += 1;
+                    });
+            }
+            return Math.max(count, 2);
+        }
+
+        /**
+         * Rebuild the focused preset's profile from the pad point.
+         *
+         * step: pad x is the jump position, pad y the step height. Full left
+         *   means the jump already happened at 0, i.e. a constant at y; full
+         *   right means the jump never happens, i.e. a flat 0 (height is then
+         *   irrelevant). Both degenerate cases are two points, not four.
+         * cos: pad x is the phase over [0, 2π] and pad y the number of
+         *   oscillations over [0, 4]. The envelope (the drawn polyline) is NOT
+         *   regenerated - the wave just re-rides it.
+         */
+        applyPadPreset(defer) {
+            const pos = this.padPos[this.activePreset];
+            if (!pos) return;
+
+            const finish = () => (defer ? this.drawOnly() : this.drawAndSync());
+
+            if (this.activePreset === "cos") {
+                this.cosOn = true;
+                this.cosPhase = clamp01(pos.x) * TAU;
+                this.cosN = clamp01(pos.y) * COS_MAX_OSC;
+                finish();
+                return;
+            }
+
+            // Step, generalized over the pad's vertical CENTRE: distance from
+            // the centre is the step height, the SIDE is its direction.
+            //   above centre -> the raised part is on the RIGHT (0 then h)
+            //   below centre -> the raised part is on the LEFT  (h then 0)
+            // At full height the two are exact vertical mirrors of each other,
+            // which is what the invert toggle used to be for - the pad now
+            // reaches both without a separate mode to remember. The centre row
+            // is height 0 (flat) from either side, so the pad is continuous
+            // across it.
+            const at = clamp01(pos.x);
+            const raisedRight = pos.y >= 0.5;
+            const height = clamp01(Math.abs(pos.y - 0.5) * 2);
+            if (raisedRight) {
+                // full left = the jump already happened at 0 (constant h),
+                // full right = it never happens (flat 0)
+                if (at === 0) this.points = [{ x: 0, y: height }, { x: 1, y: height }];
+                else if (at === 1) this.points = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
+                else {
+                    this.points = [
+                        { x: 0, y: 0 }, { x: at, y: 0 },
+                        { x: at, y: height }, { x: 1, y: height },
+                    ];
+                }
+            } else {
+                // mirrored: full left = the drop already happened (flat 0),
+                // full right = it never happens (constant h)
+                if (at === 0) this.points = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
+                else if (at === 1) this.points = [{ x: 0, y: height }, { x: 1, y: height }];
+                else {
+                    this.points = [
+                        { x: 0, y: height }, { x: at, y: height },
+                        { x: at, y: 0 }, { x: 1, y: 0 },
+                    ];
+                }
+            }
+            finish();
+        }
+
+        /** Canvas CSS size, cached until the ResizeObserver invalidates it:
+         *  toScreen runs per curve sample per frame (hundreds of calls), and
+         *  an uncached getBoundingClientRect there was the dominant per-frame
+         *  cost. Only the SIZE is cached - it changes exclusively through
+         *  resize() - while mousePos keeps reading the live rect (left/top
+         *  shift on scroll without any resize). */
+        cssSize() {
+            if (!this._cssSize) {
+                const rect = this.canvas.getBoundingClientRect();
+                this._cssSize = { w: rect.width, h: rect.height };
+            }
+            return this._cssSize;
+        }
+
+        plotRect() {
+            if (!this._plotRect) {
+                const { w, h } = this.cssSize();
+                this._plotRect = {
+                    left: MARGIN.left,
+                    top: MARGIN.top,
+                    w: Math.max(w - MARGIN.left - MARGIN.right, 1),
+                    h: Math.max(h - MARGIN.top - MARGIN.bottom, 1),
+                };
+            }
+            return this._plotRect;
+        }
+
+        mousePos(e) {
+            const rect = this.canvas.getBoundingClientRect();
+            return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
+        }
+
+        /**
+         * Convert mouse position to profile coordinates. Clamping implements
+         * the margin behavior: clicks in a margin pin the coordinate to 0 or 1.
+         */
+        toPlot(pos) {
+            const r = this.plotRect();
+            return {
+                x: clamp01((pos.mx - r.left) / r.w),
+                y: clamp01(1 - (pos.my - r.top) / r.h),
+            };
+        }
+
+        toScreen(p) {
+            const r = this.plotRect();
+            return { sx: r.left + p.x * r.w, sy: r.top + (1 - p.y) * r.h };
+        }
+
+        /**
+         * Everything the pointer may grab: in main mode just the main
+         * profile; in band mode the points of ALL THREE band lines are
+         * directly editable - the band buttons only pick which profile the
+         * presets, pad and invert act on. The selected band is iterated first
+         * and wins distance ties. Depth mode shows one curve and only that
+         * curve is grabbable (the bands are not on the plot - they are the
+         * alternative to it, not companions of it).
+         */
+        editableBands() {
+            if (this.band === "main" || this.band === DEPTH_KEY) {
+                return [{ band: this.band, pts: this.points }];
+            }
+            const out = [{ band: this.band, pts: this.points }];
+            for (const b of BAND_ORDER) {
+                if (b !== this.band) out.push({ band: b, pts: this.store[b].points });
+            }
+            return out;
+        }
+
+        findPoint(pos) {
+            let best = null;
+            let bestDist = GRAB_RADIUS + 1e-9;
+            for (const { band, pts } of this.editableBands()) {
+                for (const p of pts) {
+                    const { sx, sy } = this.toScreen(p);
+                    const dist = Math.hypot(pos.mx - sx, pos.my - sy);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = { point: p, pts: pts, band: band };
+                    }
+                }
+            }
+            return best;
+        }
+
+        /**
+         * Mid control handle of the segment starting at points[i]: the active
+         * control position when set, otherwise the passive linear midpoint.
+         * Null for degenerate (vertical) segments.
+         */
+        midHandle(i) {
+            const p0 = this.points[i];
+            const p1 = this.points[i + 1];
+            if (!p1) return null;
+            const dx = p1.x - p0.x;
+            const active = !!p0.mid;
+            // tiny segments get no PASSIVE handle (it would sit on the
+            // vertices and steal their clicks) - but an ACTIVE mid control
+            // must stay visible and grabbable no matter how far the vertices
+            // were dragged together, or it becomes an invisible, unremovable
+            // bend that still evaluates and serializes
+            if (dx <= 0 || (!active && dx <= MID_MIN_DX)) return null;
+            return {
+                p0: p0,
+                p1: p1,
+                active: active,
+                x: active ? p0.x + p0.mid.t * dx : p0.x + dx / 2,
+                y: active ? p0.mid.y : (p0.y + p1.y) / 2,
+            };
+        }
+
+        findMid(pos) {
+            let best = null;
+            let bestDist = MID_GRAB_RADIUS;
+            for (let i = 0; i + 1 < this.points.length; i++) {
+                const m = this.midHandle(i);
+                if (!m) continue;
+                const { sx, sy } = this.toScreen(m);
+                const dist = Math.hypot(pos.mx - sx, pos.my - sy);
+                if (dist <= bestDist) {
+                    bestDist = dist;
+                    best = m;
+                }
+            }
+            return best;
+        }
+
+        /**
+         * A click on a margin edits the profile extreme instead of stacking a
+         * new point on the border: left/right margins pick the point sitting
+         * on that border (x = 0 / x = 1) and set its Y to the clicked level;
+         * top/bottom margins pick a border point (y = 1 / y = 0) near the
+         * clicked X and slide it there. Returns null if there is no point to
+         * pick up, in which case a new one is created by the caller.
+         */
+        findMarginPoint(pos) {
+            const r = this.plotRect();
+            const target = this.toPlot(pos);
+            if (pos.mx < r.left || pos.mx > r.left + r.w) {
+                const xEdge = pos.mx < r.left ? 0 : 1;
+                const point = this.points.find((p) => p.x === xEdge);
+                if (point) point.y = target.y;
+                return point || null;
+            }
+            if (pos.my < r.top || pos.my > r.top + r.h) {
+                const yEdge = pos.my < r.top ? 1 : 0;
+                const point = this.points.find(
+                    (p) => p.y === yEdge && Math.abs(this.toScreen(p).sx - pos.mx) <= GRAB_RADIUS
+                );
+                if (point) point.x = target.x;
+                return point || null;
+            }
+            return null;
+        }
+
+        sortPoints() {
+            this.points.sort((a, b) => a.x - b.x);
+        }
+
+        attachEvents() {
+            this.canvas.addEventListener("pointerdown", (e) => {
+                if (e.button !== 0) return;
+                // one drag at a time: a second touch must not hijack the
+                // point the first finger is moving
+                if (this.dragPoint || this.dragMid) return;
+                const pos = this.mousePos(e);
+                const hit = this.findPoint(pos);
+                let point = hit && hit.point;
+                // the owning point list: a grabbed point edits ITS band; new
+                // points, margin edits and mid controls go to the selected one
+                this.dragPts = hit ? hit.pts : this.points;
+                this.dragColor = hit && hit.band !== "main"
+                    ? (hit.band === DEPTH_KEY ? DEPTH_COLOR : BAND_COLORS[hit.band])
+                    : null;
+                if (!point) {
+                    // grabbing a (passive or active) segment midpoint starts a
+                    // mid-control drag: a passive one becomes active on pickup
+                    const m = this.findMid(pos);
+                    if (m) {
+                        if (!m.active) m.p0.mid = { t: 0.5, y: (m.p0.y + m.p1.y) / 2 };
+                        this.dragMid = m.p0;
+                        this.dragPointerId = e.pointerId;
+                        this.canvas.setPointerCapture(e.pointerId);
+                        this.draw();
+                        e.preventDefault();
+                        return;
+                    }
+                    point = this.findMarginPoint(pos);
+                }
+                if (!point) {
+                    point = this.toPlot(pos);
+                    this.points.push(point);
+                    this.dragPts = this.points;
+                }
+                this.dragPts.sort((a, b) => a.x - b.x);
+                this.dragPoint = point;
+                this.selPoint = point;  // keyboard nudges target the last touched point
+                this.dragPointerId = e.pointerId;
+                this.canvas.setPointerCapture(e.pointerId);
+                this.draw();
+                e.preventDefault();
+            });
+
+            this.canvas.addEventListener("pointermove", (e) => {
+                if ((this.dragPoint || this.dragMid) && e.pointerId !== this.dragPointerId) return;
+                const pos = this.mousePos(e);
+                if (this.dragMid) {
+                    const i = this.points.indexOf(this.dragMid);
+                    const p1 = this.points[i + 1];
+                    if (i >= 0 && p1 && p1.x - this.dragMid.x > 0) {
+                        const target = this.toPlot(pos);
+                        const t = (target.x - this.dragMid.x) / (p1.x - this.dragMid.x);
+                        this.dragMid.mid = {
+                            t: Math.min(Math.max(t, MID_MIN_T), MID_MAX_T),
+                            y: target.y,
+                        };
+                        this.draw();
+                    }
+                    return;
+                }
+                if (this.dragPoint) {
+                    const target = this.toPlot(pos);
+                    this.dragPoint.x = target.x;
+                    this.dragPoint.y = target.y;
+                    (this.dragPts || this.points).sort((a, b) => a.x - b.x);
+                    this.draw();
+                } else if (this.inScaleGutter(pos)) {
+                    this.canvas.style.cursor = "pointer";
+                } else {
+                    this.canvas.style.cursor = this.findPoint(pos) || this.findMid(pos) ? "grab" : "crosshair";
+                }
+            });
+
+            const endDrag = (e) => {
+                if (!this.dragPoint && !this.dragMid) return;
+                if (e && e.pointerId !== this.dragPointerId) return;
+                this.dragPoint = null;
+                this.dragMid = null;
+                this.dragPts = null;
+                this.dragColor = null;
+                this.dragPointerId = null;
+                this.draw();
+                this.sync();            };
+            this.canvas.addEventListener("pointerup", endDrag);
+            this.canvas.addEventListener("pointercancel", endDrag);
+
+            this.canvas.addEventListener("dblclick", (e) => {
+                const pos = this.mousePos(e);
+                const hit = this.findPoint(pos);
+                if (hit && hit.pts.length > 1) {
+                    hit.pts.splice(hit.pts.indexOf(hit.point), 1);
+                    if (this.selPoint === hit.point) this.selPoint = null;
+                    this.draw();
+                    this.sync();                } else if (!hit) {
+                    // double-click on an active mid control: back to the
+                    // passive linear midpoint (segment becomes linear again)
+                    const m = this.findMid(pos);
+                    if (m && m.active) {
+                        delete m.p0.mid;
+                        this.draw();
+                        this.sync();                    }
+                }
+                e.preventDefault();
+            });
+        }
+
+        /**
+         * Minimal keyboard access (the editor was pointer-only): the canvas is
+         * focusable, arrow keys nudge the last-touched point (Shift = finer),
+         * Delete/Backspace removes it. Everything syncs on release like a
+         * drag would.
+         */
+        attachKeyboard() {
+            this.canvas.addEventListener("keydown", (e) => {
+                const p = this.selPoint;
+                if (!p) return;
+                // the point may belong to any editable line (band mode)
+                const owner = this.editableBands()
+                    .map((entry) => entry.pts)
+                    .find((pts) => pts.includes(p));
+                if (!owner) return;
+                const step = e.shiftKey ? 0.002 : 0.02;
+                let handled = true;
+                switch (e.key) {
+                    case "ArrowLeft": p.x = clamp01(p.x - step); break;
+                    case "ArrowRight": p.x = clamp01(p.x + step); break;
+                    case "ArrowUp": p.y = clamp01(p.y + step); break;
+                    case "ArrowDown": p.y = clamp01(p.y - step); break;
+                    case "Delete":
+                    case "Backspace":
+                        if (owner.length > 1) {
+                            owner.splice(owner.indexOf(p), 1);
+                            this.selPoint = null;
+                        }
+                        break;
+                    default: handled = false;
+                }
+                if (!handled) return;
+                e.preventDefault();
+                owner.sort((a, b) => a.x - b.x);
+                this.draw();
+                this.sync();            });
+        }
+
+        resize() {
+            this._cssSize = null;
+            this._plotRect = null;
+            const { w, h } = this.cssSize();
+            if (w <= 0 || h <= 0) return;
+            const dpr = window.devicePixelRatio || 1;
+            this._lastDpr = dpr;
+            this.canvas.width = Math.round(w * dpr);
+            this.canvas.height = Math.round(h * dpr);
+            this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            // the parameter pad is a square whose side matches the PLOT height
+            // (canvas height minus the axis margins), so it lines up with the
+            // drawing area rather than with the whole widget
+            if (this.pad) {
+                // Square, ideally as wide as the plot is high - but never so
+                // wide that the plot or the range column gets squeezed out of
+                // the parent. The body width is the budget: presets column,
+                // range column and gaps are reserved first, and the pad may
+                // take at most PAD_MAX_SHARE of what is left.
+                const body = this.pad.parentElement;
+                // clear the previous px width first, so a stale (wider) value
+                // cannot inflate the measurement and latch the row open when
+                // the panel is dragged narrower
+                this.pad.style.width = "0px";
+                const bodyW = body ? body.clientWidth : 0;
+                const reserved =
+                    (this.container.querySelector(".cnet-weight-profile-presets")?.offsetWidth || 0) +
+                    (this.container.querySelector(".cnet-profile-scale")?.offsetWidth || 0) + 24;
+                const budget = Math.max(bodyW - reserved, 0);
+                const side = Math.max(Math.min(h - MARGIN.top - MARGIN.bottom,
+                                               budget * PAD_MAX_SHARE), PAD_MIN_SIDE);
+                this.pad.style.width = side + "px";
+                this.pad.style.height = side + "px";
+            }
+            this.draw();
+        }
+
+        /** Sampling step count from the owning tab's main Steps slider
+         *  (0 = not resolvable; hires/other passes are out of scope). */
+        stepsCount() {
+            let input = this._stepsInput;
+            if (!input || !input.isConnected) {
+                const tabRoot = this.container.closest("#tab_txt2img, #tab_img2img");
+                if (!tabRoot) return 0;
+                input = gradioApp().querySelector(`#${tabRoot.id.slice(4)}_steps input[type='number']`);
+                this._stepsInput = input;
+            }
+            const n = input ? Math.round(parseFloat(input.value)) : 0;
+            return Number.isFinite(n) && n > 1 ? n : 0;
+        }
+
+        /** The step separators must track the Steps slider live, so both of
+         *  its inputs (number box + range) redraw this plot. Server-side
+         *  writes to the slider fire no DOM events; those catch up on the
+         *  next redraw of any kind, which is acceptable staleness. */
+        attachStepsWatch() {
+            const tabRoot = this.container.closest("#tab_txt2img, #tab_img2img");
+            if (!tabRoot) return;
+            const redraw = () => this.draw();
+            for (const input of gradioApp().querySelectorAll(`#${tabRoot.id.slice(4)}_steps input`)) {
+                input.addEventListener("input", redraw);
+            }
+        }
+
+        colors() {
+            const styles = getComputedStyle(this.canvas);
+            const accent = styles.getPropertyValue("--primary-400").trim() || "#4b7ecb";
+            const background = getComputedStyle(document.body).backgroundColor || "#000";
+            // step separators: white on dark themes, gray on light; the dotted
+            // duty cycle already mutes them, so the dot alpha sits above the
+            // solid quarter grid's to end up quieter overall, not invisible
+            const rgb = background.match(/\d+/g);
+            const darkTheme = !rgb || (Number(rgb[0]) + Number(rgb[1]) + Number(rgb[2])) / 3 < 128;
+            return {
+                accent: accent,
+                background: background,
+                text: "rgba(127, 127, 127, 0.9)",
+                grid: "rgba(127, 127, 127, 0.16)",
+                stepLine: darkTheme ? "rgba(255, 255, 255, 0.36)" : "rgba(96, 96, 96, 0.38)",
+                // Value dots take ONE muted tone instead of their curve's
+                // color: a white dot on the white main line is invisible
+                // except for its halo ring, while this mid tone reads on both
+                // sides of the plot's contrast range - clearly under a
+                // full-strength curve, still over the 0.4-alpha multi-phase
+                // underlays it also has to mark. Neutral on purpose, so it
+                // never competes with the band colors for meaning. Kept well
+                // below white: on the 2px white main line the separation IS
+                // the mark, and lighter tones left it nearly invisible (196 ->
+                // 158 -> this, ~half the line's luminance). Darkening also
+                // quiets the multi-phase underlays, which want less weight -
+                // the same move serves both ends of the plot.
+                stepDot: darkTheme ? "rgb(126, 135, 162)" : "rgb(56, 62, 80)",
+                border: "rgba(127, 127, 127, 0.4)",
+                marginFill: "rgba(127, 127, 127, 0.07)",
+            };
+        }
+
+        /** Effective (normalized) profile value of a stored profile object. */
+        profileValueAt(P, x) {
+            const env = this.envelopeOf(P.points, x);
+            let v = env;
+            if (P.cosOn) v = env * (0.5 + 0.5 * Math.cos(TAU * P.cosN * x - P.cosPhase));
+            const g = P.gamma || 1;
+            if (Math.abs(g - 1) > 1e-4) v = Math.pow(Math.min(Math.max(v, 0), 1), g);
+            return v;
+        }
+
+        /** Thin overlay line of a non-selected band profile. Its points are
+         *  directly grabbable (band selection only routes the presets), so
+         *  they are drawn as small hollow markers. */
+        drawBandOverlay(P, color) {
+            const ctx = this.ctx;
+            const n = P.cosOn ? COS_CURVE_SAMPLES : BAND_CURVE_SAMPLES;
+            ctx.save();
+            ctx.globalAlpha = 0.6;
+            ctx.beginPath();
+            for (let i = 0; i <= n; i++) {
+                const x = i / n;
+                const s = this.toScreen({ x: x, y: this.profileValueAt(P, x) });
+                if (i === 0) ctx.moveTo(s.sx, s.sy);
+                else ctx.lineTo(s.sx, s.sy);
+            }
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.globalAlpha = 0.9;
+            const bg = this.colors().background;
+            for (const p of P.points) {
+                const { sx, sy } = this.toScreen(p);
+                const held = p === this.dragPoint;
+                ctx.beginPath();
+                ctx.arc(sx, sy, held ? MID_POINT_RADIUS + 1 : MID_POINT_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = held ? color : bg;
+                ctx.fill();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        /** The current effective profile object of band b (working copy when
+         *  selected, store otherwise). No range: that is the plot's, shared. */
+        storedProfileOf(b) {
+            if (b !== this.band) return this.store[b];
+            return {
+                points: this.points,
+                cosOn: this.cosOn, cosN: this.cosN, cosPhase: this.cosPhase,
+                gamma: this.gamma || 1,
+            };
+        }
+
+        /** The current shape of band b: the working copy when selected. */
+        bandProfileFor(b) {
+            return this.storedProfileOf(b);
+        }
+
+        /**
+         * One small filled dot per sampling step, sitting ON a curve at the x
+         * that step reads its value from - so the plot states the values that
+         * run instead of leaving them to be eyeballed between separators.
+         *
+         * X follows the SAME uniform-cell model as the separators (N cells for
+         * N steps, `steps` from the tab's Steps slider): step k takes its value
+         * at the START of its cell, k/N. Every dot therefore lands on a
+         * separator - the k=0 one on the left border - so the two cues
+         * reinforce each other instead of forming two competing x grids, which
+         * is why the lines only needed a dash more brightness. Where the
+         * scheduler really places each step inside the timestep range stays out
+         * of scope here exactly as it is for the separators.
+         *
+         * Y always comes from the very function that drew the line
+         * (`valueAt`), never from a second approximation, so a dot cannot drift
+         * off its curve. The one exception is sub-pixel: a parabola segment's
+         * LINE is drawn as MID_CURVE_STEPS chords while the value is the exact
+         * parabola (< ~1e-3 normalized, the same tolerance the python side is
+         * documented to keep).
+         *
+         * Each dot is laid on a translucent background halo first, a softened
+         * version of what the point markers do: a dot flush against its own
+         * line is only a bulge, and where the multi-phase waves cross it would
+         * belong to either series. A part-opaque halo mutes the line under the
+         * dot just enough to separate the two, where the opaque one first
+         * tried here cut the curves into beaded strings and turned a 4-wave
+         * plot into visual noise (it also swallowed the green mid handle).
+         * Same reason the dots are small and take one muted tone (`stepDot`)
+         * rather than their curve's color: curves first, samples on a closer
+         * look. The halo radius is what sets STEP_DOT_MIN_SPACING - touching
+         * halos would chew the curve up.
+         *
+         * Cost: two paths and two fills for the whole curve, N arcs each - an
+         * order of magnitude under the COS_CURVE_SAMPLES-point polylines this
+         * same frame already strokes. The x/y of every dot is computed once and
+         * reused by both passes, and the caller drops the whole thing once the
+         * dots would collide.
+         */
+        drawStepDots(steps, valueAt, color, alpha, haloColor, radius) {
+            const ctx = this.ctx;
+            const r = this.plotRect();
+            ctx.save();
+            // flat [sx, sy, ...] scratch: no per-dot object for the second pass
+            const xy = this._dotScratch && this._dotScratch.length >= steps * 2
+                ? this._dotScratch
+                : (this._dotScratch = new Float64Array(Math.max(steps, 64) * 2));
+            for (let k = 0; k < steps; k++) {
+                const x = k / steps;
+                xy[k * 2] = r.left + x * r.w;
+                xy[k * 2 + 1] = r.top + (1 - valueAt(x)) * r.h;
+            }
+            // haloColor null = no halo pass: a bead in its line's own color
+            // needs no separation from it, and a ring would be the very notch
+            // this variant exists to avoid
+            const passes = [{ radius: radius, fill: color, alpha: alpha }];
+            if (haloColor) {
+                passes.unshift({ radius: STEP_DOT_HALO_RADIUS, fill: haloColor,
+                                 alpha: alpha * STEP_DOT_HALO_ALPHA });
+            }
+            for (const pass of passes) {
+                ctx.globalAlpha = pass.alpha;
+                ctx.fillStyle = pass.fill;
+                ctx.beginPath();
+                for (let k = 0; k < steps; k++) {
+                    const sx = xy[k * 2];
+                    const sy = xy[k * 2 + 1];
+                    // moveTo before each arc: without it canvas connects the
+                    // previous dot to this one with a chord of the shared path
+                    ctx.moveTo(sx + pass.radius, sy);
+                    ctx.arc(sx, sy, pass.radius, 0, TAU);
+                }
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        /** Dense screen-space samples of the modulated wave (cosine mode). */
+        cosineCurve() {
+            const out = [];
+            for (let i = 0; i <= COS_CURVE_SAMPLES; i++) {
+                const x = i / COS_CURVE_SAMPLES;
+                out.push(this.toScreen({ x: x, y: this.evaluate(x) }));
+            }
+            return out;
+        }
+
+        draw() {
+            const { w, h } = this.cssSize();
+            if (w <= 0 || h <= 0) return;
+            const ctx = this.ctx;
+            const r = this.plotRect();
+            const c = this.colors();
+
+            ctx.clearRect(0, 0, w, h);
+
+            // Margins backdrop; the plot area is kept transparent.
+            ctx.fillStyle = c.marginFill;
+            ctx.fillRect(0, 0, w, h);
+            ctx.clearRect(r.left, r.top, r.w, r.h);
+
+            // Grid.
+            ctx.strokeStyle = c.grid;
+            ctx.lineWidth = 1;
+            for (const q of [0.25, 0.5, 0.75]) {
+                ctx.beginPath();
+                ctx.moveTo(r.left + q * r.w, r.top);
+                ctx.lineTo(r.left + q * r.w, r.top + r.h);
+                ctx.moveTo(r.left, r.top + q * r.h);
+                ctx.lineTo(r.left + r.w, r.top + q * r.h);
+                ctx.stroke();
+            }
+            // Step separators: one dotted vertical per boundary between
+            // adjacent sampling steps (N cells for N steps), tracking the
+            // tab's main Steps slider. X is the relative step range, so the
+            // cells are uniform - where each step actually lands within the
+            // timestep range is the scheduler's business, not the editor's.
+            // Depth mode is excluded: there X is the injection layer, not the
+            // step, so both the separators and the per-step dots below would
+            // be marking something that axis does not measure.
+            const steps = this.band === DEPTH_KEY ? 0 : this.stepsCount();
+            if (steps > 1 && r.w / steps >= STEP_LINE_MIN_SPACING) {
+                ctx.save();
+                ctx.strokeStyle = c.stepLine;
+                ctx.setLineDash([1, 3]);
+                ctx.beginPath();
+                for (let k = 1; k < steps; k++) {
+                    const sx = r.left + (k / steps) * r.w;
+                    ctx.moveTo(sx, r.top);
+                    ctx.lineTo(sx, r.top + r.h);
+                }
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            ctx.strokeStyle = c.border;
+            ctx.strokeRect(r.left, r.top, r.w, r.h);
+
+            // Single X axis label. Tick values were redundant - X is always
+            // the fixed relative 0..1 step range - and the Y limits are
+            // stated by the range selects (a 0..1 scale there would be
+            // ambiguous: the drawn 0..1 is normalized, not the final weight).
+            // Drawn in the same bottom-margin band the ticks used, so the
+            // label costs no extra space.
+            ctx.fillStyle = c.text;
+            ctx.font = "12px sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "top";
+            // depth mode retitles the axis: same plot, different X meaning
+            // (0 = shallowest injection layer, 1 = deepest), and the arrow
+            // says which way it runs
+            ctx.fillText(this.band === DEPTH_KEY ? "Depth   fine → coarse" : "Steps",
+                         r.left + 0.5 * r.w, r.top + r.h + 7);
+
+            // the selected profile draws full-strength below in its color:
+            // white for main, purple for depth, the band color otherwise. In
+            // band mode the two NON-selected band lines go first, as thin
+            // underlays; depth mode shows its curve alone (the bands are its
+            // alternative, not its companions).
+            const curveColor = this.band === "main"
+                ? MAIN_COLOR
+                : (this.band === DEPTH_KEY ? DEPTH_COLOR : BAND_COLORS[this.band]);
+            if (this.band !== "main" && this.band !== DEPTH_KEY) {
+                for (const b of BAND_ORDER) {
+                    if (b !== this.band) this.drawBandOverlay(this.store[b], BAND_COLORS[b]);
+                }
+            }
+            // A drawn depth curve is NOT echoed onto the main plot (2026-07-25,
+            // user decision). Two dashed guides at main(step) x min/max(depth)
+            // used to mark the span the layers cover; they carried only the two
+            // extremes of the depth curve, said nothing about which layer sits
+            // where, and had to be clamped to the plot's Y limits - drawing a
+            // product that leaves the axis as a flat line along the border. The
+            // depth plot states depth; the step plot states steps.
+
+            // Profile curve, extended horizontally to both borders; segments
+            // with an active mid control are sampled as parabola arcs.
+            const extended = [{ x: 0, y: this.points[0].y }];
+            for (let i = 0; i < this.points.length; i++) {
+                extended.push(this.points[i]);
+                const p1 = this.points[i + 1];
+                if (p1 && this.points[i].mid && p1.x - this.points[i].x > 0) {
+                    for (let k = 1; k < MID_CURVE_STEPS; k++) {
+                        const x = this.points[i].x + ((p1.x - this.points[i].x) * k) / MID_CURVE_STEPS;
+                        extended.push({ x: x, y: this.envelopeAt(x) });
+                    }
+                }
+            }
+            extended.push({ x: 1, y: this.points[this.points.length - 1].y });
+            const screen = extended.map((p) => this.toScreen(p));
+
+            // In cosine mode the drawn curve is the wave, the envelope only a
+            // dashed guide. Same split with a non-linear response exponent:
+            // the solid line is the EFFECTIVE (bent) curve, the editable raw
+            // polyline stays as the dashed guide - the power of a piecewise-
+            // linear function is curved, so the effective line needs the
+            // dense sampling either way. No area fill below the line - the
+            // plot stays clean with several lines on it.
+            const gammaOn = Math.abs((this.gamma || 1) - 1) > 1e-4;
+            const waveScreen = (this.cosOn || gammaOn) ? this.cosineCurve() : screen;
+
+            if (this.cosOn || gammaOn) {
+                // envelope as a dashed guide: it stays the editable polyline
+                ctx.save();
+                ctx.setLineDash([4, 3]);
+                ctx.globalAlpha = 0.55;
+                ctx.beginPath();
+                for (let i = 0; i < screen.length; i++) {
+                    if (i === 0) ctx.moveTo(screen[i].sx, screen[i].sy);
+                    else ctx.lineTo(screen[i].sx, screen[i].sy);
+                }
+                ctx.strokeStyle = curveColor;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // multi-phase: the sibling waves each further Input runs, phase
+            // shifted by 2pi/n, as thin underlays below the main wave (the
+            // main wave IS input 1's profile). The count is resolved ONCE per
+            // frame (it walks the unit's DOM) and reused by the dot pass below.
+            let phaseCount = 0;
+            if (this.cosOn && this.multiPhase) {
+                phaseCount = this.multiPhaseCount();
+                this._lastPhaseCount = phaseCount;
+                ctx.save();
+                ctx.globalAlpha = 0.4;
+                for (let k = 1; k < phaseCount; k++) {
+                    const phase = this.cosPhase + (TAU * k) / phaseCount;
+                    ctx.beginPath();
+                    for (let i = 0; i <= COS_CURVE_SAMPLES; i++) {
+                        const x = i / COS_CURVE_SAMPLES;
+                        const s = this.toScreen({ x: x, y: this.phaseValueAt(x, phase) });
+                        if (i === 0) ctx.moveTo(s.sx, s.sy);
+                        else ctx.lineTo(s.sx, s.sy);
+                    }
+                    ctx.strokeStyle = curveColor;
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+
+            ctx.beginPath();
+            for (let i = 0; i < waveScreen.length; i++) {
+                if (i === 0) ctx.moveTo(waveScreen[i].sx, waveScreen[i].sy);
+                else ctx.lineTo(waveScreen[i].sx, waveScreen[i].sy);
+            }
+            ctx.strokeStyle = curveColor;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Per-step value dots, on top of every line that RUNS: the drawn
+            // profile plus, in multi-phase, one series per sibling Input - that
+            // is the case where reading values off the plot is hardest, since
+            // the waves cross and each Input takes a different value at the
+            // same step. Non-selected band underlays stay bare on purpose (they
+            // carry their own grabbable markers). Drawn after the
+            // curves so the dots sit on the lines, before the handles so a
+            // handle is never hidden by one.
+            if (steps > 1 && r.w / steps >= STEP_DOT_MIN_SPACING) {
+                for (let k = 1; k < phaseCount; k++) {
+                    const phase = this.cosPhase + (TAU * k) / phaseCount;
+                    this.drawStepDots(steps, (x) => this.phaseValueAt(x, phase),
+                                      c.stepDot, PHASE_DOT_ALPHA, c.background,
+                                      STEP_DOT_RADIUS);
+                }
+                this.drawStepDots(steps, (x) => this.evaluate(x), curveColor,
+                                  MAIN_DOT_ALPHA, null, MAIN_DOT_RADIUS);
+            }
+
+            // Segment mid controls: small green handles under the main
+            // vertices; passive linear midpoints are hollow, active parabola
+            // controls are filled.
+            for (let i = 0; i + 1 < this.points.length; i++) {
+                const m = this.midHandle(i);
+                if (!m) continue;
+                const { sx, sy } = this.toScreen(m);
+                const held = m.p0 === this.dragMid;
+                ctx.beginPath();
+                ctx.arc(sx, sy, held ? MID_POINT_RADIUS + 1 : MID_POINT_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = m.active ? MID_COLOR : c.background;
+                ctx.fill();
+                ctx.strokeStyle = MID_COLOR;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+
+            // Points.
+            for (const p of this.points) {
+                const { sx, sy } = this.toScreen(p);
+                const active = p === this.dragPoint;
+                ctx.beginPath();
+                ctx.arc(sx, sy, active ? POINT_RADIUS + 1 : POINT_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = active ? curveColor : c.background;
+                ctx.fill();
+                ctx.strokeStyle = curveColor;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            // Coordinates readout for the point or mid control being dragged.
+            const heldMid = this.dragMid && this.dragMid.mid
+                ? this.midHandle(this.points.indexOf(this.dragMid))
+                : null;
+            const readout = heldMid || this.dragPoint;
+            if (readout) {
+                const { sx, sy } = this.toScreen(readout);
+                const label = `${readout.x.toFixed(2)} , ${readout.y.toFixed(2)}`;
+                ctx.font = "11px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "bottom";
+                const tx = Math.min(Math.max(sx, r.left + 24), r.left + r.w - 24);
+                const ty = sy - 10 < r.top + 12 ? sy + 22 : sy - 10;
+                ctx.fillStyle = heldMid ? MID_COLOR : (this.dragColor || curveColor);
+                ctx.fillText(label, tx, ty);
+            }
+
+            // Band mode: C / M / F letters riding their lines (staggered x
+            // positions, since untouched bands all sit flat at 1.0). Depth
+            // mode draws one curve and needs no letters.
+            if (this.band !== "main" && this.band !== DEPTH_KEY) {
+                ctx.font = "bold 11px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "bottom";
+                for (const b of BAND_ORDER) {
+                    const lx = BAND_LABEL_X[b];
+                    const s = this.toScreen({ x: lx, y: this.profileValueAt(this.bandProfileFor(b), lx) });
+                    ctx.fillStyle = BAND_COLORS[b];
+                    ctx.fillText(BAND_LABELS[b], s.sx, Math.max(s.sy - 3, r.top + 11));
+                }
+            }
+        }
+    }
+
+    const editors = [];
+    const initialized = new WeakSet();
+
+    // Headless load (node, no webui globals): the grammar half of this file is
+    // the python side's twin and is covered by tests/test_profile_parity.py,
+    // which needs the class without any of the DOM wiring below. Exporting it
+    // and guarding the registrations is all that takes - keep both, or the
+    // parity test silently stops running.
+    if (typeof module !== "undefined" && module.exports) {
+        module.exports = { WeightProfileEditor: WeightProfileEditor };
+    }
+    if (typeof onUiUpdate !== "function") return;
+
+    onUiUpdate(() => {
+        gradioApp().querySelectorAll(".cnet-weight-profile-editor").forEach((block) => {
+            if (initialized.has(block)) return;
+            const container = block.querySelector(".cnet-weight-profile");
+            const row = block.closest(".controlnet_weight_steps");
+            const textarea = row && row.querySelector(".cnet-weight-profile-state textarea");
+            if (!container || !textarea) return;
+            // latched BEFORE the constructor on purpose (a throwing ctor must
+            // not retry-storm every ui update), but a throw is at least SAID -
+            // the old silent blacklisting left the widget dead with no clue
+            initialized.add(block);
+            try {
+                editors.push(new WeightProfileEditor(container, textarea));
+            } catch (err) {
+                console.warn("[controlnet profile] editor init failed for", block, err);
+            }
+        });
+    });
+
+    // Redraw editors when their hidden textbox is updated from the python side
+    // (infotext paste, UI state restore, ...). onAfterUiUpdate rides a
+    // childList-only MutationObserver, so a VALUE-only textbox write produces
+    // no callback at all - pastes only worked because they happen to churn
+    // other DOM. The interval below is the guaranteed channel (one string
+    // compare per editor per tick when idle); the observer path stays as the
+    // fast lane. The same tick re-checks devicePixelRatio (a monitor change
+    // resizes nothing, so the ResizeObserver never fires), the model-type
+    // gate of the band buttons, and the multi-phase input count (uploading /
+    // clearing / muting an Input changes how many sibling waves run, but
+    // touches nothing the editor observes).
+    const reloadAll = () => editors.forEach((editor) => editor.maybeReload());
+    if (typeof onAfterUiUpdate === "function") {
+        onAfterUiUpdate(reloadAll);
+    } else {
+        onUiUpdate(reloadAll);
+    }
+    // shared tick (active_canvas.js): one timer for every module here, and
+    // skipped entirely while no unit body is laid out
+    window.cnetRegisterTick(() => {
+        for (const editor of editors) {
+            editor.maybeReload();
+            if (editor._lastDpr && (window.devicePixelRatio || 1) !== editor._lastDpr) {
+                editor.resize();
+            }
+            // multi-phase preview follows the number of active inputs; the
+            // count is written back here too (not only in draw) so a hidden
+            // canvas (draw early-returns at zero size) does not retry-storm
+            if (editor.cosOn && editor.multiPhase) {
+                const n = editor.multiPhaseCount();
+                if (n !== editor._lastPhaseCount) {
+                    editor._lastPhaseCount = n;
+                    editor.draw();
+                }
+            }
+        }
+    });
+})();

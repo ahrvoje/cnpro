@@ -1,0 +1,12 @@
+opencv-python>=4.8.0
+
+# CNPro imports nothing else directly. The previous list (fvcore, mediapipe,
+# onnxruntime, svglib) came from the upstream ControlNet extension, which also
+# shipped the preprocessors; in this host those live in a separate extension
+# (forge_legacy_preprocessors) and declare their own requirements. svglib in
+# particular had exactly one consumer, utils.svg_preprocess, now removed.
+#
+# One soft dependency is NOT expressible here: lib_cnpro/controlnet_ui/
+# openpose_editor.py imports `annotator.openpose`, provided by that
+# preprocessor extension. CNPro needs it installed and enabled for the pose
+# editor; everything else works without it.

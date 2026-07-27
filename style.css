@@ -1,0 +1,2075 @@
+/* InputAccordion alignment */
+/* Flex container */
+.controlnet .svelte-vt1mxs {
+    display: flex;
+    flex-wrap: wrap;
+    flex-direction: row;
+    gap: 10px;
+    /* Adjusts the space between items */
+}
+
+.controlnet .input-accordion {
+    flex: 1 1 calc(50% - 10px);
+    /* Adjusts for the gap, default 2 columns */
+    display: flex;
+    align-items: center;
+}
+
+/* Media query for screens smaller than a specific width */
+@media (max-width: 600px) {
+    .controlnet .input-accordion {
+        flex: 1 1 100%;
+        /* Changes to 1 column when window width is ≤ 600px */
+    }
+}
+/* Input image thumbnail */
+.cnet-thumbnail {
+    height: 3rem !important;
+    border: 1px solid var(--button-secondary-border-color);
+}
+
+.controlnet .input-accordion .label-wrap>span:nth-child(1) {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 5px;
+}
+
+.controlnet .input-accordion .icon {
+    height: 1rem;
+    width: 1rem;
+}
+
+.controlnet .input-accordion .label-wrap {
+    align-items: center;
+}
+
+.cnet-modal {
+    display: none;
+    /* Hidden by default */
+    position: fixed;
+    /* Stay in place */
+    z-index: 2147483647;
+    /* Sit on top */
+    left: 0;
+    top: 0;
+    width: 100%;
+    /* Full width */
+    height: 100%;
+    /* Full height */
+    overflow: auto;
+    /* Enable scroll if needed */
+    background-color: rgba(0, 0, 0, 0.4);
+    /* Black with opacity */
+    max-width: none !important;
+    /* Fix sizing with SD.Next (vladmandic/automatic#2594) */
+}
+
+.cnet-modal-content {
+    position: relative;
+    background-color: var(--background-fill-primary);
+    margin: 5vh auto;
+    /* 15% from the top and centered */
+    padding: 20px;
+    border: 1px solid #888;
+    width: 95%;
+    height: 90vh;
+    /* Could be more or less, depending on screen size */
+    box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+    animation-name: animatetop;
+    animation-duration: 0.4s;
+    max-width: none !important;
+    /* Fix sizing with SD.Next (vladmandic/automatic#2594) */
+}
+
+.cnet-modal-content iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+
+.cnet-modal-content.alert {
+    padding: var(--size-5);
+}
+
+.cnet-modal-content.alert ul {
+    list-style-type: none;
+}
+
+.cnet-modal-close {
+    color: white !important;
+    right: 0.25em;
+    top: 0;
+    cursor: pointer;
+    position: absolute;
+    font-size: 56px;
+    font-weight: bold;
+}
+
+@keyframes animatetop {
+    from {
+        top: -300px;
+        opacity: 0
+    }
+
+    to {
+        top: 0;
+        opacity: 1
+    }
+}
+
+.cnet-generated-image-control-group,
+.cnet-upload-pose {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+
+    position: absolute;
+    right: var(--size-2);
+    bottom: var(--size-2);
+}
+
+/* Gradio button style */
+.cnet-download-pose a,
+.cnet-close-preview,
+.cnet-edit-pose,
+.cnet-upload-pose,
+.cnet-photopea-child-trigger {
+    font-size: x-small !important;
+    font-weight: bold !important;
+    padding: 2px !important;
+    box-shadow: var(--shadow-drop);
+    border: 1px solid var(--button-secondary-border-color);
+    border-radius: var(--radius-sm);
+    background: var(--background-fill-primary);
+    height: var(--size-5);
+    color: var(--block-label-text-color) !important;
+    display: flex;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.cnet-download-pose:hover a,
+.cnet-close-preview:hover a,
+.cnet-edit-pose:hover,
+.cnet-upload-pose:hover,
+.cnet-photopea-child-trigger:hover {
+    color: var(--block-label-text-color) !important;
+}
+
+.cnet-unit-active {
+    color: green !important;
+    font-weight: bold !important;
+}
+
+.dark .cnet-unit-active {
+    color: greenyellow !important;
+}
+
+.cnet-badge {
+    display: inline-block;
+    padding: 0.25em 0.75em;
+    font-size: 0.75em;
+    font-weight: bold;
+    color: white;
+    border-radius: 0.5em;
+    text-align: center;
+    vertical-align: middle;
+    margin-left: var(--size-2);
+}
+
+.cnet-badge.primary {
+    background-color: green;
+}
+
+.cnet-a1111-badge {
+    position: absolute;
+    bottom: 0px;
+    right: 0px;
+}
+
+.cnet-disabled-radio {
+    opacity: 50%;
+}
+
+.controlnet_row {
+    margin-top: 10px !important;
+}
+
+/* JSON pose upload button styling */
+.cnet-upload-pose input[type=file] {
+    position: absolute;
+    left: 0;
+    top: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* Photopea integration styles */
+.photopea-button-group {
+    position: absolute;
+    top: -30px; /* 20px modal padding + 10px margin */
+}
+
+.photopea-button {
+    font-size: 3rem;
+    font-weight: bold;
+    padding: 2px !important;
+    margin: 2px !important;
+    box-shadow: var(--shadow-drop);
+    border: 1px solid var(--button-secondary-border-color);
+    border-radius: var(--radius-sm);
+    background: var(--background-fill-primary);
+    color: var(--block-label-text-color);
+}
+
+.controlnet_control_type_filter_dropdown {
+    min-width: 130px !important;
+}
+
+.cnet-toolbutton {
+    background: unset !important;
+    border: unset !important;
+}
+
+/* Below-canvas button row. Layout principles:
+   - every tool button is forced to the SAME fixed footprint (no per-button
+     styling), so no member's content - emoji or text like the 1M label -
+     can ever skew the group's sizing or spacing;
+   - the row's own compact gap is the only spacing between members;
+   - the group anchors to the TOP of the row (small fixed offset from the
+     canvas border), so its vertical position never depends on how many
+     lines the hint label next to it wraps into. */
+.controlnet_image_controls {
+    gap: 0.25em !important;
+    align-items: flex-start !important;
+    margin-top: 2px !important;
+    /* single row, always: the hint shares the line with the button group */
+    flex-wrap: nowrap !important;
+}
+
+/* the hint gets exactly the space the buttons leave over (flex-basis 0 so
+   its text length can never push the group into a second row - it wraps
+   internally instead), keeping the buttons one compact group on the right */
+.controlnet_image_controls .controlnet_invert_warning {
+    flex: 1 1 0 !important;
+    min-width: 0;
+}
+
+.controlnet_image_controls .cnet-toolbutton {
+    /* every member hugs its own content with the SAME small padding, and the
+       group gap is the SAME between all members - so the visible glyph
+       spacing is constant and tight regardless of content width (fixed
+       equal-width slots cannot achieve this: the widest label defines the
+       slot, and narrow glyphs float in empty box that reads as distance) */
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    flex: 0 0 auto !important;
+    padding: 0 0.1em !important;
+    white-space: nowrap;
+    text-align: center;
+    align-self: flex-start !important; /* .tool bottom-aligns; top-anchor instead */
+    margin-top: 2px;
+    /* compact vertical footprint: the .tool base is 2.4em tall for a one-line
+       glyph - drop the box to just above the line box instead */
+    height: 1.6em !important;
+    min-height: 0 !important;
+    line-height: 1 !important;
+}
+
+/* the insert buttons (and any future member) toggle 'disabled' from JS
+   (javascript/insert_image.js) when their source image is unavailable: keep
+   them visible but unmistakably inert */
+.controlnet_image_controls .cnet-toolbutton:disabled {
+    opacity: 0.35 !important;
+    cursor: default !important;
+    pointer-events: none;
+}
+
+/* gradio auto-wraps consecutive tool buttons (form components) of a Row in
+   a .form container whose flex-grow accumulates +1 per child - left alone
+   it swallows the hint's space and spreads the buttons across it. Pin the
+   wrapper to its content size and make it the packing flexbox of the
+   group, so the buttons sit tactically close with only the small gap
+   between them. */
+.controlnet_image_controls > .form,
+.controlnet_image_controls > *:has(> .cnet-toolbutton) {
+    flex: 0 0 auto !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 0.05em !important;
+    align-items: flex-start !important;
+    min-width: 0 !important;
+    border: none !important;
+    background: none !important;
+}
+
+/* Control Weight Profile editor */
+.cnet-weight-profile-editor {
+    width: 100%;
+}
+
+.cnet-weight-profile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;   /* nothing may escape the unit column */
+}
+
+.cnet-weight-profile-label {
+    color: var(--block-title-text-color);
+    font-size: var(--block-title-text-size);
+    font-weight: var(--block-title-text-weight);
+}
+
+.cnet-weight-profile-hint {
+    color: var(--body-text-color-subdued);
+    font-weight: normal;
+    font-size: 11px;
+}
+
+.cnet-weight-profile-body {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: 8px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+/* preset buttons: vertical column left of the plot, together spanning
+   its full height (applied by javascript/weight_profile.js) */
+.cnet-weight-profile-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.cnet-profile-preset {
+    flex: 1 1 0;
+    min-height: 0;
+    width: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 0;
+    border: 1px solid rgba(127, 127, 127, 0.4);
+    border-radius: var(--block-radius);
+    background: transparent;
+    color: var(--body-text-color-subdued);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.cnet-profile-preset:hover {
+    color: var(--primary-400, #4b7ecb);
+    border-color: var(--primary-400, #4b7ecb);
+}
+
+/* preset whose free parameter the vertical slider currently regulates */
+.cnet-profile-preset-active {
+    color: var(--primary-400, #4b7ecb);
+    border-color: var(--primary-400, #4b7ecb);
+    background: color-mix(in srgb, var(--primary-400, #4b7ecb) 15%, transparent);
+}
+
+/* Preset parameter pad: a square XY control next to the preset buttons. Its
+   two axes are the two parameters of whichever preset holds focus (step:
+   jump position x height; cosine: phase x oscillation count), so the pad
+   replaces the old single free-parameter slider. Inert until a preset is
+   clicked - that click binds the pad without touching the profile. */
+.cnet-profile-preset-pad {
+    flex: 0 0 auto;
+    align-self: center;
+    position: relative;
+    border: 1px solid rgba(127, 127, 127, 0.45);
+    border-radius: 4px;
+    background:
+        linear-gradient(to right, transparent calc(50% - 1px),
+            rgba(127, 127, 127, 0.25) calc(50% - 1px),
+            rgba(127, 127, 127, 0.25) calc(50% + 1px), transparent calc(50% + 1px)),
+        linear-gradient(to bottom, transparent calc(50% - 1px),
+            rgba(127, 127, 127, 0.25) calc(50% - 1px),
+            rgba(127, 127, 127, 0.25) calc(50% + 1px), transparent calc(50% + 1px));
+    opacity: 0.45;
+    cursor: default;
+    touch-action: none;
+}
+
+.cnet-profile-preset-pad.cnet-profile-pad-armed {
+    opacity: 1;
+    cursor: crosshair;
+    border-color: var(--primary-400, #4b7ecb);
+}
+
+/* Step preset only: the pad's horizontal middle is the DIRECTION split (above
+   it the raised part of the step is on the right, below it on the left, and
+   the distance from it is the height). The idle crosshair already marks the
+   centre; this makes that one line explicit while step holds focus, because
+   crossing it is what replaced the old invert toggle. */
+.cnet-profile-preset-pad.cnet-profile-pad-split::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 50%;
+    border-top: 1px dashed var(--primary-400, #4b7ecb);
+    opacity: 0.75;
+    pointer-events: none;
+}
+
+.cnet-profile-pad-dot {
+    position: absolute;
+    display: none;
+    width: 9px;
+    height: 9px;
+    margin: -5px 0 0 -5px;   /* centre the dot on its coordinate */
+    border-radius: 50%;
+    background: var(--primary-400, #4b7ecb);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+}
+
+.cnet-profile-preset svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+}
+
+/* band selector: four thin bars at the bottom of the presets column (weight
+   editor only). main (orange) = the whole-unit profile; coarse/mid/fine
+   (red/green/blue) = per-step multipliers of those injection bands. Exactly
+   one is pressed: main mode shows only the main line, band mode shows all
+   three C/M/F lines and edits the selected one. */
+.cnet-profile-bands {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 2px;
+}
+
+/* each button IS its profile line: a solid, full-color bar (the "icon"), so
+   the four colors read identically whether selected or not; selection is the
+   same accent border the other preset toggles use */
+.cnet-profile-band {
+    width: 32px;
+    height: 11px;
+    padding: 0;
+    margin: 0;
+    border: 1px solid rgba(127, 127, 127, 0.4);
+    border-radius: 3px;
+    /* the theme's button reset kills background-image, hence the !important */
+    background-image: linear-gradient(var(--band-color), var(--band-color)) !important;
+    background-size: calc(100% - 8px) 3px;
+    background-position: center;
+    background-repeat: no-repeat;
+    cursor: pointer;
+    transition: border-color 0.15s, background-color 0.15s;
+}
+
+.cnet-profile-band:hover {
+    border-color: var(--primary-400, #4b7ecb);
+}
+
+.cnet-profile-band-active {
+    border-color: var(--primary-400, #4b7ecb);
+    background-color: color-mix(in srgb, var(--primary-400, #4b7ecb) 15%, transparent);
+}
+
+.cnet-weight-profile-canvas {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 200px;
+    touch-action: none;
+    border-radius: var(--block-radius);
+    cursor: crosshair;
+}
+
+/* Control Type / Preprocessor / Model selectors: column left of the image
+   canvas (the main option checkboxes are kept hidden in this column; Enable
+   is driven by the accordion title checkbox). The global
+   `.controlnet .svelte-vt1mxs` rule (unit tiling) turns gradio columns into
+   wrapping ROWS: each full-width selector then sits on its own flex line and
+   the default align-content:stretch divides the leftover height among the
+   lines, which made the spacing vary wildly with the selector count. Force a
+   real top-packed column with a fixed gap (min() lets it tighten slightly on
+   short viewports). */
+/* Metrics of the unit body. The selector column is what defines them, and the
+   canvas side is pinned to the result - see the STATIC UNIT BODY HEIGHT
+   section at the end of this file. */
+:root {
+    --cnet-option-gap: min(14px, 2.2vh);
+    /* one selector = its label + its control (measured 67.6px in this theme) */
+    --cnet-option-row-h: 67.6px;
+    /* the column at its FULL count of four selectors - the tallest it can get,
+       and the height the whole unit body is laid out at */
+    --cnet-unit-body-h: calc(4 * var(--cnet-option-row-h) + 3 * var(--cnet-option-gap));
+}
+
+.controlnet_main_options_column {
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    justify-content: flex-start !important;
+    align-content: flex-start !important;
+    align-self: stretch;
+    gap: var(--cnet-option-gap) !important;
+    margin-right: 14px !important;
+    /* a Control Type with fewer selectors must not shorten the unit: the
+       leftover space stays empty rather than moving everything up */
+    min-height: var(--cnet-unit-body-h);
+}
+
+/* the selector column's .form wrapper (Resize Mode) has its own smaller
+   gap: match it to the column gap so every seam is identical */
+.controlnet_main_options_column > .form {
+    gap: var(--cnet-option-gap) !important;
+}
+
+.controlnet_main_options_column > * {
+    flex-grow: 0 !important;
+}
+
+/* Per-unit prompts live on their own P / N canvas tabs (right of Output
+   mask): zero permanent space, and each box fills its tab panel exactly like
+   a canvas does (see STATIC UNIT BODY HEIGHT) - no autogrow, it scrolls */
+.controlnet_unit_prompt {
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+.controlnet_unit_prompt textarea {
+    resize: none;
+    overflow-y: auto !important;
+}
+
+/* Dropdown POPUPS (Control Type / Preprocessor / Model / Resize Mode) size to
+   their longest entry instead of to the narrow selector they hang under -
+   model filenames are far longer than the column is wide. Only the popup
+   grows; the selector keeps its layout width.
+
+   Gradio writes an inline `width: <input width>px` on ul.options; min-width
+   beats it whenever the content is wider, so the popup ends up at
+   max(selector width, longest entry) - it never renders narrower than the
+   selector it drops from. No max-width cap here on purpose: min-width is not
+   clamped by max-width, so a cap would be dead CSS. The list is
+   position:fixed, so an over-long entry cannot widen the page either way. */
+.controlnet_main_options_column ul.options {
+    min-width: max-content !important;
+}
+
+.controlnet_main_options_column ul.options .item {
+    white-space: nowrap;
+}
+
+/* main option checkboxes stay in the DOM (Enable is clicked programmatically
+   by the accordion-title sync in javascript/active_units.js) but are never
+   shown; gr.Column(visible=False) alone does not reliably hide them */
+.controlnet_hidden_options {
+    display: none !important;
+}
+
+/* Preprocessor / Model rows: dropdown grows, tool button keeps its compact
+   size and sits bottom-aligned next to the dropdown input */
+.controlnet_main_options_column .controlnet_preprocessor_model {
+    display: flex !important;
+    flex-flow: row nowrap !important;
+    align-items: flex-end !important;
+    gap: 6px !important;
+}
+
+.controlnet_main_options_column .controlnet_preprocessor_model > * {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+}
+
+/* if gradio wraps the tool button in an intermediate container, size the
+   wrapper to the button instead of letting it grow */
+.controlnet_main_options_column .controlnet_preprocessor_model > *:has(.cnet-toolbutton) {
+    flex: 0 0 auto !important;
+    align-self: flex-end !important;
+}
+
+.controlnet_main_options_column .controlnet_preprocessor_model .cnet-toolbutton {
+    flex: 0 0 auto !important;
+    width: 2.2em !important;
+    min-width: 2.2em !important;
+    height: 2.4em !important;
+    align-self: flex-end !important;
+    margin: 0 0 2px 0 !important;
+}
+
+/* the input canvas no longer offers mask scribbling (no_scribbles=True, the
+   weight mask tool replaced it): hide the leftover brush controls and the
+   scribble Reset/Undo/Redo buttons on that canvas only. The toolbar Remove
+   and Upload buttons are hidden too (toolbar diet) - the Clear and Load
+   image buttons below the canvas (next to Open new canvas) took over. */
+.cnet-input-image-group [id^="scribbleColorBlock_"],
+.cnet-input-image-group [id^="scribbleWidthBlock_"],
+.cnet-input-image-group [id^="scribbleAlphaBlock_"],
+.cnet-input-image-group [id^="scribbleSoftnessBlock_"],
+.cnet-input-image-group [id^="scribbleIndicator_"],
+.cnet-input-image-group [id^="resetButton_"],
+.cnet-input-image-group [id^="removeButton_"],
+.cnet-input-image-group [id^="uploadButton_"],
+.cnet-input-image-group [id^="undoButton_"],
+.cnet-input-image-group [id^="redoButton_"] {
+    display: none !important;
+}
+
+/* canvas tab strip order (POSITIONAL - update when a tab is added):
+   [In x5] [+] [Output mask] [P] [N]. Output mask / P / N are not input
+   sources, so that trio right-aligns: margin-left auto on Output mask
+   (3rd from the end) pushes it and everything after it to the far right. */
+.cnet-image-tabs .tab-nav button:nth-last-child(3) {
+    margin-left: auto;
+}
+
+/* Input tabs are visually sortable (move-left button): tab_marks.js sets CSS
+   order 1..N on the input buttons from the hidden input_order channel. Every
+   strip button defaults to a HIGHER order, so [+] / Output mask / P / N keep
+   trailing (ties resolve by DOM order, which also covers first paint before
+   the script has run). DOM order never changes - the positional selectors
+   above stay valid. */
+.cnet-image-tabs .tab-nav button {
+    order: 99;
+}
+
+/* ... except the Input tabs themselves, which default LOW: gradio re-creates
+   a strip button whenever it becomes (or stops being) the selected tab, and
+   the new node carries no inline order until tab_marks.js runs again. Without
+   this the tab would jump behind + / Output mask / P / N for that frame.
+   Matches only the input buttons - "..._add_input_tab-button" has no trailing
+   underscore after "tab" and is left at 99 with the rest of the trio. */
+.cnet-image-tabs .tab-nav button[id*="_input_tab_"] {
+    order: 1;
+}
+
+/* "+" opener: reads as an action, not as a place - narrow, centered glyph.
+   It is the button right before the right-aligned Output mask tab. */
+.cnet-image-tabs .tab-nav button:nth-last-child(4) {
+    font-weight: 700;
+    font-size: 1.1em;
+    padding-left: 0.75em !important;
+    padding-right: 0.75em !important;
+}
+
+/* P / N prompt tabs: single-letter places, kept narrow like the "+" glyph */
+.cnet-image-tabs .tab-nav button:nth-last-child(-n+2) {
+    padding-left: 0.75em !important;
+    padding-right: 0.75em !important;
+}
+
+/* tab holding an image: marked on the strip, so the canvases hidden behind the
+   other tabs (all of which are preprocessed on Generate) are visible at a
+   glance - set by javascript/tab_marks.js */
+.cnet-image-tabs .tab-nav button.cnet-tab-filled {
+    border: 1px solid #e53935 !important;
+    border-radius: 6px 6px 0 0;
+}
+
+/* muted slot ("use this input" unchecked): filled-but-inactive, visible from
+   the strip - set by javascript/tab_marks.js */
+.cnet-image-tabs .tab-nav button.cnet-tab-muted {
+    opacity: 0.45;
+    text-decoration: line-through;
+}
+
+/* per-slot mute checkbox, injected by tab_marks.js into each Input tab's
+   strip button BEFORE the title text (the gradio .cnet-input-enabled
+   checkboxes are hidden state channels; do not style them visible).
+   Clicking it toggles the slot without selecting the tab.
+   Fully self-drawn (appearance: none) so it cannot inherit the theme's
+   checkbox border, which rendered inconsistently in the strip: a flat
+   borderless square, gray when unchecked, accent + white check when on.
+   Pseudo-elements do not render on <input>, hence the SVG data-uri check. */
+.cnet-image-tabs .tab-nav button .cnet-tab-mute {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    width: 13px;
+    height: 13px;
+    margin: 0 4px 0 0;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+    border-radius: 3px;
+    background-color: rgba(127, 127, 127, 0.35);
+    vertical-align: -2px;
+    cursor: pointer;
+}
+
+.cnet-image-tabs .tab-nav button .cnet-tab-mute:checked {
+    /* black fill, not the theme accent: the accent (orange/red in this
+       theme) reads as an alert in the strip; checked = white check on black */
+    background-color: #000000;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5 L6.5 11.5 L12.5 4.5'/%3E%3C/svg%3E");
+    background-size: 100% 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
+/* compact strip: checkbox + "In" per tab; side padding trimmed vs the theme
+   default, but kept generous enough that the label stays an easy click
+   target for selecting the tab (the checkbox owns its own click) */
+.cnet-image-tabs .tab-nav button {
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+}
+
+.cnet-add-input-hint {
+    margin: 6px 2px;
+    opacity: 0.7;
+    font-size: 0.9em;
+}
+
+/* close-tab button: a cross, and coloured apart from the 🗑️ clear button next
+   to it - one drops the tab, the other only empties the canvas */
+.cnet-close-tab {
+    font-weight: 700;
+}
+
+.cnet-close-tab:not([disabled]) {
+    color: #e53935;
+}
+
+/* Output mask canvas: the image on it is a throwaway drawing backdrop, so the
+   whole editing toolbar is pointless there - only Maximize/Minimize, Center
+   and the G weight-mask tool survive. Loading a backdrop still works by
+   clicking the empty canvas (the core upload hint) or dropping a file on it.
+   The C/M/F band tools are never armed on this canvas (weight_mask.js gives it
+   a single slot), so they are hidden here as well to keep them inert if the
+   canvas layer ever reveals them. */
+.cnet-output-mask-group [id^="scribbleColorBlock_"],
+.cnet-output-mask-group [id^="scribbleWidthBlock_"],
+.cnet-output-mask-group [id^="scribbleAlphaBlock_"],
+.cnet-output-mask-group [id^="scribbleSoftnessBlock_"],
+.cnet-output-mask-group [id^="scribbleIndicator_"],
+.cnet-output-mask-group [id^="resetButton_"],
+.cnet-output-mask-group [id^="removeButton_"],
+.cnet-output-mask-group [id^="uploadButton_"],
+.cnet-output-mask-group [id^="undoButton_"],
+.cnet-output-mask-group [id^="redoButton_"],
+.cnet-output-mask-group [id^="topazMpxButton_"],
+.cnet-output-mask-group [id^="topazHqButton_"],
+.cnet-output-mask-group [id^="topazDenoiseButton_"],
+.cnet-output-mask-group [id^="wmaskCoarseButton_"],
+.cnet-output-mask-group [id^="wmaskMidButton_"],
+.cnet-output-mask-group [id^="wmaskFineButton_"],
+.cnet-output-mask-group .forge-adjust-control {
+    display: none !important;
+}
+
+/* ---------------------------------------- weight-mask slots follow the profile
+
+   Each slot wears the colour of the profile it belongs to, and the profile
+   editor's band selector decides which slots a generation actually uses: G is
+   the MAIN profile's mask, C/M/F are the band profiles'. The colours come from
+   the same three variables the plot lines use (--cnet-band-*), so a slot and
+   its curve can never drift apart into two different reds.
+
+   G stays white because the main profile's line is white. Styled by CLASS, not
+   by id, so a slot added to the registry is coloured by declaring itself. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-wmask-slot-coarse {
+    color: var(--cnet-band-coarse, #e53935);
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-wmask-slot-mid {
+    color: var(--cnet-band-mid, #fdd835);
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-wmask-slot-fine {
+    /* the plot's blue is dark against the toolbar's grey; lightened here only,
+       so the line keeps the colour that reads best on the plot's background */
+    color: #64b5f6;
+}
+
+/* A slot the selected profile does not use. Dimmed, NOT disabled: painting a
+   band mask while main is selected is legitimate preparation, and the paint is
+   kept. weight_mask.js also puts the reason in the tooltip, and the python side
+   warns at generation time if paint in a dormant slot never got applied. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn.cnet-wmask-dormant {
+    opacity: 0.35;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn.cnet-wmask-dormant:hover {
+    opacity: 0.75;
+}
+
+/* rainbow-hue weight mask (canvas toolbar tool): custom-drawn track shows the
+   value-to-color mapping (left = 0 = violet ... right = 1 = red, 270deg span);
+   native appearance is disabled because the default track hides the gradient */
+.forge-wmask-range {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    width: 260px;  /* double the default slider length */
+    height: 20px;
+    background: transparent !important;
+}
+
+.forge-wmask-range::-webkit-slider-runnable-track {
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(to right,
+        hsl(270, 100%, 50%), hsl(225, 100%, 50%), hsl(180, 100%, 50%),
+        hsl(135, 100%, 50%), hsl(90, 100%, 50%), hsl(45, 100%, 50%),
+        hsl(0, 100%, 50%));
+}
+
+.forge-wmask-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    box-sizing: border-box;
+    width: 12px;
+    height: 20px;
+    margin-top: -4px;  /* center the 20px thumb on the 12px track */
+    border-radius: 4px;
+    background: #ffffff;
+    border: 2px solid #000000;
+}
+
+.forge-wmask-range::-moz-range-track {
+    height: 12px;
+    border-radius: 6px;
+    background: linear-gradient(to right,
+        hsl(270, 100%, 50%), hsl(225, 100%, 50%), hsl(180, 100%, 50%),
+        hsl(135, 100%, 50%), hsl(90, 100%, 50%), hsl(45, 100%, 50%),
+        hsl(0, 100%, 50%));
+}
+
+.forge-wmask-range::-moz-range-thumb {
+    box-sizing: border-box;
+    width: 12px;
+    height: 20px;
+    border-radius: 4px;
+    background: #ffffff;
+    border: 2px solid #000000;
+}
+
+/* Scale range: two selects right of the plot, top = range maximum, bottom =
+   range minimum. Styled to match the preset buttons rather than gradio's
+   default form controls, so the editor reads as one instrument. */
+.cnet-profile-scale {
+    flex: 0 0 auto;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2px 0;
+    gap: 4px;
+}
+
+.cnet-profile-scale select {
+    -webkit-appearance: none;
+    appearance: none;
+    min-width: 0;
+    width: 3.4em;
+    padding: 3px 4px;
+    text-align: center;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--body-text-color);
+    background: var(--background-fill-primary);
+    border: 1px solid rgba(127, 127, 127, 0.45);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+/* Focus marks itself on the BORDER, like hover, and the control keeps exactly
+   the size it has when blurred. The browser's default ring is drawn OUTSIDE
+   the border box, and this column ends flush with the editor's overflow:hidden
+   box, so that ring came out clipped - the select read as cut off the moment
+   it was clicked. A border color sits inside the border box and cannot be
+   clipped by anything. */
+.cnet-profile-scale select:hover,
+.cnet-profile-scale select:focus,
+.cnet-profile-scale select:focus-visible {
+    border-color: var(--primary-400, #4b7ecb);
+}
+
+.cnet-profile-scale select:focus,
+.cnet-profile-scale select:focus-visible {
+    outline: none;
+}
+
+/* Response exponent slider: fills the free middle of the range column.
+   writing-mode makes the native range vertical with MIN at the top, which is
+   exactly the wanted orientation (top -100 = x^0.1 ... bottom 100 = x^10).
+   The wrapper's ::before line is the single tick at mid-travel = e 1. */
+.cnet-profile-gamma-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-height: 30px;
+}
+
+/* absolutely positioned so the vertical range input contributes NO intrinsic
+   size: a flowed writing-mode range reports a huge natural height and would
+   inflate the wrapper -> the scale column -> the whole editor to viewport
+   height (measured 1200px). Horizontal centering is EXPLICIT
+   (left 50% + translate) - inset+margin:auto proved unreliable for a
+   vertical-writing-mode range (Chromium parked it at the left edge). */
+.cnet-profile-gamma {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    margin: 0;
+    writing-mode: vertical-lr;
+    width: 14px;
+    height: 100%;
+    padding: 0;
+    cursor: pointer;
+}
+
+.cnet-profile-gamma-wrap::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    top: 50%;
+    border-top: 1px solid rgba(127, 127, 127, 0.6);
+    pointer-events: none;
+}
+
+/* ---- the unit must be able to SHRINK back, not just grow ----------------
+   Two things made the widget one-way: gradio puts a hard
+   `min-width: min(320px, 100%)` on every column, which is a floor the row
+   cannot go below (so a narrowed panel overflows instead of reflowing), and
+   the parameter pad carries a pixel width written by JS, which a stale layout
+   pass could otherwise keep at its widest. Clearing the floors and making the
+   pad shrinkable means every element can give width back when the panel is
+   dragged narrower again. */
+.controlnet_image_and_options {
+    min-width: 0 !important;
+    max-width: 100%;
+    flex-wrap: nowrap !important;
+}
+
+.controlnet_image_and_options > * {
+    min-width: 0 !important;
+}
+
+/* the selector column still needs to stay readable, just not rigid; more
+   specific than the blanket min-width:0 above so it keeps its floor */
+/* more specific than the wildcard above so the selector column keeps a
+   readable floor while everything else is free to shrink.
+
+   THIS rule - not gr.Column(min_width=...) - decides the selector column's
+   width: the inline min-width gradio writes for min_width is outranked by the
+   !important floor here, so widening the column means changing the basis
+   below. The basis is what the selectors get on a roomy panel (measured
+   content width was ~231px, so 370px is the 60% wider ask); flex-shrink stays
+   1 and the floor stays 190px, so a narrowed panel still reflows instead of
+   overflowing. */
+.controlnet div.accordions > div.input-accordion.input-accordion-open .controlnet_main_options_column {
+    flex: 0 1 370px !important;
+    min-width: 190px !important;
+}
+
+/* the canvas column takes whatever WIDTH is left and may shrink to nothing;
+   its HEIGHT is the fixed unit body height (see the last section) and is
+   distributed top-down: tab strip, tab panel, button row */
+.controlnet_image_and_options > .gradio-column:not(.controlnet_main_options_column) {
+    flex: 1 1 0 !important;
+    height: var(--cnet-unit-body-h);
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+/* THE ratchet. Root style.css:1188 has
+       div.accordions > div.input-accordion { min-width: fit-content !important }
+   which on a flex item reads as "never shrink below your widest content": a
+   unit that was once laid out wide keeps that width forever and spills out of
+   the panel when it is dragged narrower (measured: unit held 1182px inside a
+   582px parent, i.e. 600px of overflow - canvas, button row and profile plot
+   all clipped). That rule is (0,2,2) AND !important, so it outranks any plain
+   .controlnet .input-accordion override; this selector is (0,4,2) to win, and
+   is deliberately limited to OPEN units so collapsed ones keep the
+   fit-content title behaviour the upstream rule exists for. */
+.controlnet div.accordions > div.input-accordion.input-accordion-open {
+    min-width: 0 !important;
+    /* An OPEN unit is `flex-flow: column` (root style.css:1201), so width is
+       the CROSS axis - and the `align-items: center` this file sets for the
+       collapsed title row then sizes the content to max-content instead of
+       stretching it to the unit. That is the second half of the clipping:
+       unit 542px, content 1164px, 51 elements painting outside. Stretch is
+       the default and is what a column container needs here. */
+    align-items: stretch !important;
+}
+
+/* The unit shrinking is not enough on its own: gradio's blocks, rows, columns
+   and the unclassed wrappers between them each carry their own min-width
+   floor, so the CONTENT stayed 1164px wide inside a 542px unit (51 elements
+   painting outside it). Everything in an open unit must be allowed to give
+   width back, hence the descendant wildcard - it has to match the (0,4,2) of
+   the rule above to survive the same cascade. */
+.controlnet div.accordions > div.input-accordion.input-accordion-open * {
+    min-width: 0 !important;
+}
+
+/* The shrink wildcard above is (0,4,2) and would beat the (0,2,1)
+   ul.options min-width:max-content rule - long model names would clip in
+   the dropdown popup, exactly what that rule exists to prevent. Re-assert
+   it at matching-or-higher specificity inside open units. */
+.controlnet div.accordions > div.input-accordion.input-accordion-open ul.options {
+    min-width: max-content !important;
+}
+
+.controlnet .input-accordion {
+    overflow: hidden;
+}
+
+.cnet-image-row,
+.controlnet_image_controls {
+    min-width: 0 !important;
+    max-width: 100%;
+}
+
+/* the pad keeps its square/plot-height ambition but yields first when the
+   panel narrows (JS writes a px width; flex-shrink lets layout override it) */
+.cnet-profile-preset-pad {
+    flex: 0 1 auto;
+    max-width: 35%;
+    min-width: 46px;
+}
+
+/* ============================================================= 2026-07-23
+   Band-exclusivity cues, model-type gating, tab-strip share inputs, visible
+   ws listing, denied-click feedback. */
+
+/* Single source of the injection-band colors: the band buttons use them via
+   their inline --band-color, weight_profile.js resolves the same variables
+   for the plot lines - change them here, both follow. */
+:root {
+    --cnet-band-coarse: #e53935;
+    --cnet-band-mid: #fdd835;
+    --cnet-band-fine: #1e88e5;
+    /* depth profile: the same depth axis un-quantized, so it is deliberately
+       NOT one of the three band colors - purple reads as "a different kind of
+       object" (a multiplier of the main profile, not a replacement for it) */
+    --cnet-depth-line: #9c4dff;
+}
+
+/* denied-click feedback: flashed on tool buttons whose action needs an image
+   loaded first (silent no-ops read as broken buttons) */
+@keyframes cnet-flash-deny-kf {
+    0% { box-shadow: 0 0 0 2px rgba(229, 57, 53, 0.9); }
+    100% { box-shadow: 0 0 0 2px rgba(229, 57, 53, 0); }
+}
+.cnet-flash-deny {
+    animation: cnet-flash-deny-kf 0.45s ease-out 1;
+}
+
+/* model-type note inside the balance accordion (shown when the selected
+   model's patcher ignores the balance profile) */
+.cnet-balance-support-note p {
+    color: #e8a33d;
+    font-size: 12px;
+    margin: 2px 0 4px 0;
+}
+
+/* ============================================================= 2026-07-23
+   STATIC UNIT BODY HEIGHT
+
+   The body of an open unit (selector column | canvas tabs) is a FIXED-height
+   block by design: switching canvas tab - input canvas, Output mask, the P/N
+   prompt tabs, the "+" hint - must not move anything, and neither must a
+   Control Type that shows fewer selectors on the left. Before this the row
+   was sized by whichever side happened to be taller (measured: 383px on a
+   canvas tab, 312px on a prompt tab), so every tab click resized the unit and
+   everything below it on the page.
+
+   The height is --cnet-unit-body-h, the selector column at its full count of
+   four. The canvas column is pinned to exactly that, so the below-canvas
+   button row always bottom-aligns with the last selector, and the tab panel
+   gets whatever the strip and the button row leave - which the CANVAS then
+   fills, instead of dictating the height with its own `height=` argument.
+
+   Consequence to keep in mind: the input canvas is no longer 300px, it is
+   whatever the body height leaves (~230px). Change --cnet-option-row-h /
+   --cnet-unit-body-h to resize it - not ForgeCanvas(height=...), which is
+   overridden here. If a selector count above four ever appears, the left
+   column grows past the pinned height (min-height, not height) and only the
+   bottom alignment is lost - nothing clips. */
+
+/* the group holding the tabs + the button row fills the column - and so does
+   the .styler gradio puts between the group and its actual children (measured;
+   without it the styler stays at its content height and nothing below grows) */
+.controlnet_image_and_options > .gradio-column:not(.controlnet_main_options_column) > .gradio-group,
+.controlnet_image_and_options > .gradio-column:not(.controlnet_main_options_column) > .gradio-group > .styler {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ... the tab strip keeps its natural height, the panel takes the rest ... */
+.cnet-image-tabs {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* The strip stays ONE line. Gradio lets it wrap, and since the body height is
+   fixed every extra line came straight out of the canvas below it (measured on
+   a narrowed panel: 6 lines of tabs, 64px of canvas left). Sideways scrolling
+   is the honest trade - the strip keeps its height whatever the panel width. */
+.cnet-image-tabs > .tab-nav {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    /* ... and the scrollbar itself is hidden, or it would take its 22px out of
+       the canvas at exactly the widths where the strip starts to overflow
+       (shift+wheel still scrolls the strip; this is what gradio's own
+       `scroll-hide` class on this element is for) */
+    scrollbar-width: none;
+}
+
+.cnet-image-tabs > .tab-nav::-webkit-scrollbar {
+    display: none;
+}
+
+/* each tab keeps its own width and its label on one line: shrinking tabs wrap
+   "Output mask" into two lines, which is the same 22px out of the canvas that
+   a wrapping strip would cost */
+.cnet-image-tabs > .tab-nav > button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.cnet-image-tabs > .tabitem {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ... and the button row stays exactly as tall as its buttons, at the bottom */
+.controlnet_image_controls {
+    flex: 0 0 auto;
+}
+
+/* The canvas fills the panel. A percentage height only resolves when EVERY
+   wrapper above it has a definite one, so the whole gradio chain measured
+   between the panel and .forge-container is listed here (panel > wrapper >
+   row > group > styler > block > div > prose > container). The chain is also
+   what the P/N prompt tabs ride: their .form wrapper is the same level as the
+   image row. */
+.cnet-image-tabs > .tabitem > div,
+.cnet-image-tabs .cnet-image-row,
+.cnet-image-tabs .cnet-input-image-group,
+.cnet-image-tabs .cnet-output-mask-group,
+.cnet-image-tabs .cnet-image.block,
+.cnet-image-tabs .cnet-image.block > div,
+.cnet-image-tabs .cnet-image.prose {
+    height: 100% !important;
+    min-height: 0 !important;
+}
+
+/* the canvas group may hold a second child (the openpose upload on slot 0), so
+   the canvas takes the remaining height here instead of a flat 100% */
+.cnet-image-tabs .cnet-input-image-group > .styler,
+.cnet-image-tabs .cnet-output-mask-group > .styler {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* ForgeCanvas writes its `height=` argument as an inline pixel height; inside
+   the unit the tab panel owns the height instead. 100% survives Maximize as
+   well: the maximized container is position:fixed, so the percentage resolves
+   against the viewport - the same thing the inline 100vh asks for. */
+.cnet-image-tabs .forge-container {
+    height: 100% !important;
+}
+
+/* prompt tabs fill the panel exactly like the canvases do, so P/N are the
+   same height as the canvas tabs. The panel's .form is a fixed-height column
+   flexbox: the TEXTBOX is the flexible member and shrinks to make room for
+   the strength sliders below it - the sliders keep their natural height and
+   nothing may grow the panel (static unit body height, see above) */
+/* P/N prompt tab .form is a GRID (2026-07-24, was a flex column): the two
+   strength sliders share one row side by side, the textbox and the retention
+   slider span both columns (_slider_full). Auto-placement does the rest from
+   the DOM order (textbox, emb, delta, retention). minmax(0, 1fr) on the first
+   row lets the textbox shrink to absorb the sliders' height - the panel
+   height must not move (static unit body height, see above). Do NOT go back
+   to flex: gradio's .form ships flex-wrap: wrap, which in a fixed-height
+   column spills overflowing members into a second column beside the textbox. */
+.cnet-image-tabs > .tabitem > div > .form {
+    height: 100% !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    gap: 4px 8px;
+}
+
+.cnet-image-tabs .controlnet_unit_prompt {
+    grid-column: 1 / -1;
+    min-height: 0;
+}
+
+/* full-width members of the prompt-tab grid (the retention slider) */
+.cnet-image-tabs .controlnet_unit_prompt_slider_full {
+    grid-column: 1 / -1;
+}
+
+.cnet-image-tabs .controlnet_unit_prompt > label {
+    height: 100% !important;
+}
+
+.cnet-image-tabs .controlnet_unit_prompt textarea {
+    height: 100% !important;
+    max-height: none !important;
+}
+
+/* strength sliders under the prompt box: compacted (no top padding band,
+   tighter label row) so the pair row plus the retention row plus the textbox
+   fit the ~230px panel; each tab holds the P/N pair side by side and the
+   full-width retention mirror below */
+.cnet-image-tabs .controlnet_unit_prompt_slider {
+    flex: 0 0 auto;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+.cnet-image-tabs .controlnet_unit_prompt_slider .head {
+    margin-bottom: 0 !important;
+}
+
+
+/* ===========================================================================
+   CNPro canvas tool chrome
+
+   Provenance: modules_forge/forge_canvas/canvas.css in the author's Forge fork,
+   where these rules were added directly to the host stylesheet. CNPro cannot
+   edit a host file, so they live here instead.
+
+   HOW THIS BLOCK WAS BROKEN, AND WHY THE FIX IS STRUCTURAL
+   -------------------------------------------------------
+   It was produced by a LINE-level diff of the fork's canvas.css against the
+   host's. That kept every line the host did not have -- and dropped the lines it
+   did, including selectors and closing braces. The result was CSS like:
+
+           display: inline-flex;      <- body of `.forge-toolbar .forge-btn`,
+           align-items: center;          whose selector line was "shared" and
+           height: 22px;                 therefore deleted
+       .forge-toolbar-box-c {
+
+   Two rules lost their selector, one rule lost its opening, and a stray `}`
+   from a dropped `.forge-upload-hint` left the file with 198 `{` and 199 `}`.
+   Everything from the first orphan to the next parseable rule was discarded by
+   the browser, which is why the tool menus rendered as unstyled stacked blocks:
+   `.forge-toolbar-box-c` never applied, so its `display: flex` never happened.
+
+   The fix is not "re-run the diff more carefully". Rules are now written WHOLE,
+   and where the host already defines a selector this file overrides it with a
+   complete declaration block rather than a fragment.
+
+   SCOPING: every geometry rule is scoped to [data-cnpro-nodes="1"], the marker
+   canvas_nodes.js puts on a container it has injected into. The host's own
+   canvases (img2img, inpaint) are therefore untouched -- CNPro cannot change the
+   look of a widget it does not own. It also raises specificity above the host's
+   canvas.css without a single !important.
+
+   Pairs with javascript/canvas_tools.js (what the tools are) and
+   javascript/canvas_nodes.js (how they are rendered). This file styles by CLASS
+   only, never by tool id, so a tool added to the registry is styled correctly
+   the moment it is declared.
+   =========================================================================== */
+
+/* One place decides the button box. Everything else derives from it, so
+   changing the toolbar's scale is a one-line edit and cannot desynchronise. */
+.forge-image-container[data-cnpro-nodes="1"] {
+    --cnpro-btn: 24px;      /* button edge - SQUARE, see the geometry note */
+    --cnpro-gap: 3px;       /* space between buttons in a group */
+    --cnpro-group-gap: 12px;/* space between tool groups */
+    /* Menu row metrics. Slider width is FIXED, not elastic: precision comes
+       from the mouse wheel (one notch = one step, see canvas_nodes.js), so
+       there is nothing to gain from a longer track and a lot to gain from a
+       short one — the row pitch is label + gap + slider, and the label is now
+       only as wide as that menu's own longest label (see THE LABEL COLUMN
+       below), so a menu of short labels fits more rows per line than one of
+       long ones instead of every menu paying the widest label in the toolbar.
+       BOTH columns are still FIXED for the duration of a drag, and that is the
+       point: a label reads "mask opacity 7" one moment and "mask opacity 100"
+       the next, so a column that sizes to the CURRENT text re-flows the whole
+       menu WHILE THE USER DRAGS — sliders shuffle sideways and rows can jump to
+       another line mid-gesture. */
+    --cnpro-range-w: 100px; /* menu slider track */
+    /* Fallback only, for a label the renderer did not give a sizer to. Wide
+       enough for the widest label any tool can produce ("mask opacity 100":
+       92.0px in gradio's Source Sans stack, 93.4px in the generic sans
+       fallback, both at the 12px below), so a label that misses its sizer is
+       still readable rather than clipped. Nothing should ever use it, and
+       canvas_nodes.js::selfCheck says so out loud when a row has no labelMax. */
+    --cnpro-label-w: 100px;
+    --cnpro-label-fs: 12px; /* menu label text */
+}
+
+/* ---------------------------------------------------------------- the toolbar
+
+   A GRID with one max-content column, not a block. That single choice is what
+   lets the menus below size themselves to the toolbar instead of the other way
+   round (see .forge-toolbar-box-c). */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static {
+    display: grid;
+    /* minmax(0, max-content), NOT max-content. A bare max-content column
+       refuses to shrink below its content, so it would push straight through
+       the cap below and the whole exercise would be decorative. The 0 minimum
+       lets the column take the cap and hand it to the button row, which then
+       WRAPS. */
+    grid-template-columns: minmax(0, max-content);
+    gap: 4px;
+    /* `width: max-content` and NOT `max-width: 100%`. The toolbar is absolutely
+       positioned, so without an explicit width it is shrink-to-fit -- and a
+       shrink-to-fit box inside a narrow panel can end up narrower than its own
+       button row, which then overflows it while the menus (sized as a
+       percentage of that box) collapse. Sizing to the content makes the toolbar
+       agree with what is drawn in it. */
+    width: max-content;
+    /* ...BUT NEVER WIDER THAN THE CANVAS IT SITS ON.
+       `.forge-image-container` is `overflow: hidden`, so anything past its right
+       edge is not "overflow", it is GONE: unclickable, unhoverable, and
+       invisible in a way no visibility check can see (the buttons still report
+       a perfectly good bounding box - they are simply outside the clip). At
+       19 visible buttons the row is 546px, and a ControlNet unit in a
+       two-column layout gives the canvas about 437: the last five buttons,
+       G/C/M/F among them, were unreachable. `flex-wrap: wrap` on the button row
+       was there the whole time and could never fire, because max-content always
+       granted it exactly the width it asked for.
+       The px value is written inline by canvas_nodes.js::syncMenuWidth for the
+       same reason the menus' width is (a percentage resolves against an
+       indefinite containing block in gradio); this is the fallback. */
+    max-width: var(--cnpro-menu-w, 100%);
+    box-sizing: border-box;
+}
+
+/* the button row. The host's canvas.css sets only `flex-wrap: wrap` here -- with
+   no `display: flex` the buttons fell back to inline layout, where each one sits
+   on the text BASELINE and its width comes from its glyph. That is the whole
+   reason the colour-picker button (a 15px <svg>) rendered wider than its
+   neighbours and sat a pixel low. */
+/* The button row wraps BY GROUP: each tool group is one flex item, so a row too
+   wide for the canvas breaks between groups instead of mid-group. Column gap is
+   0 because the spacing between groups still comes from the margin-left rule
+   below (keeping it there is what lets that rule, and the specificity fight it
+   documents, stay exactly as it was); the row gap is the space between wrapped
+   lines. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-a {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--cnpro-gap) 0;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-btn-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--cnpro-gap);
+    /* a group narrower than the line must not be stretched, and one wider than
+       it must be allowed to wrap inside itself rather than overflow */
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-b {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+}
+
+/* ------------------------------------------------- button geometry (the fix)
+
+   MISALIGNMENT IS MADE IMPOSSIBLE, not corrected. Every property below closes
+   off one way a button could have been moved by its own content:
+
+     width/height/min-width   a fixed SQUARE. The icon cannot size the box, so a
+                              15px <svg>, a 1-char glyph and a 2-char label
+                              ("1M", "HQ") all occupy identical space.
+     flex: 0 0 auto           the row cannot shrink or stretch a button.
+     padding: 0               no asymmetric padding to drift.
+     margin: 0 !important     gradio wraps the canvas template in .prose, which
+                              gives elements a bottom margin and ZEROES it on
+                              :last-child -- so whichever button happened to be
+                              last sat higher than the rest. Spacing comes from
+                              the flex gap alone; position in the row can never
+                              affect alignment again. !important is required
+                              because .prose's rule is what we are beating.
+     display: grid +          centres content on both axes GEOMETRICALLY. Under
+     place-items: center      inline layout the glyph sat on a baseline computed
+                              from font metrics, which differ per glyph and per
+                              font; a grid centre depends on neither.
+     line-height: 1           removes the last font-metric input to the box.
+
+   The result: a new tool can ship any icon -- text, emoji, inline SVG -- and it
+   is square and aligned without anyone remembering to check. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static .forge-btn {
+    box-sizing: border-box;
+    width: var(--cnpro-btn);
+    height: var(--cnpro-btn);
+    min-width: var(--cnpro-btn);
+    flex: 0 0 auto;
+    padding: 0;
+    margin: 0 !important;
+    display: grid;
+    place-items: center;
+    line-height: 1;
+    font-size: 13px;
+    border: none;
+    background-color: #4a4a4a;
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+    overflow: hidden;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn:hover,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static .forge-btn:hover {
+    background-color: #5e5e5e;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn:active,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static .forge-btn:active {
+    background-color: #3e3e3e;
+}
+
+/* Group separator: the one deliberate exception to `margin: 0`, and horizontal
+   only, so it cannot touch the vertical alignment the square-box rule protects.
+
+   THE SELECTOR MUST OUT-SPECIFY THE RULE ABOVE. `margin: 0 !important` on
+   `... .forge-toolbar .forge-btn` is (0,4,0); a bare `... .forge-adjust-gap` is
+   (0,3,0), so !important on both means the RESET wins and the groups silently
+   run together. Matching `.forge-btn.forge-adjust-gap` inside the toolbar takes
+   it to (0,5,0) and the gap survives. Two !importants fighting is decided by
+   specificity, which is exactly the kind of thing that looks fine in the diff. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn.forge-adjust-gap,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static .forge-btn.forge-adjust-gap {
+    margin-left: var(--cnpro-group-gap) !important;
+}
+
+.forge-no-select {
+    user-select: none;
+}
+
+/* state: active tool, modified input, in-flight server call, failed call */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn-active,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static .forge-btn-active {
+    background-color: #8a6d1f !important;
+    outline: 1px solid #ffd76a;
+    outline-offset: -1px;
+}
+
+/* a tool whose (non-destructive) adjustment currently modifies the input carries
+   a red inner border on its icon; inset box-shadow so it coexists with the
+   active-state outline and causes no layout shift */
+.forge-tool-modified {
+    box-shadow: inset 0 0 0 1.5px #e53935;
+}
+
+/* a tool waiting on a server round-trip (Topaz upscale) pulses and ignores
+   further clicks; a failed request flashes a red fill for a moment */
+.forge-btn-busy {
+    animation: forge-btn-busy-pulse 1s ease-in-out infinite;
+    pointer-events: none;
+}
+
+@keyframes forge-btn-busy-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+.forge-btn-error {
+    background-color: #a22522 !important;
+}
+
+/* reset buttons living inside a tool's own menu; red glyph ties them to the
+   modified border */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-tool-reset,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-static .forge-tool-reset {
+    color: #e53935;
+}
+
+/* ------------------------------------------------------------- the tool menus
+
+   HORIZONTAL AND EXACTLY AS WIDE AS THE BUTTON ROW.
+
+   `--cnpro-menu-w` is MEASURED and published by canvas_nodes.js::syncMenuWidth,
+   re-measured by a ResizeObserver on the button row. It is not a stylistic
+   choice; it is the repair for a pure-CSS version that worked in a bare page and
+   failed in the app.
+
+   That version was `width: 0` (contribute nothing to the toolbar's intrinsic
+   width) plus `min-width: 100%` (stretch back to it). Measured hermetically it
+   gave 615px against a 615px button row. In gradio the percentage resolves
+   against an indefinite containing block, degrades to `min-width: auto`, and a
+   flex container's automatic minimum is its MIN-CONTENT -- one `label | slider`
+   row, ~200px. Every menu then wrapped one row per line: the vertical stack the
+   whole rule exists to prevent, reported from the running app.
+
+   THE CONTRACT: a menu is exactly as wide as the usable canvas. Not the button
+   row, not its own content — the canvas, because `.forge-image-container` is
+   `overflow: hidden` (so anything wider is clipped) and anything narrower wastes
+   space that gets paid for in height.
+
+   One value, no bounds to reconcile, nothing to choose. `100%` is the fallback
+   for the moment before the first measurement. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c {
+    box-sizing: border-box;
+    width: var(--cnpro-menu-w, 100%);
+    display: flex;
+    flex-flow: row wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 4px 10px;
+}
+
+/* Rows lay out as `label | slider` on ONE line. The host's `.forge-range-row` is
+   a COLUMN (label above slider), which is right for the big scribble sliders in
+   box-b and wrong for a tool menu: five stacked rows made the edges menu ~200px
+   tall and pushed the image out of view. Side by side, the same five rows wrap
+   into three short lines inside the toolbar's own width. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-range-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    /* natural width (label + gap + slider), packed left. `min-width: 0` stays:
+       a flex item's automatic minimum is its min-content, and a row that cannot
+       shrink below that becomes the whole MENU's minimum — the mechanism that
+       once made the gamma menu too narrow for its own reset button. */
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-toolbar-label {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0;
+    font-size: var(--cnpro-label-fs);
+    line-height: 1;
+    white-space: nowrap;
+}
+
+/* THE LABEL COLUMN IS AS WIDE AS THE WIDEST TEXT ITS MENU CAN SHOW, AND FIXED
+   THERE.
+
+   Two requirements that pull in opposite directions:
+
+     it must not breathe   every one of these labels ends in a live value
+                           ("black 0" -> "black 255", "gamma 1.000" ->
+                           "gamma 0.417"), so a column that sizes to the CURRENT
+                           text moves by ~15px as the user drags, sliding the
+                           slider sideways under the cursor and, at the wrap
+                           boundary, bouncing a row onto the next line mid-drag.
+     it must not be wide    one hard-coded column for the whole toolbar has to
+                           fit "mask opacity 100", so the gamma menu reserved
+                           34px of nothing for "gamma 4.987" — on chrome that
+                           sits on top of the user's image.
+
+   Both are satisfied by sizing the box to the widest text the menu can EVER
+   show, rather than to the widest text in the toolbar or to the text present
+   right now. `data-max` carries that set (one candidate per line, written by
+   canvas_nodes.js from each row's declared `labelMax`) and the ::before below
+   lays it out in a box with no height, so the browser — the only party that
+   knows which font is really in use — decides the width. Nothing is measured in
+   JS, nothing is hard-coded here, and there is no font-loading race to lose.
+
+   The ::before survives the label being rewritten: canvas_extra.js sets
+   `textContent`, which replaces child NODES, and a pseudo-element is not one.
+
+   `flex: 0 0 auto` as well as the intrinsic width: the basis is what a flex
+   item actually sizes from, and without it a row under pressure could still
+   shrink the label. Overflow is clipped with an ellipsis rather than left to
+   spill: if a label ever outgrows its declared maximum, truncating it is
+   legible, whereas painting it over its own slider is not.
+   tabular-nums keeps the digits from jittering as the value changes.
+   Scoped to .forge-range-row so the odd non-slider label in a menu (the layers
+   tool's "add layer") still sizes to its text. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-range-row .forge-toolbar-label {
+    flex: 0 0 var(--cnpro-label-w);
+    width: var(--cnpro-label-w);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+
+/* `display: block` IS LOad-BEARING, not tidiness. The host's canvas.css makes
+   .forge-toolbar-label a FLEX container (`display: flex; align-items: center`),
+   and in a flex container the ::before below is not a zero-height block above
+   the text - it is a flex ITEM BESIDE it, so the two widths ADD and the label
+   comes out at exactly twice its content (measured: a 130.7px column for a
+   65.3px label). Block puts the sizer back above the text where a 0 height
+   means 0. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-range-row .forge-toolbar-label[data-max] {
+    display: block;
+    flex: 0 0 auto;
+    width: auto;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-cc-rgb[data-max] {
+    display: block;
+}
+
+/* The sizer. `height: 0` so it costs no row height, `visibility: hidden` so it
+   is never painted (and never read out), `white-space: pre` so each candidate
+   in data-max is its own line and the box takes the width of the widest. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-range-row .forge-toolbar-label[data-max]::before,
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-cc-rgb[data-max]::before {
+    content: attr(data-max);
+    display: block;
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    white-space: pre;
+    pointer-events: none;
+}
+
+/* Fixed 100px track. Fine adjustment is the WHEEL's job (canvas_nodes.js gives
+   every menu slider one-step-per-notch), which is both more precise than a
+   longer track and free of horizontal space. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-toolbar-range {
+    flex: 0 0 auto;
+    width: var(--cnpro-range-w);
+    max-width: var(--cnpro-range-w);
+    margin: 0;
+    vertical-align: middle;
+}
+
+/* A group of rows that must stay together as ONE item of the menu's wrap
+   (canvas_tools.js `group()`). `forge-row-column` stacks them, which is what the
+   pen menu needs: three sliders beside a two-row-tall colour picker, sharing one
+   left edge, instead of three rows flowing around it onto three different ones.
+   Sized to content and allowed to shrink, like any other row. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-row-group {
+    display: flex;
+    align-items: center;
+    gap: 4px 10px;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-row-column {
+    flex-direction: column;
+    align-items: flex-start;
+}
+
+/* menu buttons are square like every other button, but a touch smaller so a
+   menu row stays shorter than the toolbar row */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-btn {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+}
+
+/* colour correction: one row per picker, with a swatch + RGB readout of the
+   picked point (gray: statistical surrogate of the selection) */
+.forge-cc-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.forge-cc-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(127, 127, 127, 0.5);
+    background: transparent;
+}
+
+/* the picked-colour readout. FIXED width for the same reason as the slider
+   labels: it runs "—" -> "255 255 255" as pixels are picked, and a min-width
+   let each pick nudge the row it lives in. Sized the same way too — from its
+   own declared widest text (`rgbMax`), so the pen's seven-character hex readout
+   stops reserving room for three RGB channels it can never show. 72px is the
+   fallback for a readout with no sizer ("255 255 255" = 66.7px at 12px in the
+   widest fallback font). */
+.forge-cc-rgb {
+    font-size: var(--cnpro-label-fs, 12px);
+    color: rgba(190, 190, 190, 0.9);
+    flex: 0 0 72px;
+    width: 72px;
+    overflow: hidden;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.forge-cc-rgb[data-max] {
+    flex: 0 0 auto;
+    width: auto;
+}
+
+/* black/white/gray point picker icons: filled disc + contrasting ring, crisp at
+   toolbar size (emoji glyphs were too dim on the dark toolbar). `display: block`
+   keeps the SVG out of the baseline math entirely -- an inline SVG sits on the
+   text baseline and adds descender space below itself, which is the second half
+   of why the picker button used to look off-centre. */
+.forge-pick-icon {
+    display: block;
+    width: 15px;
+    height: 15px;
+}
+
+/* ---------------------------------------------------------- picking overlays
+
+   while picking, no cursor anywhere over the canvas (beats the inline
+   grab/crosshair cursors the core canvas code keeps setting), except the
+   toolbar */
+.forge-picking, .forge-picking * {
+    cursor: none !important;
+}
+
+.forge-picking .forge-toolbar, .forge-picking .forge-toolbar *,
+.forge-picking .forge-toolbar-static, .forge-picking .forge-toolbar-static * {
+    cursor: auto !important;
+}
+
+.forge-picking .forge-toolbar .forge-btn, .forge-picking .forge-toolbar-static .forge-btn {
+    cursor: pointer !important;
+}
+
+/* pick-pixel reticle: open center so the target pixel stays visible */
+.forge-pick-reticle {
+    position: absolute;
+    width: 0;
+    height: 0;
+    display: none;
+    pointer-events: none;
+    z-index: 9;
+}
+
+.forge-reticle-arm {
+    position: absolute;
+    background: #ffffff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8);
+}
+
+.forge-reticle-n { left: 0; top: -14px; width: 1px; height: 10px; }
+.forge-reticle-s { left: 0; top: 4px; width: 1px; height: 10px; }
+.forge-reticle-w { left: -14px; top: 0; width: 10px; height: 1px; }
+.forge-reticle-e { left: 4px; top: 0; width: 10px; height: 1px; }
+
+/* gray-area picker: painted mask regions overlay */
+.forge-graymask-overlay {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    z-index: 7;
+}
+
+/* ------------------------------------------------------------- the crop tool
+
+   photoshop-style overlay: shaded cut-off areas + draggable border handles */
+.forge-crop-overlay {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    display: none;
+    pointer-events: none;
+    z-index: 8;
+}
+
+.forge-crop-shade {
+    position: absolute;
+    background: rgba(24, 24, 24, 0.6);
+    pointer-events: none;
+}
+
+.forge-crop-box {
+    position: absolute;
+    box-sizing: border-box;
+    border: 2px solid #ffffff;
+    outline: 2px dashed #000000;
+    pointer-events: none;
+}
+
+.forge-crop-box [data-handle] {
+    position: absolute;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.forge-crop-move {
+    inset: 8px;
+    cursor: move;
+}
+
+/* handles: white core + thick black border + outer white ring, so they pop
+   against dark and light image content alike */
+.forge-crop-edge::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: #ffffff;
+    border: 2px solid #000000;
+    box-shadow: 0 0 0 2px #ffffff;
+}
+
+.forge-crop-n, .forge-crop-s {
+    left: 10px;
+    right: 10px;
+    height: 14px;
+    cursor: ns-resize;
+}
+
+.forge-crop-n { top: -7px; }
+.forge-crop-s { bottom: -7px; }
+
+.forge-crop-n::after, .forge-crop-s::after {
+    width: 26px;
+    height: 8px;
+}
+
+.forge-crop-w, .forge-crop-e {
+    top: 10px;
+    bottom: 10px;
+    width: 14px;
+    cursor: ew-resize;
+}
+
+.forge-crop-w { left: -7px; }
+.forge-crop-e { right: -7px; }
+
+.forge-crop-w::after, .forge-crop-e::after {
+    width: 8px;
+    height: 26px;
+}
+
+.forge-crop-corner {
+    width: 18px;
+    height: 18px;
+    box-sizing: border-box;
+    background: #ffffff;
+    border: 3px solid #000000;
+    box-shadow: 0 0 0 2px #ffffff;
+}
+
+.forge-crop-nw { top: -9px; left: -9px; cursor: nwse-resize; }
+.forge-crop-ne { top: -9px; right: -9px; cursor: nesw-resize; }
+.forge-crop-sw { bottom: -9px; left: -9px; cursor: nesw-resize; }
+.forge-crop-se { bottom: -9px; right: -9px; cursor: nwse-resize; }
+
+/* rule-of-thirds guides, shown only while a crop handle is held */
+.forge-crop-thirds {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    background: rgba(255, 255, 255, 0.45);
+    box-shadow: 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+.forge-crop-thirds-h { left: 0; right: 0; height: 1px; }
+.forge-crop-thirds-v { top: 0; bottom: 0; width: 1px; }
+
+.forge-crop-box.forge-cropping .forge-crop-thirds {
+    display: block;
+}
+
+/* ---------------------------------------------------------------- pen tool */
+
+/* The pen menu is the tallest of them all because of the colour picker, so it
+   is the one where vertical space is worth buying.
+   `align-items: flex-start` matters: centred, the short slider rows floated in
+   the middle of the picker's height and the menu was as tall as the picker plus
+   half a row. Top-aligned, the three sliders stack alongside the picker and the
+   menu is only as tall as the picker itself. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-pen-box {
+    align-items: flex-start;
+    gap: 6px 8px;
+}
+
+/* photoshop-style color selector: saturation/value square with a ring cursor,
+   hue strip next to it, current color as swatch + hex.
+   Sized in CSS only -- the canvas keeps its 128x84 backing store, and both the
+   cursor placement (clientWidth/clientHeight) and the pick hit-test
+   (getBoundingClientRect) read the CSS box, so shrinking it here is safe. */
+.forge-pen-picker {
+    position: relative;
+    line-height: 0;
+    flex: 0 0 auto;
+}
+
+.forge-pen-sv {
+    display: block;
+    width: 104px;
+    height: 62px;
+    border-radius: 3px;
+    border: 1px solid rgba(127, 127, 127, 0.5);
+    cursor: crosshair;
+}
+
+.forge-pen-sv-cursor {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    border-radius: 50%;
+    border: 1.5px solid #ffffff;
+    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+}
+
+.forge-pen-side {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 0 0 auto;
+}
+
+.forge-pen-hue {
+    /* border-box, or the 1px border makes this 102px against a 100px cap --
+       measured, not assumed: the layout test flagged exactly that */
+    box-sizing: border-box;
+    width: var(--cnpro-range-w);
+    height: 12px;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 3px;
+    border: 1px solid rgba(127, 127, 127, 0.5);
+    background: linear-gradient(to right,
+        #ff0000 0%, #ffff00 16.6%, #00ff00 33.3%, #00ffff 50%,
+        #0000ff 66.6%, #ff00ff 83.3%, #ff0000 100%);
+    cursor: pointer;
+}
+
+.forge-pen-hue::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 6px;
+    height: 16px;
+    border-radius: 2px;
+    background: #ffffff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.85);
+}
+
+.forge-pen-hue::-moz-range-thumb {
+    width: 6px;
+    height: 16px;
+    border: none;
+    border-radius: 2px;
+    background: #ffffff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.85);
+}
+
+/* stroke in progress, drawn over the displayed image (screen space) */
+.forge-pen-overlay {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    z-index: 7;
+}
+
+/* brush outline following the pointer, sized to the real brush diameter */
+.forge-pen-cursor {
+    position: absolute;
+    display: none;
+    border-radius: 50%;
+    border: 1px solid #ffffff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8);
+    pointer-events: none;
+    z-index: 9;
+}
+
+/* --------------------------------------------------------------- layers tool
+
+   active-layer outline + drag ghost */
+.forge-layers-overlay {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    z-index: 7;
+}
+
+/* THE LAYER LIST IS THE ONE MENU THAT STAYS VERTICAL, one layer per row.
+   It was briefly a wrapping row of chips, on the same "save vertical space"
+   reasoning as every other menu, and that reasoning does not apply here: the
+   rows are a STACK, in z-order, topmost first. Laid out left-to-right they read
+   as a set of unordered chips and the one thing the list exists to show -- what
+   is above what -- is gone. The ▲/▼ buttons then move a layer "up" while it
+   travels sideways. Compactness is not worth making the model unreadable. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-layers-box {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-layer-list {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    flex: 0 1 auto;
+    min-width: 190px;
+    max-height: 132px;
+    overflow-y: auto;
+}
+
+.forge-layer-row {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.forge-layer-row:hover {
+    border-color: rgba(58, 160, 255, 0.4);
+}
+
+.forge-layer-row-active {
+    border-color: #3aa0ff;
+    background: rgba(58, 160, 255, 0.15);
+}
+
+/* grows, so the per-layer buttons line up in a column down the right edge of
+   the list instead of sitting at a ragged offset per row */
+.forge-layer-label {
+    flex: 1 1 auto;
+    font-size: var(--cnpro-label-fs, 12px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-right: 2px;
+}
+
+/* the four per-layer buttons: same square discipline as the toolbar, one step
+   down. The explicit size beats the generic menu-button rule above by
+   specificity, so layer chips stay compact however the toolbar is scaled. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-btn {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    font-size: 9px;
+}
+
+.forge-layer-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
