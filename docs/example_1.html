@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Example 1 — The banana car · ControlNet Pro</title>
+<meta name="description" content="Two units, two references: canny holds a car's composition while an IP-Adapter banana takes over its body — a walk through band profiles and the depth axis.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <nav class="crumbs"><a href="index.html">Worked examples</a> · Example 1</nav>
+    <p class="eyebrow">Example 1 · band profiles and the depth axis</p>
+    <h1>The banana car</h1>
+    <p class="lede">Keep a photograph's composition, position and perspective exactly.
+    Bend the body toward a completely unrelated shape — and keep the wheels, the doors and
+    the windscreen. Two units, two references, four steps.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="pair">
+    <figure>
+      <img src="assets/ex1/ref-car.jpg" alt="Studio photograph of a generic silver coupe, three-quarter front view">
+      <figcaption><b>Unit 0 — the geometry.</b> Where the car sits in frame, how it is
+      turned, where wheels and greenhouse are.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex1/ref-banana.jpg" alt="Studio photograph of a single banana">
+      <figcaption><b>Unit 1 — the donor.</b> The taper, the curve, the peel.</figcaption>
+    </figure>
+  </div>
+
+  <h2>Why one weight slider cannot do this</h2>
+
+  <p>A ControlNet does not hand the model a single nudge. It injects a <b>residual at every
+  layer it is wired into</b>, at every sampling step — and those injection sites are ordered
+  by depth. CNPro cuts that depth axis into three <b>bands</b> and gives each its own
+  control:</p>
+
+  <table>
+    <tr><th>Band</th><th>Injection sites</th><th>Decides</th></tr>
+    <tr><td><span class="band c">C — coarse</span></td><td>the deepest</td><td>composition: silhouette, stance, where the mass sits</td></tr>
+    <tr><td><span class="band m">M — mid</span></td><td>the middle</td><td>form: how panels swell, meet and taper</td></tr>
+    <tr><td><span class="band f">F — fine</span></td><td>the shallowest</td><td>surface: material, texture, colour</td></tr>
+  </table>
+
+  <p>A weight slider collapses all three into one number, and this picture needs them to
+  disagree: <em>keep the car's layout</em>, <em>bend the body toward a banana</em>,
+  <em>restyle every surface</em>. Turn a single weight up and the banana gets louder at
+  every depth at once — it takes the composition long before it finishes shaping the body.
+  Give each band its own value and the contradiction dissolves, because the two halves are
+  no longer addressed to the same layers.</p>
+
+  <div class="step-head"><span class="step-num">Step 1</span><h2>Canny holds the composition</h2></div>
+
+  <figure>
+    <img src="assets/ex1/ui-unit0-canny.png" alt="CNPro unit 0 set to canny with a descending weight profile">
+    <figcaption>Unit 0 as set: the car in the Input tab, <code>canny</code> at 100/200, and
+    a weight profile that starts at full strength and is bent down to nothing by the end.
+    The green dot is the segment midpoint — dragging it is what curves a straight run.</figcaption>
+  </figure>
+
+  <figure>
+    <img src="assets/ex1/step-canny-only.jpg" alt="A plain yellow car in the reference composition">
+    <figcaption>That unit alone, with the full prompt already asking for a banana-shaped
+    car. The layout is the reference's, exactly.</figcaption>
+  </figure>
+
+  <p><b>Why the curve descends.</b> Composition is settled in the first handful of steps;
+  after that the model is resolving surfaces. A hint held at full strength to the end keeps
+  enforcing its edges through all of it, and nothing can deform. Letting go by the end locks
+  the layout while it matters and then leaves room — that released tail is where the banana
+  will go.</p>
+
+  <p>Notice also what the prompt managed on its own here: the paint went yellow and the
+  shape did not move at all. Text names colours and parts; it does not argue with a geometry
+  hint about silhouette.</p>
+
+  <div class="step-head"><span class="step-num">Step 2</span><h2>The donor, addressed by depth</h2></div>
+
+  <figure>
+    <img src="assets/ex1/ui-unit1-bands.png" alt="CNPro unit 1 set to IP-Adapter running on band profiles">
+    <figcaption>Unit 1: the banana in the Input tab, <code>CLIP-ViT-H (IPAdapter)</code>,
+    and — the part that matters — a band selector pressed, so the plot now shows three
+    curves instead of one. <span class="band c">C</span> sits low, <span class="band m">M</span>
+    highest, <span class="band f">F</span> between them, on a range that reaches 2.</figcaption>
+  </figure>
+
+  <figure>
+    <img src="assets/ex1/step-banana-only.jpg" alt="A banana on a plain background, no car">
+    <figcaption>The same unit running alone: it knows exactly what a banana is, and nothing
+    about where the car was. Left to itself it spends the entire composition budget on being
+    fruit.</figcaption>
+  </figure>
+
+  <div class="step-head"><span class="step-num">Step 3</span><h2>The coarse band is the dial</h2></div>
+
+  <p>Both units together now. <span class="band m">M</span> and <span class="band f">F</span>
+  stay where they are; only the <span class="band c">coarse</span> line moves. Watch the red
+  line in the editor and the silhouette in the picture:</p>
+
+  <div class="triple">
+    <figure>
+      <img src="assets/ex1/ui-profile-c50.png" alt="Band profile editor with coarse at 0.50">
+      <img src="assets/ex1/step-c50.jpg" alt="A yellow car, still entirely car-shaped">
+      <figcaption><span class="band c">C = 0.50</span> — a yellow car. Canny still owns the
+      deep layers.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex1/ui-profile-c62.png" alt="Band profile editor with coarse at 0.62">
+      <img src="assets/ex1/step-c62.jpg" alt="A banana-bodied concept car with canopy, wheels and headlights">
+      <figcaption><span class="band c">C = 0.62</span> — <b>the picture.</b> Banana body,
+      car layout, car parts.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex1/ui-profile-c70.png" alt="Band profile editor with coarse at 0.70">
+      <img src="assets/ex1/step-c70.jpg" alt="A banana with wheels, the car mostly gone">
+      <figcaption><span class="band c">C = 0.70</span> — the banana has taken the
+      composition. Only wheels survive.</figcaption>
+    </figure>
+  </div>
+
+  <p><b>Why the transition is so sharp.</b> At the deep sites two controls are pulling on the
+  same layers: the canny residual saying <em>car outline</em>, the coarse band saying
+  <em>banana</em>. Below ~0.55 canny is simply the larger of the two and the silhouette stays
+  a car. Above ~0.65 the balance flips and wheels become decorations the prompt is begging
+  for rather than structure the hint is holding. In between — a window about 0.06 wide —
+  neither wins, and the silhouette is negotiated.</p>
+
+  <p>Raising <span class="band m">M</span> instead will not substitute: the mid layers can
+  restyle a body, but by the time they act the silhouette is already committed by the layers
+  below them. That is the depth axis behaving exactly as advertised, and the reason the fix
+  for "not banana enough" is never "turn everything up".</p>
+
+  <figure>
+    <img src="assets/ex1/hero.jpg" alt="The finished banana car at full size">
+    <figcaption>Wheels with real spokes, a canopy, headlights, a door line — and a body that
+    is unmistakably fruit. The three-quarter view and the stance are the reference
+    photograph's, unchanged.</figcaption>
+  </figure>
+
+  <div class="step-head"><span class="step-num">Step 4</span><h2>What the canny curve is buying</h2></div>
+
+  <p>Same bands as the finished picture. Only unit 0's profile changes — released early
+  instead of held to three-quarters:</p>
+
+  <div class="pair">
+    <figure>
+      <img src="assets/ex1/ui-profile-canny-hold.png" alt="Canny weight profile held to three quarters">
+      <figcaption>Held — the finished picture above.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex1/ui-profile-canny-short.png" alt="Canny weight profile released early">
+      <figcaption>Released early.</figcaption>
+    </figure>
+  </div>
+
+  <figure>
+    <img src="assets/ex1/step-canny-short.jpg" alt="A banana with wheels, composition lost">
+    <figcaption>The coarse band did not change at all. It simply stopped having anything to
+    argue with.</figcaption>
+  </figure>
+
+  <p>So the two units are not independent knobs — they are two sides of one negotiation. The
+  canny <em>step</em> profile decides how long the layout is defended; the banana's
+  <em>coarse</em> band decides how hard it is attacked. Move either and the window moves.</p>
+
+  <div class="note">
+    <p><strong>The prompt has a job too.</strong> Neither reference contains a windscreen or
+    a door line — the banana has no such parts and canny has thrown away everything but
+    edges. Naming them (<code>banana-shaped car with wheels, doors and windshield</code>) is
+    what supplies the parts the two controls then arrange. The negatives block the easy way
+    out (<code>banana lying next to the car, two objects</code>) and counter the scale cues a
+    macro studio reference drags in with it (<code>toy, miniature, model car, macro</code>).</p>
+  </div>
+
+  <h2>Adapting it</h2>
+
+  <ul>
+    <li><b>Not enough donor?</b> Raise <span class="band c">C</span> in steps of 0.05 before
+    touching anything else. If the composition breaks before the shape arrives, hold the
+    canny curve longer — the two trade against each other.</li>
+    <li><b>Right shape, wrong material?</b> That is <span class="band f">F</span>, and it is
+    nearly free: it cannot damage the layout, so it is the band you can push hard.</li>
+    <li><b>Body too smooth, or too literal?</b> <span class="band m">M</span>, either way.</li>
+    <li><b>A donor with a pose of its own</b> — an animal rather than a fruit — wants the
+    composition much harder, and the usable window is both lower and narrower. That is
+    example 2.</li>
+  </ul>
+
+  <figure>
+    <img src="assets/ex1/hero-alt.jpg" alt="The same configuration on a different seed">
+    <figcaption>The same setup on another seed — a setting that only works on one seed is a
+    coincidence, not a setup.</figcaption>
+  </figure>
+
+  <div class="note warn">
+    <p><strong>One caveat.</strong> The window quoted here — coarse between roughly 0.55 and
+    0.65 — belongs to this pair of references, this checkpoint and this canny model. What
+    transfers is the procedure, not the number: lock the geometry, find the coarse threshold
+    by bisection, then style with mid and fine, which cannot hurt you.</p>
+  </div>
+
+  <footer class="site">
+    <p><a href="index.html">&larr; All worked examples</a> ·
+    <a href="https://github.com/ahrvoje/cnpro">ControlNet Pro on GitHub</a></p>
+  </footer>
+
+</div>
+</body>
+</html>

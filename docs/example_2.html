@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Example 2 — Four workers, one person · ControlNet Pro</title>
+<meta name="description" content="Four professional references amalgamated into one new person and placed in a workshop that canny and depth build between them — with all three partitions of unity compared.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap">
+    <nav class="crumbs"><a href="index.html">Worked examples</a> · Example 2</nav>
+    <p class="eyebrow">Example 2 · multi-phase, and two hints that hand over</p>
+    <h1>Four workers, one person</h1>
+    <p class="lede">Four professionals go in; one person who is none of them comes out, standing
+    in a workshop that two other units build between them. Three units, four Input tabs, and
+    the three partitions of unity side by side.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <h2>The references</h2>
+
+  <div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+    <figure><img src="assets/ex2/ref-chef.jpg" alt="Chef reference"><figcaption>chef</figcaption></figure>
+    <figure><img src="assets/ex2/ref-carpenter.jpg" alt="Carpenter reference"><figcaption>carpenter</figcaption></figure>
+    <figure><img src="assets/ex2/ref-doctor.jpg" alt="Doctor reference"><figcaption>doctor</figcaption></figure>
+    <figure><img src="assets/ex2/ref-teacher.jpg" alt="Teacher reference"><figcaption>teacher</figcaption></figure>
+  </div>
+
+  <p>Four trades with four uniforms: whites and a neckerchief, an apron over flannel, a lab
+  coat and a stethoscope, a cardigan and a collar. Nothing about them agrees except that all
+  four are people at work.</p>
+
+  <h2>Two hints, two different jobs</h2>
+
+  <p>The scene comes from a second pair of units, and this is where the example earns its
+  keep — <b>canny and depth are not interchangeable</b>, and the difference is not strength:</p>
+
+  <ul>
+    <li><b>Canny</b> is a high-frequency constraint. It says <em>there is an edge here</em>
+    and says nothing about anywhere else. Empty floor carries no edges, so canny leaves the
+    floor free.</li>
+    <li><b>Depth</b> is a low-frequency constraint covering every pixel. It does not say
+    "there is a wall here", it says <em>this whole frame is this far away</em> — including
+    the floor, which it positively asserts is empty.</li>
+  </ul>
+
+  <div class="pair">
+    <figure>
+      <img src="assets/ex2/no-person.jpg" alt="An empty workshop, no person at all">
+      <figcaption><b>Depth of the empty room.</b> The prompt asks for a worker. There is no
+      worker. The depth map says that floor is bare and it is believed.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex2/with-person.jpg" alt="The same workshop with a person standing at the bench">
+      <figcaption><b>Depth of a staged room.</b> Same everything, but the depth hint comes
+      from a photo with a figure standing at the bench — so there is a person-shaped volume
+      to fill.</figcaption>
+    </figure>
+  </div>
+
+  <p>So the two units are given <em>different pictures</em>, each the one it is good at
+  reading:</p>
+
+  <div class="pair">
+    <figure>
+      <img src="assets/ex2/ref-room.jpg" alt="Empty workshop reference for canny">
+      <figcaption><b>Canny gets the empty room</b> — bench, pegboard, window. No figure, so
+      no traced face to fight the amalgam.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex2/ref-staged.jpg" alt="Workshop with a figure, reference for depth">
+      <figcaption><b>Depth gets the staged shot</b> — it contributes a standing volume in
+      the right place, and a depth map carries no identity to leak.</figcaption>
+    </figure>
+  </div>
+
+  <h2>The hand-over, drawn</h2>
+
+  <p>Both scene units then step aside on their own schedule, and the two curves are mirror
+  images of each other on purpose:</p>
+
+  <div class="pair">
+    <figure>
+      <img src="assets/ex2/ui-profile-depth.png" alt="Depth weight profile: high at the start, zero by half way">
+      <figcaption><b>Depth leads and leaves.</b> Full strength while the composition is
+      being decided, gone by the half-way point. Staging is an early job, and depth held
+      late flattens a face into a mask.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/ex2/ui-profile-canny.png" alt="Canny weight profile: low at first, peaking mid-schedule, gone by the end">
+      <figcaption><b>Canny arrives late.</b> Almost silent at the start — early edges would
+      fix the room before the figure exists — peaking as the scene sharpens, then out of the
+      way for the last steps.</figcaption>
+    </figure>
+  </div>
+
+  <p>Read them together and they are one instruction: <em>first say where the mass is, then
+  say where the lines are, then let the surfaces resolve on their own.</em> Neither unit is
+  ever at full strength while the other is, which is what keeps a busy workshop from turning
+  into a traced drawing.</p>
+
+  <div class="pair">
+    <figure><img src="assets/ex2/ui-unit1-depth.png" alt="CNPro unit 1 with depth"><figcaption>Unit 1 — <code>depth_anything_v2</code> into an SDXL depth ControlNet, fed the staged photo.</figcaption></figure>
+    <figure><img src="assets/ex2/ui-unit0-canny.png" alt="CNPro unit 0 with canny"><figcaption>Unit 0 — <code>canny</code>, fed the empty room.</figcaption></figure>
+  </div>
+
+  <h2>Four references in one unit</h2>
+
+  <figure>
+    <img src="assets/ex2/ui-unit2-people.png" alt="CNPro unit 2 with the IP-Adapter and a multi-phase profile">
+    <figcaption>Unit 2 holds all four workers as Input tabs of a <b>single</b> unit — not
+    four units. The plot shows why that matters: the bright line is the wave this input
+    runs, and the faint ones are its three siblings, each shifted a quarter of a cycle
+    further along. The unit is drawing its own schedule.</figcaption>
+  </figure>
+
+  <p>Every panel below runs the <b>same total pull</b>: flat gives each of the four a
+  quarter, the partitions split one envelope of 2.0 between them. Nothing that follows is a
+  strength difference.</p>
+
+  <div class="step-head"><span class="step-num">Flat</span><h2>Everyone, every step</h2></div>
+
+  <div class="pair">
+    <figure><img src="assets/ex2/ui-profile-flat.png" alt="Flat profile"><figcaption>One flat line. All four references pull on every step.</figcaption></figure>
+    <figure><img src="assets/ex2/res-flat.jpg" alt="A generic worker in grey coveralls"><figcaption>Grey coveralls and a generic face. Four uniforms averaged into none.</figcaption></figure>
+  </div>
+
+  <p>This is the failure the rest of the page exists to fix. Averaging four professionals
+  does not produce a person who is all four — it produces the most ordinary worker the model
+  knows, because the only thing four references agree on is the generic.</p>
+
+  <div class="step-head"><span class="step-num">Cosine</span><h2>The soft overlap</h2></div>
+
+  <div class="pair">
+    <figure><img src="assets/ex2/ui-profile-cosine.png" alt="Cosine partition profile"><figcaption>Each input eases in as the previous eases out — but look at the crossings: when one wave peaks its neighbours are still well off the floor.</figcaption></figure>
+    <figure><img src="assets/ex2/res-cosine.jpg" alt="A person in a light coat"><figcaption>A light coat and a collar. Real garments now, but blended — no single reference ever had the schedule to itself.</figcaption></figure>
+  </div>
+
+  <div class="step-head"><span class="step-num">Fejér</span><h2>The clean hand-over</h2></div>
+
+  <div class="pair">
+    <figure><img src="assets/ex2/ui-profile-fejer.png" alt="Fejer partition profile"><figcaption>At each input's moment the others are <em>exactly</em> zero, not merely small. From three references up, that is a different picture rather than a tidier one.</figcaption></figure>
+    <figure><img src="assets/ex2/res-fejer.jpg" alt="A person in a white coat with apron and stethoscope"><figcaption>The chef's whites, the carpenter's apron line, the doctor's stethoscope, the teacher's collar — on one coherent uniform nobody actually wears.</figcaption></figure>
+  </div>
+
+  <div class="step-head"><span class="step-num">von Mises</span><h2>The overlap as a dial</h2></div>
+
+  <div class="pair">
+    <figure><img src="assets/ex2/res-mises-k1.jpg" alt="Result at kappa 1"><figcaption><b>κ = 1.</b> Broad, gentle hand-over — close to the cosine, and the details wash together the same way.</figcaption></figure>
+    <figure><img src="assets/ex2/res-mises-k8.jpg" alt="Result at kappa 8"><figcaption><b>κ = 8.</b> Near-hard switching, and the borrowed details come back: pocket, stethoscope, apron edge.</figcaption></figure>
+  </div>
+
+  <figure>
+    <img src="assets/ex2/ui-profile-mises.png" alt="Von Mises partition profile at kappa 8">
+    <figcaption>κ = 8 drawn: flat-topped plateaus with steep walls. One reference holds the
+    steps outright, hands over in a few, and the sum is still exactly the envelope. The pad's
+    x-axis is κ, so this is one drag from the cosine's shape.</figcaption>
+  </figure>
+
+  <p>The three families are not three qualities of the same thing. Cosine keeps everyone
+  slightly present, which suits two references and dilutes four. Fejér guarantees each one a
+  moment alone, and needs no setting. Von Mises makes that a continuum you can tune. All
+  three sum to the envelope at every step, which is why none of them makes the unit quieter
+  as you add references.</p>
+
+  <h2>The result</h2>
+
+  <figure>
+    <img src="assets/ex2/hero.jpg" alt="The finished amalgam: one person in an invented uniform standing in the workshop">
+    <figcaption>One person, in a uniform assembled from four trades, standing where the
+    depth hint put them, in a room the canny hint sharpened.</figcaption>
+  </figure>
+
+  <figure>
+    <img src="assets/ex2/hero-alt.jpg" alt="The same configuration on another seed">
+    <figcaption>Same configuration, next seed.</figcaption>
+  </figure>
+
+  <figure>
+    <img src="assets/ex2/ui-all-units.png" alt="All three CNPro units as configured">
+    <figcaption>All three units as set.</figcaption>
+  </figure>
+
+  <h2>Adapting it</h2>
+
+  <ul>
+    <li><b>Figure will not appear?</b> Check the depth hint before touching weights — a
+    depth map of an empty scene forbids a figure far more effectively than a prompt can ask
+    for one.</li>
+    <li><b>References not showing through?</b> Raise the envelope before adding waves. Four
+    inputs sharing an envelope of 1.0 give each a quarter of the pull a single input would
+    get at 1.0.</li>
+    <li><b>Blend too soft?</b> Fejér, or von Mises with κ up around 8. <b>Too abrupt?</b>
+    Drop κ toward 1.</li>
+    <li><b>Scene traced instead of built?</b> Canny is peaking too early or leaving too
+    late; it should be quiet while the composition forms.</li>
+  </ul>
+
+  <div class="note warn">
+    <p><strong>Worth knowing before you try it on faces.</strong> Four faces converge on one
+    plausible person no matter how you schedule them — the model's prior for "one human face"
+    is far stronger than for "one object". What the schedule reliably buys you here is
+    everything <em>around</em> the face: which trade's cut, cloth and kit survive into the
+    final uniform.</p>
+  </div>
+
+  <footer class="site">
+    <p><a href="index.html">&larr; All worked examples</a> ·
+    <a href="https://github.com/ahrvoje/cnpro">ControlNet Pro on GitHub</a></p>
+  </footer>
+
+</div>
+</body>
+</html>

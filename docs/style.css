@@ -1,0 +1,235 @@
+/* CNPro docs - dark, self-contained, no external fonts or scripts so the
+   pages render identically on GitHub Pages and from a local file. */
+
+:root {
+    --bg: #0d1117;
+    --panel: #141b24;
+    --panel-2: #1b2430;
+    --line: #253040;
+    --text: #dbe3ec;
+    --muted: #93a1b3;
+    --accent: #4b7ecb;
+    --accent-soft: rgba(75, 126, 203, 0.15);
+    --coarse: #e53935;
+    --mid: #fdd835;
+    --fine: #1e88e5;
+    --ok: #35c46b;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 940px; margin: 0 auto; padding: 0 20px 96px; }
+
+/* ---------------------------------------------------------------- header */
+header.site {
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #101822, var(--bg));
+    padding: 56px 0 40px;
+    margin-bottom: 48px;
+}
+
+header.site .wrap { padding-bottom: 0; }
+
+.eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-size: 12px;
+    color: var(--accent);
+    margin: 0 0 12px;
+}
+
+h1 {
+    font-size: clamp(28px, 5vw, 44px);
+    line-height: 1.15;
+    margin: 0 0 16px;
+    letter-spacing: -0.02em;
+}
+
+h2 {
+    font-size: clamp(21px, 3vw, 27px);
+    margin: 56px 0 14px;
+    letter-spacing: -0.01em;
+    scroll-margin-top: 24px;
+}
+
+h3 { font-size: 18px; margin: 34px 0 10px; }
+
+p { margin: 0 0 16px; }
+
+.lede { font-size: 19px; color: var(--muted); max-width: 70ch; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: 0.88em;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    word-break: break-word;
+}
+
+pre {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+/* ----------------------------------------------------------------- cards */
+.cards { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+.card {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: border-color 0.15s, transform 0.15s;
+}
+
+a.card:hover { border-color: var(--accent); transform: translateY(-2px); text-decoration: none; }
+
+.card img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; }
+
+.card .body { padding: 16px 18px 20px; }
+
+.card h3 { margin: 0 0 6px; font-size: 17px; color: var(--text); }
+
+.card p { color: var(--muted); font-size: 14px; margin: 0; }
+
+.card.pending { opacity: 0.62; }
+
+.card .placeholder {
+    aspect-ratio: 16 / 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: repeating-linear-gradient(45deg, #131a23, #131a23 12px, #172029 12px, #172029 24px);
+    color: var(--muted);
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.tag {
+    display: inline-block;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.tag.live { color: var(--ok); border-color: rgba(53, 196, 107, 0.4); }
+
+/* --------------------------------------------------------------- figures */
+figure { margin: 26px 0; }
+
+figure img {
+    width: 100%;
+    display: block;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+}
+
+figcaption { color: var(--muted); font-size: 14px; margin-top: 10px; }
+
+figcaption b { color: var(--text); font-weight: 600; }
+
+.pair { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+
+.pair figure { margin: 0; }
+
+.triple { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+
+.triple figure { margin: 0; }
+
+.triple figcaption { font-size: 13px; }
+
+/* ----------------------------------------------------------------- notes */
+.note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    border-radius: 0 8px 8px 0;
+    margin: 26px 0;
+}
+
+.note.warn { border-left-color: var(--mid); background: rgba(253, 216, 53, 0.08); }
+
+.note p:last-child { margin-bottom: 0; }
+
+.note strong { color: #fff; }
+
+/* ----------------------------------------------------------------- table */
+table { width: 100%; border-collapse: collapse; margin: 22px 0; font-size: 14.5px; }
+
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+
+th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+td code { font-size: 12.5px; }
+
+/* ------------------------------------------------------------ band chips */
+.band { font-weight: 600; }
+.band.c { color: var(--coarse); }
+.band.m { color: var(--mid); }
+.band.f { color: var(--fine); }
+
+/* ----------------------------------------------------------------- steps */
+.step-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin: 56px 0 8px;
+}
+
+.step-num {
+    flex: 0 0 auto;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 11px;
+}
+
+.step-head h2 { margin: 0; }
+
+/* ------------------------------------------------------------------- nav */
+nav.crumbs { font-size: 14px; color: var(--muted); margin-bottom: 22px; }
+
+footer.site {
+    border-top: 1px solid var(--line);
+    margin-top: 72px;
+    padding-top: 24px;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+hr { border: 0; border-top: 1px solid var(--line); margin: 44px 0; }

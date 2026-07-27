@@ -295,3 +295,51 @@ boundaries where the value can be produced twice and disagree:
 Both were written after a report that a dropped image never reached the
 control. Neither can be satisfied by looking at the UI, which is the point:
 the canvas showed the new picture in every broken case.
+
+---
+
+## 7. `docs/` is for humans. Serialization lives here.
+
+The pages under `docs/` (GitHub Pages, served from that folder) are worked
+examples for users. **They show the widget, never the profile string.** A reader
+setting this up has a UI in front of them, not an API; a screenshot of the unit
+with the curve drawn is the instruction, and `0@1;0.75@0.5;1@0` is noise to them.
+The strings belong in this file instead, because an agent reproducing a page
+*does* drive it through the API.
+
+### The grammar, as the pages' examples use it
+
+```
+main            x@y;x@y;...            y normalized, optional |lo~hi range suffix
+band segments   #C<profile> #M<profile> #F<profile>      coarse / mid / fine
+band MODE       #B<band>               presence = the unit runs on the bands
+```
+
+Every step-domain segment carries the same range suffix, and the suffix is what
+makes a band exceed 1: on `|0~2` a drawn `0.31` **is a multiplier of 0.62**. Half
+the number you mean, every time — the single easiest thing to get wrong when
+writing these by hand.
+
+Example 1 (`docs/example_1.html`) is exactly:
+
+```
+unit 0  canny   0@1;0.75@0.5;1@0
+unit 1  ipadapt 0@0.5;1@0.5|0~2#Bmid#C0@0.31;1@0.31|0~2#M0@0.75;1@0.75|0~2#F0@0.6;1@0.6|0~2
+                -> coarse 0.62, mid 1.5, fine 1.2
+```
+
+### Screenshotting the UI for a page
+
+The unit panels in `docs/` were captured by driving a browser over CDP against a
+**private** instance (see section 0 — not the user's 7860). Two things make it
+easy:
+
+* the whole configuration can be pushed in through the extension's own infotext
+  paste path, so the panel provably matches the picture; and
+* **the profile editors poll their hidden textbox**, so writing a profile string
+  into the textbox and waiting a tick is enough to redraw the plot — no event
+  plumbing, no clicking on the canvas. That is how the three coarse-band variants
+  in example 1 were shot from one page load.
+
+Infotext does *not* carry the unit images; upload those separately
+(`DOM.setFileInputFiles` on the input inside `#..._input_image`).
