@@ -280,15 +280,9 @@ nothing.
   which it is. A wrong guess produces plausible wrong images forever.
 - **Z-Image inpaint conditioning is plumbed but does not work** (behind
   `CNPRO_ZIMAGE_INPAINT=1`): the masked region comes back solid black.
-- **X/Y/Z grid support is parked**, and the Topaz canvas tools are not shipped —
-  the availability probe 404s and the buttons stay hidden by design.
 - **A unit prompt re-conditions the control branch; it does not paint objects.**
   It changes how that control reads its hint. Pushed too far it stops being a
   photograph, and the usable range is narrower than the sliders suggest.
-- With the main curve selected, the plot shows the step curve while the step
-  curve *times* the depth curve is what runs. Nothing on that plot tells you the
-  depth curve is live. A knowing trade: every alternative drew values the curve
-  did not have.
 
 ---
 
@@ -296,7 +290,7 @@ nothing.
 
 GPL-3.0.
 
-<sub>
+<small>
 
 Descended from and building on work by others, with thanks:
 
@@ -311,4 +305,4 @@ Descended from and building on work by others, with thanks:
 - **Pytorch-Contrast-Adaptive-Sharpening** — Jamy-L. The CAS pass in the IP-Adapter path.
 - **base64ArrayBuffer** — Jon Leighton, 2011 (MIT), and a base64→Blob helper by gauravmehla.
 
-</sub>
+</small>
