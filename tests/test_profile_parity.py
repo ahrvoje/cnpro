@@ -63,6 +63,13 @@ SAMPLES = 21
 #   - cosine / gamma: python resamples into a 512-point polyline and
 #     interpolates linearly between samples, the editor evaluates the closed
 #     form.
+#
+# A case is (string, tolerance) or (string, tolerance, phase_index,
+# phase_count): the multi-phase families split the wave between phase_count
+# Inputs, so exercising them means naming the Input whose share is compared.
+# Without those two the profile is parsed the way a non-fanning-out caller
+# sees it - Input 1 of a unit that does not split - which is exactly what the
+# bare marker has always meant.
 CASES = [
     ("0@1;1@1", 1e-9),
     ("0@1;1@0", 1e-9),
@@ -76,6 +83,23 @@ CASES = [
     ("0@1;1@1;C1@0", 5e-3),                       # cosine mode
     ("0@1;1@1;C2.5@1.5|2", 5e-3),
     ("0@1;1@1;C1@0;P", 5e-3),                     # multi-phase marker tolerated
+    ("0@1;1@1;C1@0;PF", 5e-3),                    # ...and so are the family markers
+    ("0@1;1@1;C1@0;PV4", 5e-3),
+    # the fan-out itself: every Input's share, in each family. Input 0 of a
+    # 2-way cosine split must equal the plain wave (offset 0), and Fejer at
+    # N=2 must equal the cosine everywhere - the identity that makes 'PF' a
+    # drop-in for 'P' on a two-Input unit.
+    ("0@1;1@1;C1@0;P", 5e-3, 0, 2),
+    ("0@1;1@1;C1@0;P", 5e-3, 1, 3),
+    ("0@1;1@0.4;C2@1;P", 5e-3, 2, 4),
+    ("0@1;1@1;C1@0;PF", 5e-3, 0, 2),
+    ("0@1;1@1;C1@0;PF", 5e-3, 1, 2),
+    ("0@1;1@0.4;C2@1;PF", 5e-3, 3, 5),
+    ("0@1;1@1;C1@0.7;PF|0.5~1.5", 5e-3, 1, 3),
+    ("0@1;1@1;C1@0;PV0", 5e-3, 1, 4),             # kappa 0 = every input equally on
+    ("0@1;1@1;C1@0;PV3", 5e-3, 2, 5),
+    ("0@1;1@1;C1@0;PV10", 5e-3, 0, 3),            # kappa max = near-hard switching
+    ("0@1;M0.5@0.3;1@1;C2@2;PV6;G1.7|-1~2", 5e-3, 4, 6),  # every feature at once
     ("0@1;1@0.2;G2", 5e-3),                       # response exponent
     ("0@1;1@0.2;G0.5|2", 5e-3),
     ("0@1;1@1;C1@0.5;G3|-1~2", 5e-3),             # wave + bend + scale
@@ -131,12 +155,18 @@ def compare(name, case, py_values, js_values, tol, failures):
 
 def main():
     external_code = _import_external_code()
-    cases = [c for c, _ in CASES]
-    results = js_results(cases)
+    specs = [(c[0], c[1], c[2] if len(c) > 2 else 0, c[3] if len(c) > 3 else 1)
+             for c in CASES]
+    results = js_results([
+        {"text": case, "phaseIndex": index, "phaseCount": count}
+        for case, _, index, count in specs
+    ])
 
     failures = []
-    for (case, tol), js in zip(CASES, results):
-        py_main = external_code.parse_weight_profile(case)
+    for (case, tol, index, count), js in zip(specs, results):
+        py_main = external_code.parse_weight_profile(
+            case, phase_offset=index * 2.0 * math.pi / count,
+            phase_index=index, phase_count=count)
         if js.get("main") is None or py_main is None:
             failures.append(f"{case!r}: parsed by only one side "
                             f"(python={py_main is not None}, editor={js.get('main') is not None})")

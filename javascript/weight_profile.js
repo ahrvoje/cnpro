@@ -187,7 +187,7 @@
         return {
             points: [{ x: 0, y: y }, { x: 1, y: y }],
             cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
-            multiPhase: false, gamma: 1,
+            phaseFamily: null, kappa: 0, gamma: 1,
         };
     }
 
@@ -195,12 +195,68 @@
     const GAMMA_MAX = 10;         // response slider ends: x^10 ... x^(1/10)
     const COS_MAX_OSC = 4;        // pad top = 4 oscillations over the step range
     const COS_DEFAULT_OSC = 1;
+    const KAPPA_MAX = 10;         // pad right in von Mises: near-hard switching
+    const KAPPA_DEFAULT = 3;
+
+    /**
+     * The oscillatory button's ladder, in click order. `null` family = the
+     * plain single wave; the rest split that same wave between the Inputs.
+     * The balance editor stops after "cos" (it has no Inputs to split over),
+     * which is what the button's data-osc-multi attribute says.
+     *
+     * This is ONE control because "multi-phase without a wave" was never a
+     * reachable state: the old multi toggle force-enabled cosine on the way in
+     * and cosine cleared multi on the way out, i.e. two booleans encoding a
+     * single ladder. Mirrors PHASE_FAMILY_* in lib_cnpro/external_code.py.
+     */
+    const OSC_LADDER = [
+        { state: "off", cosOn: false, family: null },
+        { state: "cos", cosOn: true, family: null },
+        { state: "multi", cosOn: true, family: "cos" },
+        { state: "fejer", cosOn: true, family: "fejer" },
+        { state: "mises", cosOn: true, family: "mises" },
+    ];
     const PAD_MAX_SHARE = 0.4;  // pad never eats more than this of the free width
     const PAD_MIN_SIDE = 46;
     const COS_CURVE_SAMPLES = 480; // dense enough for 4 oscillations across the plot
 
     function clamp01(v) {
         return Math.min(Math.max(v, 0), 1);
+    }
+
+    /**
+     * One Fejer weight at circular offset u for an N-way split - the JS face
+     * of _fejer_weight in lib_cnpro/external_code.py, and the singularity
+     * guard has to match it: sin(N*u/2)/sin(u/2) -> N as u -> 0, so the
+     * weight -> 1.
+     */
+    function fejerWeight(u, count) {
+        const s = Math.sin(0.5 * u);
+        if (Math.abs(s) < 1e-9) return 1;
+        const ratio = Math.sin(0.5 * count * u) / s;
+        return (ratio * ratio) / (count * count);
+    }
+
+    /**
+     * Share of the envelope that Input `index` of `count` takes at wave angle
+     * `theta`. Mirrors _phase_weight (external_code.py) - see there for what
+     * each family means and why they all sum to a constant at every theta.
+     */
+    function phaseWeight(theta, index, count, family, kappa) {
+        const offset = (TAU * index) / count;
+        if (family === "fejer") return fejerWeight(theta - offset, count);
+        if (family === "mises") {
+            // cos - 1 in the exponent (never positive) instead of cos: it
+            // cancels between numerator and denominator and keeps exp() in
+            // [0, 1], so a large kappa cannot overflow its way to a NaN
+            const top = Math.exp(kappa * (Math.cos(theta - offset) - 1));
+            let total = 0;
+            for (let j = 0; j < count; j++) {
+                total += Math.exp(kappa * (Math.cos(theta - (TAU * j) / count) - 1));
+            }
+            return total > 0 ? top / total : 1 / count;
+        }
+        return 0.5 + 0.5 * Math.cos(theta - offset);
     }
 
     /** Normalized y whose EFFECTIVE value is 1 - where a neutral multiplier
@@ -276,9 +332,12 @@
             this.cosOn = parsed.cosOn;
             this.cosN = parsed.cosN || COS_DEFAULT_OSC;
             this.cosPhase = parsed.cosPhase;
-            // multi-phase: the cosine profile is replicated per Input, each
-            // shifted by 2pi/n (serialized as a bare 'P' token)
-            this.multiPhase = !!parsed.multiPhase;
+            // multi-phase: the wave is replicated per Input, each shifted by
+            // 2pi/n. null = plain single wave; 'cos' / 'fejer' / 'mises' pick
+            // how the Inputs divide it ('P' / 'PF' / 'PV<kappa>'). kappa is
+            // the von Mises hand-over sharpness and is meaningless otherwise.
+            this.phaseFamily = parsed.phaseFamily || null;
+            this.kappa = parsed.kappa || 0;
             // response exponent (vertical slider in the range column): bends
             // the normalized [0, 1] profile with y -> y^gamma BEFORE the
             // scale mapping; 1 = linear (neutral), serialized as 'G<e>'
@@ -324,7 +383,7 @@
             return {
                 points: [{ x: 0, y: y }, { x: 1, y: y }],
                 cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
-                multiPhase: false, gamma: 1,
+                phaseFamily: null, kappa: 0, gamma: 1,
             };
         }
 
@@ -424,7 +483,8 @@
             this.store[this.band] = {
                 points: this.points,
                 cosOn: this.cosOn, cosN: this.cosN, cosPhase: this.cosPhase,
-                multiPhase: !!this.multiPhase, gamma: this.gamma || 1,
+                phaseFamily: this.phaseFamily || null, kappa: this.kappa || 0,
+                gamma: this.gamma || 1,
             };
         }
 
@@ -436,13 +496,11 @@
             this.cosOn = P.cosOn;
             this.cosN = P.cosN;
             this.cosPhase = P.cosPhase;
-            this.multiPhase = !!P.multiPhase;
+            this.phaseFamily = P.phaseFamily || null;
+            this.kappa = P.kappa || 0;
             this.gamma = P.gamma || 1;
-            if (this.padPos) {
-                this.padPos.cos.x = this.cosPhase / TAU;
-                this.padPos.cos.y = this.cosN / COS_MAX_OSC;
-            }
-            this.setCosButtonState();
+            this.syncPadFromWave();
+            this.setOscButtonState();
             this.updatePad();
             this.updateScaleSelects();
             this.updateGammaSlider();
@@ -541,21 +599,33 @@
             let cosOn = false;
             let cosN = 0;
             let cosPhase = 0;
-            let multiPhase = false;
+            let phaseFamily = null;
+            let kappa = 0;
             let gamma = 1;
             for (const pair of parts[0].split(";")) {
                 let token = pair.trim();
                 if (!token) continue;
-                // bare 'P' = multi-phase marker: with several Inputs each one
-                // runs this cosine profile shifted by 2pi/n (see the multi
-                // preset toggle); parsed before the M/C prefixes because it
-                // has no parameters
-                if (token === "P") {
-                    multiPhase = true;
+                // 'P...' = multi-phase marker: with several Inputs each one
+                // runs this wave shifted by 2pi/n (see the oscillatory
+                // button's ladder). The suffix picks the family - bare 'P'
+                // cosine, 'PF' Fejer, 'PV<kappa>' von Mises - and an
+                // unrecognized one degrades to the cosine rather than failing
+                // the parse, matching _parse_phase_family in python.
+                if (token[0] === "P") {
+                    const body = token.slice(1);
+                    if (body[0] === "F" || body[0] === "f") {
+                        phaseFamily = "fejer";
+                    } else if (body[0] === "V" || body[0] === "v") {
+                        const k = parseFloat(body.slice(1));
+                        phaseFamily = "mises";
+                        kappa = isFinite(k) ? Math.min(Math.max(k, 0), KAPPA_MAX) : 0;
+                    } else {
+                        phaseFamily = "cos";
+                    }
                     continue;
                 }
                 // 'C<oscillations>@<phase>' = cosine mode; the drawn points are
-                // the envelope of that wave (see cosFactor / evaluate)
+                // the envelope of that wave (see waveFactor / evaluate)
                 if (token[0] === "C") {
                     const co = token.slice(1).split("@");
                     if (co.length !== 2) return null;
@@ -605,7 +675,7 @@
             return {
                 points: points, scaleLo: scaleLo, scaleHi: scaleHi,
                 cosOn: cosOn, cosN: cosN, cosPhase: cosPhase,
-                multiPhase: multiPhase, gamma: gamma,
+                phaseFamily: phaseFamily, kappa: kappa, gamma: gamma,
             };
         }
 
@@ -620,7 +690,13 @@
                 }
             }
             if (P.cosOn) tokens.push(`C${fmt(P.cosN)}@${fmt(P.cosPhase)}`);
-            if (P.cosOn && P.multiPhase) tokens.push("P");
+            // the family marker only means something ON a wave, and the ladder
+            // cannot reach a family without one - but a hand-written string
+            // can, and writing 'PF' with no 'C' back out would keep a marker
+            // alive that nothing acts on
+            if (P.cosOn && P.phaseFamily === "cos") tokens.push("P");
+            if (P.cosOn && P.phaseFamily === "fejer") tokens.push("PF");
+            if (P.cosOn && P.phaseFamily === "mises") tokens.push(`PV${fmt(P.kappa || 0)}`);
             if (Math.abs((P.gamma || 1) - 1) > 1e-4) tokens.push(`G${fmt(P.gamma)}`);
             const base = tokens.join(";");
             // the range is the PLOT's, so every segment of one plot gets the
@@ -700,7 +776,7 @@
          * (cnpro_core/weight_profile.py) stays piecewise-linear.
          */
         evaluate(x) {
-            return this.gammaAt(this.envelopeAt(x) * this.cosFactor(x));
+            return this.gammaAt(this.envelopeAt(x) * this.waveFactor(x, 0));
         }
 
         /**
@@ -716,27 +792,59 @@
         }
 
         /**
-         * Cosine mode multiplier, matching _apply_profile_cosine in
-         * lib_controlnet/external_code.py: the drawn profile is the ENVELOPE of
+         * The wave multiplier Input `index` runs, matching _apply_profile_wave
+         * in lib_cnpro/external_code.py: the drawn profile is the ENVELOPE of
          * the wave, and the wave pulses between 0 and that envelope (it never
          * flips sign, so the scale range keeps its meaning). The phase is
          * SUBTRACTED so that dragging the pad point right shifts the wave
          * right, which is what the gesture reads as.
+         *
+         * Off a multi-phase family this is the plain cosine and `index` is
+         * irrelevant. On one, it is that Input's share of the same wave - and
+         * the count comes from phaseCount(), NOT from multiPhaseCount()
+         * directly: this runs once per curve sample (hundreds per frame) and
+         * counting the Inputs walks the unit's DOM.
          */
-        cosFactor(x) {
+        waveFactor(x, index) {
             if (!this.cosOn) return 1;
-            return 0.5 + 0.5 * Math.cos(TAU * this.cosN * x - this.cosPhase);
+            const count = this.phaseCount();
+            const theta = TAU * this.cosN * x - this.cosPhase;
+            // A count of 1 means there is nobody to share with, and then the
+            // cosine path runs whatever the family says - the same rule python
+            // applies (_apply_profile_wave), and what keeps a unit that holds a
+            // single Input running the wave it draws rather than a degenerate
+            // one-way split that is flat 1 everywhere.
+            if (count > 1 && this.phaseFamily && this.phaseFamily !== "cos") {
+                return phaseWeight(theta, index, count, this.phaseFamily, this.kappa || 0);
+            }
+            return 0.5 + 0.5 * Math.cos(theta - (count > 1 ? (TAU * index) / count : 0));
+        }
+
+        /**
+         * Input count the phase families divide the wave between. Resolved
+         * once per frame by draw() (multiPhaseCount walks the DOM) and cached
+         * here; 2 is the floor multiPhaseCount itself applies, so a preview
+         * that renders before the first count still shows a real split.
+         *
+         * NOTE this is the PREVIEW's count. At generation time a unit holding
+         * a single Input does not fan out at all and runs the plain cosine
+         * (python: phase_count == 1 takes the cosine path whatever the family
+         * says), which is the same divergence the floor of 2 has always
+         * carried - the editor cannot draw a split that does not happen.
+         */
+        phaseCount() {
+            return this._phaseCount || 2;
         }
 
         /**
          * Effective value of the sibling wave a further Input runs in
-         * multi-phase mode: same envelope and same response exponent, cosine
-         * shifted by `phase`. Its preview line and its per-step dots both go
-         * through here, so the dots cannot land off the line they sample.
+         * multi-phase mode: same envelope, same response exponent, that
+         * Input's share of the wave. Its preview line and its per-step dots
+         * both go through here, so the dots cannot land off the line they
+         * sample.
          */
-        phaseValueAt(x, phase) {
-            return this.gammaAt(this.envelopeAt(x)
-                * (0.5 + 0.5 * Math.cos(TAU * this.cosN * x - phase)));
+        phaseValueAt(x, index) {
+            return this.gammaAt(this.envelopeAt(x) * this.waveFactor(x, index));
         }
 
         /** The drawn/editable polyline itself (the envelope in cosine mode). */
@@ -789,7 +897,8 @@
                     points: packed.main.points,
                     cosOn: packed.main.cosOn, cosN: packed.main.cosN,
                     cosPhase: packed.main.cosPhase,
-                    multiPhase: packed.main.multiPhase, gamma: packed.main.gamma,
+                    phaseFamily: packed.main.phaseFamily, kappa: packed.main.kappa,
+                    gamma: packed.main.gamma,
                 };
                 for (const b of BAND_ORDER) {
                     this.store[b] = packed.bands[b]
@@ -841,15 +950,17 @@
         }
 
         /**
-         * Presets: 'step' (button) and 'cos' (cosine mode toggle). The square
-         * pad next to them carries the two parameters of whichever preset
-         * currently holds focus.
+         * Presets: 'step' (button) and 'osc' (the oscillatory ladder - see
+         * OSC_LADDER and cycleOsc). The square pad next to them carries the two
+         * parameters of whichever preset currently holds focus.
          *
          * Focus rule: clicking a preset that is NOT focused only binds the pad
          * to it - the existing profile is kept, nothing is regenerated.
          * Clicking a preset that IS already focused regenerates the profile
          * from the pad. Moving the pad point always rewrites the profile of the
-         * focused preset.
+         * focused preset. 'osc' sits outside that rule: every one of its rungs
+         * is non-destructive, so it acts on the first click and takes focus as
+         * a side effect of having a wave to parameterize.
          *
          * There is no invert toggle: the step preset spans both directions
          * through the pad's vertical halves (see applyPadPreset), which is
@@ -862,8 +973,9 @@
             // pad position per preset, so switching back restores its parameters
             this.padPos = {
                 step: { x: 0.5, y: 1 },
-                cos: { x: this.cosPhase / TAU, y: this.cosN / COS_MAX_OSC },
+                osc: { x: 0, y: 0 },
             };
+            this.syncPadFromWave();
             this.pad = this.container.querySelector(".cnet-profile-preset-pad");
             this.padDot = this.container.querySelector(".cnet-profile-pad-dot");
 
@@ -872,34 +984,13 @@
                 button.addEventListener("click", (e) => {
                     e.preventDefault();
                     const name = button.dataset.preset;
-                    if (name === "cos") {
-                        // Non-destructive: switching the wave on or off keeps
-                        // the drawn polyline (it only becomes the envelope), so
-                        // there is nothing to protect the user from - the first
-                        // click acts immediately and draws the wave.
-                        this.cosOn = !this.cosOn;
-                        if (this.cosOn) {
-                            this.setActivePreset("cos");
-                            this.applyPadPreset();
-                        } else {
-                            // multi-phase rides on the wave, off with it
-                            this.multiPhase = false;
-                            this.setActivePreset(null);
-                            this.drawAndSync();
-                        }
-                        return;
-                    }
-                    if (name === "multi") {
-                        // Multi-phase toggle: a mode, not a shape - but it
-                        // needs the wave, so switching it on engages cosine
-                        // mode too (whose pad keeps carrying the shared
-                        // phase/oscillation parameters).
-                        this.multiPhase = !this.multiPhase;
-                        if (this.multiPhase && !this.cosOn) {
-                            this.cosOn = true;
-                            this.setActivePreset("cos");
-                        }
-                        this.drawAndSync();
+                    if (name === "osc") {
+                        // Non-destructive at every rung: the drawn polyline is
+                        // kept throughout (the wave only makes it the
+                        // envelope), so there is nothing to protect the user
+                        // from and the click acts immediately - no second
+                        // confirming click, unlike step below.
+                        this.cycleOsc();
                         return;
                     }
                     // Step is DESTRUCTIVE - it replaces the drawn profile - so
@@ -1119,8 +1210,7 @@
         setActivePreset(name) {
             this.activePreset = name;
             for (const key in this.presetButtons) {
-                if (key === "cos") continue;    // its highlight tracks cosOn, not focus
-                if (key === "multi") continue;  // its highlight tracks multiPhase, not focus
+                if (key === "osc") continue;  // its highlight tracks the rung, not focus
                 this.presetButtons[key].classList.toggle("cnet-profile-preset-active", key === name);
             }
             if (this.pad) {
@@ -1130,13 +1220,71 @@
                         + "above the middle the raised part is on the right, below it on the "
                         + "left (the mirrored step); distance from the middle is the height, "
                         + "the middle row itself is flat 0",
-                    cos: "Cosine parameters: x = phase (0 ... 2π), y = oscillations (0 ... 4)",
+                    // Y is the oscillation count on every rung of the ladder;
+                    // only X changes hands, and it does so because von Mises
+                    // is the one family with a shape parameter of its own.
+                    // Phase is the cheaper of the two to give up there: with
+                    // the Inputs spread over the full 2*pi it only decides
+                    // WHICH of them leads, and it keeps whatever value the
+                    // other rungs left on it.
+                    osc: this.phaseFamily === "mises"
+                        ? "von Mises parameters: x = hand-over sharpness κ (0 = every input "
+                          + "equally on ... 10 = near-hard switching), y = oscillations (0 ... 4)"
+                        : "Wave parameters: x = phase (0 ... 2π), y = oscillations (0 ... 4)",
                 }[name] || "Preset parameters (click a preset first)";
                 // the halves only mean something for the step preset, so the
                 // centre line is shown only while it holds focus
                 this.pad.classList.toggle("cnet-profile-pad-split", name === "step");
             }
             this.updatePad();
+        }
+
+        /**
+         * Advance the oscillatory button one rung along OSC_LADDER.
+         *
+         * The wave PARAMETERS survive the whole cycle: phase and oscillation
+         * count live in the 'C' token and are never rewritten here, so passing
+         * through von Mises (whose pad X is kappa, not phase) and back out
+         * returns the exact curve you left. That is also why the pad follows
+         * the wave rather than the other way round - see syncPadFromWave.
+         *
+         * A state that is not on the ladder (a hand-written 'PF' in the
+         * balance editor, which has no Inputs to split over) resolves to rung
+         * 0, so one click normalizes it to off rather than leaving it stuck.
+         */
+        cycleOsc() {
+            const button = this.presetButtons.osc;
+            const ladder = (button && button.dataset.oscMulti)
+                ? OSC_LADDER : OSC_LADDER.slice(0, 2);
+            const at = ladder.findIndex((rung) => rung.cosOn === !!this.cosOn
+                && (rung.family || null) === (this.phaseFamily || null));
+            const next = ladder[(at + 1) % ladder.length];
+            this.cosOn = next.cosOn;
+            this.phaseFamily = next.family;
+            // kappa is only ever read in the von Mises rung, so it is seeded
+            // on the way in rather than carried around: 0 would land on the
+            // pad's far left and show every Input equally on, which reads as
+            // "the family does nothing"
+            if (next.family === "mises" && !this.kappa) this.kappa = KAPPA_DEFAULT;
+            this.setActivePreset(this.cosOn ? "osc" : null);
+            this.syncPadFromWave();
+            this.drawAndSync();
+        }
+
+        /**
+         * Point the pad at the wave's current parameters.
+         *
+         * The wave is the source of truth, not the pad. The pad's X changes
+         * MEANING between rungs - phase everywhere except von Mises, where it
+         * is kappa - so a position carried across a rung change would be read
+         * back as the wrong quantity and silently move the curve.
+         */
+        syncPadFromWave() {
+            if (!this.padPos) return;
+            this.padPos.osc.x = this.phaseFamily === "mises"
+                ? clamp01((this.kappa || 0) / KAPPA_MAX)
+                : clamp01(this.cosPhase / TAU);
+            this.padPos.osc.y = clamp01(this.cosN / COS_MAX_OSC);
         }
 
         /** Move the visible pad dot to the focused preset's parameters. */
@@ -1154,7 +1302,7 @@
 
         /** Visual refresh only - no serialization (mid-drag path). */
         drawOnly() {
-            this.setCosButtonState();
+            this.setOscButtonState();
             this.updatePad();
             this.draw();
         }
@@ -1163,11 +1311,16 @@
             this.drawOnly();
             this.sync();        }
 
-        setCosButtonState() {
-            const button = this.presetButtons.cos;
-            if (button) button.classList.toggle("cnet-profile-preset-active", this.cosOn);
-            const multi = this.presetButtons.multi;
-            if (multi) multi.classList.toggle("cnet-profile-preset-active", !!this.multiPhase);
+        /** Put the oscillatory button on the rung the state actually is on:
+         *  data-osc-state picks the icon (style.css), the active class lights
+         *  it for every rung that has a wave. */
+        setOscButtonState() {
+            const button = this.presetButtons.osc;
+            if (!button) return;
+            const rung = OSC_LADDER.find((r) => r.cosOn === !!this.cosOn
+                && (r.family || null) === (this.phaseFamily || null));
+            button.dataset.oscState = rung ? rung.state : "off";
+            button.classList.toggle("cnet-profile-preset-active", !!this.cosOn);
         }
 
         /** Waves the multi-phase preview draws: one per Input tab holding an
@@ -1208,9 +1361,12 @@
          *   means the jump already happened at 0, i.e. a constant at y; full
          *   right means the jump never happens, i.e. a flat 0 (height is then
          *   irrelevant). Both degenerate cases are two points, not four.
-         * cos: pad x is the phase over [0, 2π] and pad y the number of
-         *   oscillations over [0, 4]. The envelope (the drawn polyline) is NOT
-         *   regenerated - the wave just re-rides it.
+         * osc: pad y is the number of oscillations over [0, 4] on every rung;
+         *   pad x is the phase over [0, 2π], except in the von Mises rung
+         *   where it is the hand-over sharpness κ over [0, 10] (that family is
+         *   the only one with a shape parameter of its own, and phase is the
+         *   cheaper of the two to give up - see setActivePreset). The envelope
+         *   (the drawn polyline) is NOT regenerated - the wave just re-rides it.
          */
         applyPadPreset(defer) {
             const pos = this.padPos[this.activePreset];
@@ -1218,9 +1374,13 @@
 
             const finish = () => (defer ? this.drawOnly() : this.drawAndSync());
 
-            if (this.activePreset === "cos") {
+            if (this.activePreset === "osc") {
                 this.cosOn = true;
-                this.cosPhase = clamp01(pos.x) * TAU;
+                if (this.phaseFamily === "mises") {
+                    this.kappa = clamp01(pos.x) * KAPPA_MAX;
+                } else {
+                    this.cosPhase = clamp01(pos.x) * TAU;
+                }
                 this.cosN = clamp01(pos.y) * COS_MAX_OSC;
                 finish();
                 return;
@@ -1665,11 +1825,22 @@
             };
         }
 
-        /** Effective (normalized) profile value of a stored profile object. */
+        /** Effective (normalized) profile value of a stored profile object.
+         *  The standalone twin of evaluate/waveFactor, for curves that are NOT
+         *  the working copy (band overlays, the depth line). Those never carry
+         *  a family today - parsePacked drops it off everything but main - but
+         *  it is honored here anyway so the two paths cannot disagree about the
+         *  same profile object. */
         profileValueAt(P, x) {
             const env = this.envelopeOf(P.points, x);
             let v = env;
-            if (P.cosOn) v = env * (0.5 + 0.5 * Math.cos(TAU * P.cosN * x - P.cosPhase));
+            if (P.cosOn) {
+                const count = this.phaseCount();
+                const theta = TAU * P.cosN * x - P.cosPhase;
+                v = env * (count > 1 && P.phaseFamily && P.phaseFamily !== "cos"
+                    ? phaseWeight(theta, 0, count, P.phaseFamily, P.kappa || 0)
+                    : 0.5 + 0.5 * Math.cos(theta));
+            }
             const g = P.gamma || 1;
             if (Math.abs(g - 1) > 1e-4) v = Math.pow(Math.min(Math.max(v, 0), 1), g);
             return v;
@@ -1817,6 +1988,15 @@
             if (w <= 0 || h <= 0) return;
             const ctx = this.ctx;
             const r = this.plotRect();
+
+            // Input count FIRST: under a multi-phase family the main curve is
+            // itself input 1's share of the wave, so waveFactor needs the
+            // count before anything samples evaluate(). Counting walks the
+            // unit's DOM, hence once per frame and cached on the instance
+            // (waveFactor runs per curve sample - hundreds of times).
+            this._phaseCount = (this.cosOn && this.phaseFamily)
+                ? this.multiPhaseCount() : 2;
+            this._lastPhaseCount = this._phaseCount;
             const c = this.colors();
 
             ctx.clearRect(0, 0, w, h);
@@ -1944,20 +2124,18 @@
 
             // multi-phase: the sibling waves each further Input runs, phase
             // shifted by 2pi/n, as thin underlays below the main wave (the
-            // main wave IS input 1's profile). The count is resolved ONCE per
-            // frame (it walks the unit's DOM) and reused by the dot pass below.
-            let phaseCount = 0;
-            if (this.cosOn && this.multiPhase) {
-                phaseCount = this.multiPhaseCount();
-                this._lastPhaseCount = phaseCount;
+            // main wave IS input 1's profile - and under a partition family it
+            // is input 1's SHARE of the wave, which is why the count above had
+            // to be resolved before waveScreen was sampled).
+            const phaseCount = (this.cosOn && this.phaseFamily) ? this._phaseCount : 0;
+            if (phaseCount) {
                 ctx.save();
                 ctx.globalAlpha = 0.4;
                 for (let k = 1; k < phaseCount; k++) {
-                    const phase = this.cosPhase + (TAU * k) / phaseCount;
                     ctx.beginPath();
                     for (let i = 0; i <= COS_CURVE_SAMPLES; i++) {
                         const x = i / COS_CURVE_SAMPLES;
-                        const s = this.toScreen({ x: x, y: this.phaseValueAt(x, phase) });
+                        const s = this.toScreen({ x: x, y: this.phaseValueAt(x, k) });
                         if (i === 0) ctx.moveTo(s.sx, s.sy);
                         else ctx.lineTo(s.sx, s.sy);
                     }
@@ -1987,8 +2165,7 @@
             // handle is never hidden by one.
             if (steps > 1 && r.w / steps >= STEP_DOT_MIN_SPACING) {
                 for (let k = 1; k < phaseCount; k++) {
-                    const phase = this.cosPhase + (TAU * k) / phaseCount;
-                    this.drawStepDots(steps, (x) => this.phaseValueAt(x, phase),
+                    this.drawStepDots(steps, (x) => this.phaseValueAt(x, k),
                                       c.stepDot, PHASE_DOT_ALPHA, c.background,
                                       STEP_DOT_RADIUS);
                 }
@@ -2120,7 +2297,7 @@
             // multi-phase preview follows the number of active inputs; the
             // count is written back here too (not only in draw) so a hidden
             // canvas (draw early-returns at zero size) does not retry-storm
-            if (editor.cosOn && editor.multiPhase) {
+            if (editor.cosOn && editor.phaseFamily) {
                 const n = editor.multiPhaseCount();
                 if (n !== editor._lastPhaseCount) {
                     editor._lastPhaseCount = n;

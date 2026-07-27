@@ -189,6 +189,90 @@ def _flatten_profile_mids(points, mids, samples=24):
 PROFILE_COSINE_MAX_OSCILLATIONS = 4.0
 PROFILE_COSINE_SAMPLES = 512
 PROFILE_GAMMA_MAX = 10.0
+PROFILE_KAPPA_MAX = 10.0
+
+# Multi-phase families: how the ONE drawn wave is split between several Inputs.
+# 'cos' is the original and stays the meaning of a bare 'P' token forever, so
+# every profile string written before the other two keeps reproducing exactly.
+PHASE_FAMILY_COSINE = 'cos'
+PHASE_FAMILY_FEJER = 'fejer'
+PHASE_FAMILY_MISES = 'mises'
+
+
+def _parse_phase_family(token):
+    """Family and kappa of a 'P...' multi-phase token.
+
+    'P' = cosine (legacy, and what every pre-family string carries), 'PF' =
+    Fejer, 'PV<kappa>' = von Mises. An unrecognized suffix degrades to the
+    cosine rather than failing the whole parse: the bare marker has always been
+    'tolerated and skipped' by callers that do not fan out, and a future family
+    reaching an older build must not turn the profile into None.
+    """
+    body = token[1:].strip()
+    if body[:1] in ('F', 'f'):
+        return PHASE_FAMILY_FEJER, 0.0
+    if body[:1] in ('V', 'v'):
+        try:
+            kappa = _finite(body[1:] or '0')
+        except (TypeError, ValueError):
+            kappa = 0.0
+        return PHASE_FAMILY_MISES, min(max(kappa, 0.0), PROFILE_KAPPA_MAX)
+    return PHASE_FAMILY_COSINE, 0.0
+
+
+def _fejer_weight(u, count):
+    """One Fejer weight at circular offset `u` for a `count`-way split.
+
+    (1/N^2) * [sin(N*u/2) / sin(u/2)]^2 - nonnegative, closed form (no
+    numerical normalization), and the N shifts of it sum to EXACTLY 1 at every
+    u, which is what makes it a drop-in for the cosine without the 2/N
+    correction that one needs. It is also cardinal: at u = 0 it is 1 and at
+    every other node 2*pi*k/N it is exactly 0, so the Inputs hand over cleanly
+    instead of all leaking at once.
+
+    At N = 2 this IS the cosine factor (0.5 + 0.5*cos(u)), so upgrading a
+    two-Input unit from 'P' to 'PF' changes nothing - the families only part
+    company from three Inputs up.
+
+    The singularity at u = 0 (mod 2*pi) is removable: sin(N*u/2)/sin(u/2) -> N,
+    hence the weight -> 1.
+    """
+    s = math.sin(0.5 * u)
+    if abs(s) < 1e-9:
+        return 1.0
+    ratio = math.sin(0.5 * count * u) / s
+    return ratio * ratio / (count * count)
+
+
+def _phase_weight(theta, index, count, family, kappa):
+    """Share of the envelope Input `index` of `count` takes at wave angle `theta`.
+
+    Every family here is a partition of the wave: the `count` weights sum to a
+    constant at EVERY theta, so the Inputs only ever redistribute the drawn
+    envelope between themselves and never amplify it (the caller turns that
+    constant into 1 through its share factor - see scripts/cnpro.py).
+
+    - cosine: 0.5 + 0.5*cos(...), the original. Sums to N/2, and an Input still
+      holds a quarter of its peak at the neighbouring node, so the hand-over is
+      soft and gets softer with more Inputs.
+    - Fejer: sums to 1, cardinal at the nodes. No parameter - the sharpness is
+      fixed by the Input count.
+    - von Mises: softmax of kappa*cos, sums to 1 by construction. kappa is the
+      hand-over sharpness: 0 = every Input equally on (plain averaging), large
+      = near-hard switching between them.
+    """
+    offset = 2.0 * math.pi * index / count
+    if family == PHASE_FAMILY_FEJER:
+        return _fejer_weight(theta - offset, count)
+    if family == PHASE_FAMILY_MISES:
+        # cos - 1 in the exponent (never positive) instead of cos: it cancels
+        # between numerator and denominator, and keeps exp() in [0, 1] so a
+        # large kappa cannot overflow its way to a nan.
+        top = math.exp(kappa * (math.cos(theta - offset) - 1.0))
+        total = sum(math.exp(kappa * (math.cos(theta - 2.0 * math.pi * j / count) - 1.0))
+                    for j in range(count))
+        return top / total if total > 0.0 else 1.0 / count
+    return 0.5 + 0.5 * math.cos(theta - offset)
 
 
 def _apply_profile_gamma(points, exponent, samples=PROFILE_COSINE_SAMPLES):
@@ -198,7 +282,7 @@ def _apply_profile_gamma(points, exponent, samples=PROFILE_COSINE_SAMPLES):
     the editor's contract (the response slider is independent of the range
     selects; the range maps the already-bent curve). The power of a piecewise-
     linear function is not piecewise-linear, so the curve is resampled densely
-    exactly like _apply_profile_cosine; running after it on already-dense
+    exactly like _apply_profile_wave; running after it on already-dense
     points just re-samples them. Exponent 1 is a structural no-op (the caller
     skips this entirely). Matches the editor's gammaAt (weight_profile.js).
     """
@@ -210,8 +294,9 @@ def _apply_profile_gamma(points, exponent, samples=PROFILE_COSINE_SAMPLES):
     return out
 
 
-def _apply_profile_cosine(points, oscillations, phase, samples=PROFILE_COSINE_SAMPLES):
-    """Modulate a profile polyline with a cosine, returning a dense polyline.
+def _apply_profile_wave(points, oscillations, phase, family=PHASE_FAMILY_COSINE,
+                        kappa=0.0, index=0, count=1, samples=PROFILE_COSINE_SAMPLES):
+    """Modulate a profile polyline with the wave, returning a dense polyline.
 
     In cosine mode the drawn profile is the ENVELOPE of the wave, not the wave:
     the value at x is envelope(x) * (0.5 + 0.5 * cos(2*pi*n*x - phase)), which
@@ -221,21 +306,38 @@ def _apply_profile_cosine(points, oscillations, phase, samples=PROFILE_COSINE_SA
     Sampled here for the same reason mid controls are
     flattened: every consumer keeps receiving plain piecewise-linear points
     (see _flatten_profile_mids). The editor mirrors this in
-    javascript/weight_profile.js (cosFactor / evaluate); the envelope is the
+    javascript/weight_profile.js (waveFactor / evaluate); the envelope is the
     shared evaluate_weight_profile - do not re-implement it here.
+
+    With `count` > 1 the factor is this Input's share of that same wave under
+    the chosen multi-phase family (_phase_weight) instead of the plain cosine.
+    `count` == 1 means "nobody to share with" and always takes the cosine path,
+    whatever the family says: that is what keeps a multi-phase string running
+    the wave it draws when the unit happens to hold a single Input, exactly as
+    the bare 'P' marker has always done.
+
+    Note the two ways the shift arrives, which must not both be used at once:
+    the cosine path expects it already folded into `phase` (the caller adds
+    phase_offset), the partition families take `index`/`count` and derive it
+    themselves - they need the Input's ORDINAL, not just its angle, because
+    their weights are defined over the whole set.
     """
     if not points:
         return points
 
+    multi = count > 1 and family != PHASE_FAMILY_COSINE
     out = []
     for i in range(samples + 1):
         x = i / samples
-        factor = 0.5 + 0.5 * math.cos(2.0 * math.pi * oscillations * x - phase)
+        theta = 2.0 * math.pi * oscillations * x - phase
+        factor = (_phase_weight(theta, index, count, family, kappa) if multi
+                  else 0.5 + 0.5 * math.cos(theta))
         out.append((x, evaluate_weight_profile(points, x) * factor))
     return out
 
 
-def parse_weight_profile(profile, phase_offset=0.0) -> Optional[List[Tuple[float, float]]]:
+def parse_weight_profile(profile, phase_offset=0.0, phase_index=0,
+                         phase_count=1) -> Optional[List[Tuple[float, float]]]:
     """Parse a control weight profile into a list of (x, y) points sorted by x.
 
     Accepts the UI/infotext string format 'x@y;x@y;...' with an optional scale
@@ -254,10 +356,14 @@ def parse_weight_profile(profile, phase_offset=0.0) -> Optional[List[Tuple[float
 
     `phase_offset` (radians) is added to the cosine phase when the profile is
     in cosine mode and ignored otherwise - the multi-phase feature ('P'
-    marker, see weight_profile_is_multiphase) parses one variant per Input
-    with offsets k * 2*pi/n. The bare 'P' token itself is tolerated and
-    skipped here: whether to fan out is the CALLER's decision, so plain
-    parses of a multi-phase string keep returning input 1's profile.
+    marker, see weight_profile_phase_family) parses one variant per Input
+    with offsets k * 2*pi/n. `phase_index` / `phase_count` say the same thing
+    as an ordinal instead of an angle, which the Fejer and von Mises families
+    need because their weights are defined over the whole set of Inputs rather
+    than one at a time; the default count of 1 is "no fan-out". The 'P...'
+    token itself is tolerated and skipped here: whether to fan out is the
+    CALLER's decision, so plain parses of a multi-phase string keep returning
+    input 1's profile.
 
     A 'G<e>' token (editor: the vertical response slider in the range column,
     e in [0.1, 10]) bends the normalized profile with y -> y**e after mids
@@ -270,6 +376,7 @@ def parse_weight_profile(profile, phase_offset=0.0) -> Optional[List[Tuple[float
     mids = []
     cosine = None
     gamma = None
+    family, kappa = PHASE_FAMILY_COSINE, 0.0
     lo, hi = 0.0, 1.0
     try:
         if is_string:
@@ -294,8 +401,12 @@ def parse_weight_profile(profile, phase_offset=0.0) -> Optional[List[Tuple[float
                 token = pair.strip()
                 if not token:
                     continue
-                if token == 'P':
-                    # multi-phase marker, handled by the caller (see docstring)
+                if token.startswith('P'):
+                    # multi-phase marker ('P' / 'PF' / 'PV<kappa>'): WHETHER to
+                    # fan out is the caller's call (see docstring), but WHICH
+                    # family it fans out with is read here, since the fan-out
+                    # runs through this same parse
+                    family, kappa = _parse_phase_family(token)
                     continue
                 if token.startswith('M'):
                     xm, ym = token[1:].split('@')
@@ -332,8 +443,14 @@ def parse_weight_profile(profile, phase_offset=0.0) -> Optional[List[Tuple[float
     if mids:
         points = _flatten_profile_mids(points, mids)
     if cosine is not None:
-        # after the mids, so the wave rides the envelope the editor draws
-        points = _apply_profile_cosine(points, cosine[0], cosine[1] + phase_offset)
+        # after the mids, so the wave rides the envelope the editor draws.
+        # The cosine family takes its shift pre-folded into the phase; the
+        # partition families take the ordinal instead (see _apply_profile_wave)
+        if phase_count > 1 and family != PHASE_FAMILY_COSINE:
+            points = _apply_profile_wave(points, cosine[0], cosine[1], family, kappa,
+                                         phase_index, phase_count)
+        else:
+            points = _apply_profile_wave(points, cosine[0], cosine[1] + phase_offset)
     if gamma is not None and abs(gamma - 1.0) > 1e-4:
         # after the wave (the bend applies to the effective normalized value,
         # waves included), before the scale mapping below
@@ -343,21 +460,38 @@ def parse_weight_profile(profile, phase_offset=0.0) -> Optional[List[Tuple[float
     return points
 
 
-def weight_profile_is_multiphase(profile) -> bool:
-    """True when the MAIN weight profile carries the multi-phase marker.
+def weight_profile_phase_family(profile) -> Optional[Tuple[str, float]]:
+    """(family, kappa) of the MAIN weight profile's multi-phase marker, or None.
 
-    A bare 'P' token in the main segment (editor: the multi preset toggle)
-    means "with several Inputs, run one phase-shifted variant of this cosine
-    profile per input" - the fan-out itself happens in scripts/controlnet.py
-    via parse_weight_profile(phase_offset=...). Only the main profile can be
-    multi-phase; band segments are not inspected. Only meaningful alongside a
-    cosine token ('C...'), which the editor guarantees; without one the
-    variants would all be identical anyway (phase_offset is ignored).
+    A 'P...' token in the main segment (editor: the oscillatory button cycled
+    past plain cosine) means "with several Inputs, run one phase-shifted
+    variant of this wave per input" - the fan-out itself happens in
+    scripts/cnpro.py via parse_weight_profile(phase_index=, phase_count=).
+    The suffix picks the family: bare 'P' cosine, 'PF' Fejer, 'PV<kappa>' von
+    Mises (kappa is 0.0 for the other two, which take no parameter).
+
+    Only the main profile can be multi-phase; band segments are not inspected.
+    Only meaningful alongside a cosine token ('C...'), which the editor
+    guarantees; without one there is no wave to divide and every variant would
+    come out identical.
     """
     if not isinstance(profile, str):
-        return False
+        return None
     main = profile.split('#', 1)[0].split('|', 1)[0]
-    return any(token.strip() == 'P' for token in main.split(';'))
+    for token in main.split(';'):
+        token = token.strip()
+        if token.startswith('P'):
+            return _parse_phase_family(token)
+    return None
+
+
+def weight_profile_is_multiphase(profile) -> bool:
+    """True when the MAIN weight profile carries a multi-phase marker.
+
+    Kept as the boolean face of weight_profile_phase_family for callers that
+    only need to know THAT a profile fans out, not which family it uses.
+    """
+    return weight_profile_phase_family(profile) is not None
 
 
 def serialize_weight_profile(points) -> str:

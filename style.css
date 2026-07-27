@@ -386,7 +386,9 @@
 
 /* Preset parameter pad: a square XY control next to the preset buttons. Its
    two axes are the two parameters of whichever preset holds focus (step:
-   jump position x height; cosine: phase x oscillation count), so the pad
+   jump position x height; oscillatory: phase x oscillation count, or - in the
+   von Mises rung, the one family with a shape parameter of its own -
+   hand-over sharpness x oscillation count), so the pad
    replaces the old single free-parameter slider. Inert until a preset is
    clicked - that click binds the pad without touching the profile. */
 .cnet-profile-preset-pad {
@@ -445,6 +447,35 @@
     display: block;
     width: 18px;
     height: 18px;
+}
+
+/* Oscillatory button: one control cycled through off -> cosine -> multi-phase
+   cosine -> Fejer -> von Mises, so it carries one icon per rung and shows the
+   rung it is on. 'off' deliberately shows the plain wave (unlit, since the
+   active class tracks the state too): the button reads as "the wave, not
+   engaged" rather than going blank. The two named families are letters - see
+   the markup in controlnet_ui_group.py for why. */
+.cnet-profile-osc [data-osc] {
+    display: none;
+    align-items: center;
+    justify-content: center;
+}
+
+.cnet-profile-osc[data-osc-state="off"] [data-osc="cos"],
+.cnet-profile-osc[data-osc-state="cos"] [data-osc="cos"],
+.cnet-profile-osc[data-osc-state="multi"] [data-osc="multi"],
+.cnet-profile-osc[data-osc-state="fejer"] [data-osc="fejer"],
+.cnet-profile-osc[data-osc-state="mises"] [data-osc="mises"] {
+    display: flex;
+}
+
+/* letter icons: sized to sit on the same 18px optical box as the svg ones */
+.cnet-profile-osc-glyph {
+    width: 18px;
+    height: 18px;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 18px;
 }
 
 /* band selector: four thin bars at the bottom of the presets column (weight

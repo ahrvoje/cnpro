@@ -873,24 +873,33 @@ class ControlNetForForgeOfficial(scripts.Script):
             logger.info(f"ControlNet {len(conds)} inputs: each control scaled by 1/{len(conds)} "
                         f"so their sum matches a single input at the unit weight.")
 
-        # Multi-phase cosine ('P' marker from the editor's multi preset): every
-        # Input runs the SAME envelope with the cosine shifted by 2*pi/n
-        # relative to the previous input, so the inputs take turns steering
-        # across the steps (oscillatory amalgamation). The variants are scaled
-        # by 2/n, NOT the plain 1/n share: the shifted waves sum to the
-        # constant n/2, so the extra 2 cancels the wave's 0.5 mean and the
-        # unit's SUMMED per-step pull equals the drawn envelope itself. With
-        # 1/n it was silently half of the non-multi-phase unit - observed as
-        # "half the steps missed" on an IP-Adapter face unit with 5 inputs.
-        # Unit weight keeps meaning "how hard this unit pulls", the same
-        # principle as the 1/N share above.
+        # Multi-phase ('P...' marker from the editor's oscillatory button past
+        # plain cosine): every Input runs the SAME envelope with the wave
+        # shifted by 2*pi/n relative to the previous input, so the inputs take
+        # turns steering across the steps (oscillatory amalgamation).
+        #
+        # The share exists so the unit's SUMMED per-step pull equals the drawn
+        # envelope itself - unit weight keeps meaning "how hard this unit
+        # pulls", the same principle as the 1/N share above - and it is the
+        # family's summing constant inverted:
+        #   cosine: the shifted waves sum to n/2, so 2/n. NOT the plain 1/n,
+        #     which left the unit silently half as strong as without
+        #     multi-phase - observed as "half the steps missed" on an
+        #     IP-Adapter face unit with 5 inputs (2026-07-24).
+        #   Fejer / von Mises: partitions of unity, summing to exactly 1 at
+        #     every step on their own, so there is nothing to correct.
         multiphase_profiles = None
-        if (weight_profile is not None and len(conds) > 1
-                and external_code.weight_profile_is_multiphase(unit.weight_profile)):
-            share = 2.0 / len(conds)
+        phase_family = (external_code.weight_profile_phase_family(unit.weight_profile)
+                        if weight_profile is not None and len(conds) > 1 else None)
+        if phase_family is not None:
+            family, kappa = phase_family
+            share = (2.0 / len(conds)
+                     if family == external_code.PHASE_FAMILY_COSINE else 1.0)
             multiphase_profiles = [
                 [(x, y * share) for x, y in external_code.parse_weight_profile(
-                    unit.weight_profile, phase_offset=index * 2.0 * math.pi / len(conds))]
+                    unit.weight_profile,
+                    phase_offset=index * 2.0 * math.pi / len(conds),
+                    phase_index=index, phase_count=len(conds))]
                 for index in range(len(conds))
             ]
             # the unit-level range gate was derived from input 1's wave
@@ -899,7 +908,7 @@ class ControlNetForForgeOfficial(scripts.Script):
             # anyway, so the coarse gate must not chop them
             params.model.start_percent = 0.0
             params.model.end_percent = 1.0
-            logger.info(f"ControlNet multi-phase profile: {len(conds)} inputs, the cosine "
+            logger.info(f"ControlNet multi-phase profile: {len(conds)} inputs, {family} wave "
                         f"phase-shifted by 2pi/{len(conds)} per input (summed pull = envelope).")
 
         params.model.cond_layer_weights = None

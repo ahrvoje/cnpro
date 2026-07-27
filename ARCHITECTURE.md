@@ -179,8 +179,8 @@ the division is already reflected in the code.
 
 * **The step axis.** Flow-matching models still have a sigma schedule and a
   percent→timestep map. `build_weight_profile_lookup` is schedule-agnostic.
-* **Cosine, multi-phase, response exponent, scale range** — pure shape features
-  on the step axis.
+* **Cosine, multi-phase (cosine / Fejér / von Mises), response exponent, scale
+  range** — pure shape features on the step axis.
 * **Weight masks.** DiT residuals are per-token and tokens are a 2D latent grid,
   so a spatial mask scales them exactly as it scales pixels.
 

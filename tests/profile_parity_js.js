@@ -8,6 +8,12 @@
 // constructor because the constructor wires a canvas - the grammar half under
 // test touches none of that.
 //
+// A case may be a plain string or {"text":..., "phaseIndex":k, "phaseCount":n}:
+// the multi-phase families divide the wave between n Inputs, so a case that
+// exercises them has to say which Input it is asking about. Counting Inputs
+// walks the unit's DOM in the browser, which there is none of here, so the
+// count is injected rather than discovered.
+//
 // stdin:  {"cases": ["0@1;1@0.5|2", ...], "samples": 21}
 // stdout: {"results": [{"scaleLo":0,"scaleHi":2,"main":[...],"bands":{...},
 //                       "depth":[...]|null}, ...]}
@@ -30,17 +36,26 @@ function bareEditor(isBalance) {
 }
 
 /** Effective values of one parsed profile object, sampled over [0, 1]. */
-function sample(ed, profile, lo, hi, samples) {
+function sample(ed, profile, lo, hi, samples, phaseIndex, phaseCount) {
     // evaluate() reads the working copy, so load this profile into it
     ed.points = profile.points;
     ed.cosOn = !!profile.cosOn;
     ed.cosN = profile.cosN || 0;
     ed.cosPhase = profile.cosPhase || 0;
     ed.gamma = profile.gamma || 1;
+    ed.phaseFamily = profile.phaseFamily || null;
+    ed.kappa = profile.kappa || 0;
+    // _phaseCount is normally resolved once per frame by draw(); there is no
+    // canvas here, so stand in for it (waveFactor reads it through
+    // phaseCount(), which floors at 2)
+    ed._phaseCount = phaseCount || 2;
+    const index = phaseIndex || 0;
     const out = [];
     for (let i = 0; i < samples; i++) {
         const x = samples === 1 ? 0 : i / (samples - 1);
-        out.push(lo + ed.evaluate(x) * (hi - lo));
+        // evaluate() is waveFactor(x, 0); ask for the requested Input's share
+        const v = ed.gammaAt(ed.envelopeAt(x) * ed.waveFactor(x, index));
+        out.push(lo + v * (hi - lo));
     }
     return out;
 }
@@ -50,23 +65,28 @@ process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
     const input = JSON.parse(raw);
     const samples = input.samples || 21;
-    const results = input.cases.map((text) => {
+    const results = input.cases.map((entry) => {
+        const spec = typeof entry === 'string' ? { text: entry } : entry;
         const ed = bareEditor(input.isBalance);
-        const packed = ed.parsePacked(text);
+        const packed = ed.parsePacked(spec.text);
         if (!packed.main) return { main: null };
         const lo = packed.scaleLo;
         const hi = packed.scaleHi;
         const bands = {};
+        // only the MAIN profile can be multi-phase (python inspects no other
+        // segment), so the bands and the depth curve are always sampled as
+        // Input 1 of a non-splitting profile
         for (const key of Object.keys(packed.bands)) {
-            bands[key] = sample(ed, packed.bands[key], lo, hi, samples);
+            bands[key] = sample(ed, packed.bands[key], lo, hi, samples, 0, 0);
         }
         return {
             scaleLo: lo,
             scaleHi: hi,
-            main: sample(ed, packed.main, lo, hi, samples),
+            main: sample(ed, packed.main, lo, hi, samples,
+                         spec.phaseIndex, spec.phaseCount),
             bands: bands,
             depth: packed.depth
-                ? sample(ed, packed.depth, packed.depthLo, packed.depthHi, samples)
+                ? sample(ed, packed.depth, packed.depthLo, packed.depthHi, samples, 0, 0)
                 : null,
             selected: packed.selected,
         };

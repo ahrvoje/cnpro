@@ -12,9 +12,11 @@ pieces would move.
   Range slider with a piecewise-linear curve editor (X = relative sampling
   step, Y = strength). Serialized as `x@y;x@y;...`, optional `Mx@y` parabola
   mid-control tokens, optional `C<osc>@<phase>` cosine token, optional
+  `P` / `PF` / `PV<kappa>` multi-phase family token, optional
   `G<e>` response-exponent token, optional
   `|hi` / `|lo~hi` scale suffix mapping the normalized curve onto [-1, 2]
-  (negative = repulsive control). Presets: step + cosine toggle, driven by a
+  (negative = repulsive control). Presets: step + the oscillatory ladder,
+  driven by a
   square two-parameter pad sized to the plot height. The INVERT toggle was
   removed 2026-07-25 and the step preset generalized to cover it: the pad's y
   is now height AND direction — above the pad's middle the raised part of the
@@ -61,8 +63,8 @@ pieces would move.
   the MULTIPLIER 1, so the flat line stays wherever 1 falls on the axis —
   top at [0, 1], middle at [0, 2]); a drawn curve keeps its shape and takes
   the new weights, which is what the range is for. Click cost follows destructiveness: step replaces
-  the profile so it needs a confirming second click, cosine only reinterprets
-  the drawn curve so it toggles immediately. The plot's X axis carries just
+  the profile so it needs a confirming second click, the oscillatory ladder only
+  reinterprets the drawn curve so every rung of it acts immediately. The plot's X axis carries just
   the label "Steps", in the same bottom-margin band ticks would use (values
   were redundant on the fixed relative 0..1 range); the Y limits are what the
   range selects say, and a 0..1 scale on the axis would contradict them (the
@@ -99,7 +101,9 @@ pieces would move.
   subtracted so the pad point moving right shifts the wave right — expanded into
   a dense polyline by `parse_weight_profile` exactly like the parabola mids —
   so the string (and the infotext) stays short and the evaluation math never
-  learns about cosines.
+  learns about cosines. The multi-phase families replace that factor with this
+  Input's share of the same wave and are expanded the same way, so the
+  evaluation math never learns about them either.
 - **Response exponent** (2026-07-24) — vertical slider filling the free
   middle of the range column (between the two selects), per profile (the band
   selection routes it — unlike the range selects it sits between, which are
@@ -115,18 +119,58 @@ pieces would move.
   piecewise-linear, so the solid line uses the dense wave sampler either
   way; band overlays and multi-phase ghost waves bend through the same
   `gammaAt`/`profileValueAt`. Python: `_apply_profile_gamma` resamples
-  densely exactly like `_apply_profile_cosine` (editor `gammaAt` is the JS
+  densely exactly like `_apply_profile_wave` (editor `gammaAt` is the JS
   face of the same math — keep in sync). Native vertical range input via
   `writing-mode: vertical-lr` (min at top), center tick = wrapper `::before`.
-- **Multi-phase preset** (2026-07-24) — fourth preset button under cosine
-  (weight editor only; the balance editor has no Inputs to distribute over),
-  serialized as a bare `P` token in the MAIN profile segment. A single-click
-  toggle, but it needs the wave so switching it on also
-  engages cosine mode; switching cosine off clears it. Semantics: with n
+- **Oscillatory ladder** (2026-07-27, replacing the separate cosine and
+  multi-phase toggles of 2026-07-24) — ONE cyclic button, `data-preset="osc"`,
+  stepping `off → cosine → multi-cosine → multi-Fejér → multi-von Mises → off`
+  (`OSC_LADDER` in weight_profile.js). The two toggles it replaces were a
+  single ladder wearing two hats: multi force-enabled cosine on the way in and
+  cosine cleared multi on the way out, so "multi-phase without a wave" was
+  never reachable. Do not split them again to add a family — extend the
+  ladder. The multi rungs are weight-editor only (the balance editor has no
+  Inputs to distribute over, same gate as the band selectors); there the
+  ladder is just `off → cosine → off`, which is what the button's
+  `data-osc-multi` attribute selects. One icon per rung lives in the button
+  and `data-osc-state` picks it (style.css): the wave and the three-wave
+  glyphs are the old two buttons' icons, Fejér and von Mises are the letters
+  **F** and **M** — their lobes differ from the cosine's by shape alone and no
+  18px icon carries that. `off` deliberately shows the plain wave, unlit.
+  Serialized as a `P` token in the MAIN profile segment: bare `P` cosine,
+  `PF` Fejér, `PV<kappa>` von Mises. **A bare `P` must keep meaning the cosine
+  forever** — it is what every profile string written before the families
+  carries, and its reproduction from infotext depends on it.
+  Semantics: with n
   Input tabs holding images, input k (0-based) runs the SAME envelope with
-  the cosine phase shifted by `k * 2*pi/n` — input 1 exactly as drawn, each
+  the wave shifted by `k * 2*pi/n` — input 1 exactly as drawn, each
   next shifted right — so the inputs take turns steering across the steps
-  (oscillatory amalgamation). Editor draws the sibling waves as thin
+  (oscillatory amalgamation). The family decides HOW they divide that one
+  wave; all three are partitions of it, summing to a constant at every step so
+  the Inputs only ever redistribute the envelope and never amplify it
+  (`_phase_weight` in external_code.py, `phaseWeight` in weight_profile.js):
+  - **cosine** `0.5 + 0.5*cos(θ - 2πk/n)`, sums to n/2. An input still holds a
+    quarter of its peak at the neighbouring node, so the hand-over is soft and
+    softens further with more inputs.
+  - **Fejér** `(1/n²)·[sin(n·u/2)/sin(u/2)]²`, sums to exactly 1 and is
+    CARDINAL — 1 at its own node, exactly 0 at every other one, so the inputs
+    hand over cleanly instead of all leaking at once. No parameter: the
+    sharpness is fixed by the input count. At n=2 it IS the cosine factor, so
+    `P → PF` changes nothing on a two-input unit and the families only part
+    company from three inputs up. Removable singularity at u≡0 (the ratio → n,
+    the weight → 1); the `|sin(u/2)| < 1e-9` guard must match on both sides.
+  - **von Mises** `softmax(κ·cos(u))`, sums to 1 by construction, κ being the
+    hand-over sharpness: 0 = every input equally on (plain averaging), 10 =
+    near-hard switching. `cos - 1` in the exponent (never positive, cancels
+    between numerator and denominator) keeps `exp` in [0, 1] so a large κ
+    cannot overflow to NaN — again on both sides.
+  A count of **1 always takes the cosine path whatever the family says**
+  (`_apply_profile_wave`, editor `waveFactor`): a unit holding a single Input
+  does not fan out, and a one-way "split" would be flat 1 — i.e. the wave the
+  user drew would silently vanish. This is the one place the editor knowingly
+  previews something else: `multiPhaseCount()` floors at 2 so the plot shows a
+  real split, as it has since the preview existed.
+  Editor draws the sibling waves as thin
   underlays (n from counting loaded `img.forge-image` under the unit's
   `_input_image` containers, min 2 for a meaningful preview; MUTED inputs are
   excluded — the id mapping of tab_marks.js resolves each image's
@@ -138,15 +182,27 @@ pieces would move.
   Fan-out happens
   in `process_unit_before_every_sampling`: each pass of the per-input loop
   sets `params.model.weight_profile` to
-  `parse_weight_profile(string, phase_offset=k*2*pi/n)` (the parser adds the
-  offset to the cosine phase; the bare `P` token is tolerated and skipped, so
-  plain parses keep returning input 1's profile —
-  `weight_profile_is_multiphase` is the caller-side switch). Variants are
-  scaled by **2/n, not the plain 1/n share**: the shifted waves sum to the
-  constant n/2, the 2 cancels the wave's 0.5 mean, and the unit's SUMMED
-  per-step pull equals the drawn envelope. With 1/n the unit was silently
+  `parse_weight_profile(string, phase_offset=k*2*pi/n, phase_index=k,
+  phase_count=n)`. The two ways of saying the shift are NOT redundant and must
+  not both be applied: the cosine path wants it pre-folded into the phase, the
+  partition families take the ordinal because their weights are defined over
+  the whole set of inputs rather than one at a time. The `P...` token itself is
+  tolerated and skipped by the parse, so plain parses keep returning input 1's
+  profile — `weight_profile_phase_family` is the caller-side switch (and
+  returns `(family, kappa)`; `weight_profile_is_multiphase` is its boolean
+  face, kept for callers that only need to know THAT a profile fans out).
+  Variants are scaled by the inverse of the family's summing constant, so the
+  unit's SUMMED per-step pull equals the drawn envelope and unit weight keeps
+  meaning "how hard this unit pulls":
+  **2/n for the cosine** (its shifted waves sum to n/2, the 2 cancelling the
+  wave's 0.5 mean) and **1 for Fejér and von Mises**, which are partitions of
+  unity and need no correction. With 1/n the cosine unit was silently
   HALF as strong as without multi-phase — measured in practice as "half the
-  steps missed" on an IP-Adapter face unit with 5 inputs (2026-07-24). The
+  steps missed" on an IP-Adapter face unit with 5 inputs (2026-07-24). Note
+  the identity is exact on the NORMALIZED profile: a scale range with
+  `lo != 0` maps each input affinely, so the sum carries an extra `(n-1)*lo`.
+  That is the range's pre-existing behaviour and is the same for every family.
+  The
   coarse start/end gate is opened to 0..1 in multi-phase mode: it was derived
   from input 1's wave support and would chop sibling phases near the edges;
   every patcher gates per step through its profile LUT anyway. Single input /
@@ -850,9 +906,13 @@ support) keep patchers that only understand constant weight behaving sanely.
    headless, which is what the module.exports + `typeof onUiUpdate` guard at
    the end of that file exist for. Do not remove them. Same for evaluation:
    `weight_profile.evaluate_weight_profile` ↔ editor `evaluate()`; parabola
-   flattening `samples=24` == `MID_CURVE_STEPS`; the cosine factor
-   `_apply_profile_cosine` ↔ editor `cosFactor()`, both
-   `0.5 + 0.5*cos(2*pi*n*x - phase)` with n capped at 4. The editor keeps the
+   flattening `samples=24` == `MID_CURVE_STEPS`; the wave factor
+   `_apply_profile_wave` ↔ editor `waveFactor()`, both
+   `0.5 + 0.5*cos(2*pi*n*x - phase)` with n capped at 4, and both routing the
+   multi-phase families through `_phase_weight` ↔ `phaseWeight`. Parity cases
+   may carry `(index, count)` to pin which Input's share is being compared —
+   the editor discovers that count by walking the unit's DOM, of which the
+   headless harness has none, so it is injected. The editor keeps the
    envelope in `envelopeAt()` and only `evaluate()` applies the wave — the
    drawn/serialized points are always the envelope. Alignment points fixed
    2026-07-23 and to be preserved: serialization precision is 4 decimals on

@@ -834,30 +834,55 @@ class ControlNetUiGroup(object):
                 ' is the height (middle row = flat 0)">'
                 '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
                 ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 19 H12 V5 H21"/></svg></button>'
-                '<button type="button" class="cnet-profile-preset" data-preset="cos"'
-                ' title="Cosine mode toggle: the drawn profile becomes the ENVELOPE of a cosine wave'
-                ' (still editable point by point). Pad x = phase 0..2π, pad y = 0..4 oscillations">'
-                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
-                ' stroke-linecap="round" stroke-linejoin="round">'
-                '<path d="M3 12 Q6 4 9 12 T15 12 T21 12"/></svg></button>'
-                # multi-phase: weight editor only (it distributes the wave over
-                # the unit's Inputs; the balance profile has no inputs to
-                # distribute over) - same gate as the band selectors
-                + ('<button type="button" class="cnet-profile-preset" data-preset="multi"'
-                   ' title="Multi-phase toggle (turns cosine mode on): with several Inputs each'
-                   ' one runs the same cosine profile shifted by 2π/n - input 1 exactly as drawn,'
-                   ' every next one shifted right - so the inputs take turns steering across the'
-                   ' steps (oscillatory amalgamation). Thin lines preview the sibling waves.'
-                   ' With a single input it changes nothing.">'
-                   # three stacked waves: reads as "several lines" at button
-                   # size (the old two overlapping half-opacity waves read as
-                   # one smudged wave)
+                # ONE oscillatory button, cycled rather than two toggles that
+                # forced each other on: multi-phase always needed the wave, so
+                # "wave off + multi on" was never a reachable state and the
+                # pair only ever expressed one ladder. It now IS one ladder,
+                # and the icon is the whole of the state.
+                #   off -> cosine -> multi-cosine -> multi-Fejer -> multi-von Mises -> off
+                # The multi rungs are weight-editor only (they distribute the
+                # wave over the unit's Inputs; the balance profile has none to
+                # distribute over) - same gate as the band selectors, and
+                # without it the cycle is just off -> cosine -> off.
+                + ('<button type="button" class="cnet-profile-preset cnet-profile-osc"'
+                   ' data-preset="osc" data-osc-state="off"'
+                   + (' data-osc-multi="1"' if bands else '')
+                   + ' title="Oscillatory mode, cycled by clicking: off → cosine →'
+                   + (' multi-phase cosine → multi-phase Fejér → multi-phase von Mises →' if bands else '')
+                   + ' off. The drawn profile becomes the ENVELOPE of the wave (still editable'
+                   ' point by point). Pad x = phase 0..2π (von Mises: sharpness κ 0..10),'
+                   ' pad y = 0..4 oscillations.'
+                   + (' Multi-phase splits that one wave between the Inputs - input 1 as drawn,'
+                      ' each next shifted by 2π/n - so they take turns steering across the steps.'
+                      ' Fejér and von Mises share the envelope exactly (their weights sum to 1 at'
+                      ' every step); von Mises adds κ, from 0 = every input equally on to 10 ='
+                      ' near-hard switching. Thin lines preview the sibling waves. With a single'
+                      ' input the multi-phase rungs change nothing.' if bands else '')
+                   + '">'
+                   # one icon per rung, shown by data-osc-state (see style.css).
+                   # 'off' shows the plain wave, unlit - the same reading the
+                   # cosine toggle had when it was its own button.
+                   '<span data-osc="cos">'
                    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
                    ' stroke-linecap="round" stroke-linejoin="round">'
-                   '<path d="M3 6 Q7.5 2 12 6 T21 6"/>'
-                   '<path d="M3 12 Q7.5 8 12 12 T21 12"/>'
-                   '<path d="M3 18 Q7.5 14 12 18 T21 18"/></svg></button>'
-                   if bands else '')
+                   '<path d="M3 12 Q6 4 9 12 T15 12 T21 12"/></svg></span>'
+                   + ('<span data-osc="multi">'
+                      # three stacked waves: reads as "several lines" at button
+                      # size (the old two overlapping half-opacity waves read as
+                      # one smudged wave)
+                      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
+                      ' stroke-linecap="round" stroke-linejoin="round">'
+                      '<path d="M3 6 Q7.5 2 12 6 T21 6"/>'
+                      '<path d="M3 12 Q7.5 8 12 12 T21 12"/>'
+                      '<path d="M3 18 Q7.5 14 12 18 T21 18"/></svg></span>'
+                      # the two named families are lettered rather than drawn:
+                      # their lobes differ from the cosine's by shape alone,
+                      # which no 18px glyph can carry, and F/M are exactly how
+                      # the tooltip and the docs name them
+                      '<span data-osc="fejer" class="cnet-profile-osc-glyph">F</span>'
+                      '<span data-osc="mises" class="cnet-profile-osc-glyph">M</span>'
+                      if bands else '')
+                   + '</button>')
                 # (no invert toggle: the step preset spans both directions
                 # through the pad's vertical halves, which is what invert was
                 # used for - see applyPadPreset in weight_profile.js)
