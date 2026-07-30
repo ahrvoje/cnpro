@@ -179,8 +179,8 @@ the division is already reflected in the code.
 
 * **The step axis.** Flow-matching models still have a sigma schedule and a
   percent→timestep map. `build_weight_profile_lookup` is schedule-agnostic.
-* **Cosine, multi-phase (cosine / Fejér / von Mises), response exponent, scale
-  range** — pure shape features on the step axis.
+* **Cosine, multi-phase (cosine / Fejér / von Mises), wave convergence,
+  response exponent, scale range** — pure shape features on the step axis.
 * **The depth-drift curve.** It only reparameterizes the depth curve's argument,
   so it inherits whatever the depth axis means on the host. On a DiT it is
   arguably the more honest of the two controls: "the control migrates from

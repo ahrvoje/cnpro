@@ -190,6 +190,8 @@ PROFILE_COSINE_MAX_OSCILLATIONS = 4.0
 PROFILE_COSINE_SAMPLES = 512
 PROFILE_GAMMA_MAX = 10.0
 PROFILE_KAPPA_MAX = 10.0
+# convergence ('A<x>@<e>'): how sharply the waves may approach the flat share
+PROFILE_CONVERGE_EXP_MAX = 10.0
 
 # Multi-phase families: how the ONE drawn wave is split between several Inputs.
 # 'cos' is the original and stays the meaning of a bare 'P' token forever, so
@@ -221,14 +223,12 @@ def _parse_phase_family(token):
 
 
 def _fejer_weight(u, count):
-    """One Fejer weight at circular offset `u` for a `count`-way split.
+    """The Fejer kernel of order `count` at circular offset `u`, peak-normalized.
 
-    (1/N^2) * [sin(N*u/2) / sin(u/2)]^2 - nonnegative, closed form (no
-    numerical normalization), and the N shifts of it sum to EXACTLY 1 at every
-    u, which is what makes it a drop-in for the cosine without the 2/N
-    correction that one needs. It is also cardinal: at u = 0 it is 1 and at
-    every other node 2*pi*k/N it is exactly 0, so the Inputs hand over cleanly
-    instead of all leaking at once.
+    (1/N^2) * [sin(N*u/2) / sin(u/2)]^2 - nonnegative, closed form, and the N
+    shifts of it already sum to exactly 1 at every u. It is also cardinal: at
+    u = 0 it is 1 and at every other node 2*pi*k/N it is exactly 0, so the
+    Inputs hand over cleanly instead of all leaking at once.
 
     At N = 2 this IS the cosine factor (0.5 + 0.5*cos(u)), so upgrading a
     two-Input unit from 'P' to 'PF' changes nothing - the families only part
@@ -244,35 +244,104 @@ def _fejer_weight(u, count):
     return ratio * ratio / (count * count)
 
 
+def _phase_kernel(u, count, family, kappa):
+    """The family's raw lobe at circular offset `u`: 1 at u = 0, never negative.
+
+    This is the SHAPE alone, with no normalization in it. _phase_weight makes
+    the partition out of it by dividing by the sum of the `count` shifted
+    copies, so "the weights sum to 1 at every theta" is a structural
+    consequence of that one division rather than an identity each family has
+    to be trusted to satisfy separately. Adding a family means adding a lobe
+    here and nothing else.
+
+    - cosine: 0.5 + 0.5*cos(u), the original. Its shifts sum to N/2, so the
+      division is what turns it into (1 + cos(u))/N - the 2/N that used to be
+      applied by hand at generation time, now part of the weight itself.
+    - Fejer: sums to 1 on its own, so the division is the identity. Its width
+      IS the split, which is why it is the one lobe that reads `count`; a
+      degenerate single-Input Fejer takes the widest lobe it has (order 2),
+      which is exactly the cosine's - the same identity as above.
+    - von Mises: exp(kappa*cos), sharpness kappa. `cos - 1` in the exponent
+      (never positive) instead of `cos` keeps exp() in [0, 1] so a large kappa
+      cannot overflow its way to a nan; the difference cancels in the division.
+    """
+    if family == PHASE_FAMILY_FEJER:
+        return _fejer_weight(u, max(count, 2))
+    if family == PHASE_FAMILY_MISES:
+        return math.exp(kappa * (math.cos(u) - 1.0))
+    return 0.5 + 0.5 * math.cos(u)
+
+
 def _phase_weight(theta, index, count, family, kappa):
     """Share of the envelope Input `index` of `count` takes at wave angle `theta`.
 
-    Every family here is a partition of the wave: the `count` weights sum to a
-    constant at EVERY theta, so the Inputs only ever redistribute the drawn
-    envelope between themselves and never amplify it (the caller turns that
-    constant into 1 through its share factor - see scripts/cnpro.py).
+    Every family is a partition of the wave: the `count` weights sum to
+    EXACTLY 1 at every theta, so the Inputs only ever redistribute the drawn
+    envelope between themselves and never amplify it. That holds by
+    construction - each weight is its own lobe over the sum of all of them
+    (_phase_kernel) - and needs no correction factor anywhere downstream.
 
-    - cosine: 0.5 + 0.5*cos(...), the original. Sums to N/2, and an Input still
-      holds a quarter of its peak at the neighbouring node, so the hand-over is
-      soft and gets softer with more Inputs.
-    - Fejer: sums to 1, cardinal at the nodes. No parameter - the sharpness is
-      fixed by the Input count.
-    - von Mises: softmax of kappa*cos, sums to 1 by construction. kappa is the
-      hand-over sharpness: 0 = every Input equally on (plain averaging), large
-      = near-hard switching between them.
+    A `count` of 1 is the DEGENERATE case and is deliberately not normalized:
+    dividing the single lobe by itself would be a flat 1, i.e. the wave the
+    user drew would silently vanish. It returns the family's KERNEL instead -
+    not a partition of anything, but the curve of that type: the cosine and
+    Fejer lobes are the plain wave, von Mises the exp(kappa*cos) pulse whose
+    width kappa still sets. One Input therefore draws and runs one wave.
     """
-    offset = 2.0 * math.pi * index / count
-    if family == PHASE_FAMILY_FEJER:
-        return _fejer_weight(theta - offset, count)
-    if family == PHASE_FAMILY_MISES:
-        # cos - 1 in the exponent (never positive) instead of cos: it cancels
-        # between numerator and denominator, and keeps exp() in [0, 1] so a
-        # large kappa cannot overflow its way to a nan.
-        top = math.exp(kappa * (math.cos(theta - offset) - 1.0))
-        total = sum(math.exp(kappa * (math.cos(theta - 2.0 * math.pi * j / count) - 1.0))
-                    for j in range(count))
-        return top / total if total > 0.0 else 1.0 / count
-    return 0.5 + 0.5 * math.cos(theta - offset)
+    own = _phase_kernel(theta - 2.0 * math.pi * index / count, count, family, kappa)
+    if count <= 1:
+        return own
+    total = sum(_phase_kernel(theta - 2.0 * math.pi * j / count, count, family, kappa)
+                for j in range(count))
+    return own / total if total > 0.0 else 1.0 / count
+
+
+def _converge_blend(x, position, exponent):
+    """How far the waves have converged onto the flat share at step `x`.
+
+    0 = the wave exactly as drawn, 1 = the flat share. Reaches 1 at
+    `position` and STAYS there for the rest of the range (the editor's pad x);
+    `exponent` is the dynamics of the approach (the pad y): 1 is linear, below
+    1 leaves early and arrives patiently, above 1 the other way round.
+    """
+    if position <= 0.0:
+        return 1.0
+    return min(max(x / position, 0.0), 1.0) ** exponent
+
+
+def _converged_weight(weight, count, blend):
+    """One Input's share pulled `blend` of the way toward the flat 1/count.
+
+    THE SUM IS SAFE BY CONSTRUCTION. This is a convex combination of two
+    things that each already sum to 1 over the Inputs - the partition and the
+    flat share - so the total stays exactly 1 for ANY blend:
+    (1-s)*1 + s*count*(1/count) = 1. Neither the position nor the dynamics of
+    the convergence can be set in a way that makes the Inputs together pull
+    more or less than the drawn envelope, because neither of them appears
+    anywhere except in `blend`.
+
+    With count == 1 the flat share is the whole envelope, so the degenerate
+    single wave converges onto the envelope itself - the same statement, since
+    A/N is A when N is 1.
+    """
+    if blend <= 0.0:
+        return weight
+    return weight + blend * (1.0 / count - weight)
+
+
+def _wave_factor(theta, x, index, count, family, kappa, converge):
+    """THE per-Input wave multiplier - every consumer goes through here.
+
+    One entry point on purpose: the partition (_phase_weight) and the
+    convergence (_converged_weight) are the two halves of the contract that
+    the Inputs' shares sum to 1, and a second path that applied only one of
+    them would break it silently. Mirrored by waveFactorOf/phaseWeight in
+    javascript/weight_profile.js and pinned by tests/test_partition_of_unity.py.
+    """
+    weight = _phase_weight(theta, index, count, family, kappa)
+    if converge is None:
+        return weight
+    return _converged_weight(weight, count, _converge_blend(x, converge[0], converge[1]))
 
 
 def _apply_profile_gamma(points, exponent, samples=PROFILE_COSINE_SAMPLES):
@@ -294,8 +363,9 @@ def _apply_profile_gamma(points, exponent, samples=PROFILE_COSINE_SAMPLES):
     return out
 
 
-def _apply_profile_wave(points, oscillations, phase, family=PHASE_FAMILY_COSINE,
-                        kappa=0.0, index=0, count=1, samples=PROFILE_COSINE_SAMPLES):
+def _apply_profile_wave(points, oscillations, phase, family=None, kappa=0.0,
+                        index=0, count=1, converge=None,
+                        samples=PROFILE_COSINE_SAMPLES):
     """Modulate a profile polyline with the wave, returning a dense polyline.
 
     In cosine mode the drawn profile is the ENVELOPE of the wave, not the wave:
@@ -309,29 +379,26 @@ def _apply_profile_wave(points, oscillations, phase, family=PHASE_FAMILY_COSINE,
     javascript/weight_profile.js (waveFactor / evaluate); the envelope is the
     shared evaluate_weight_profile - do not re-implement it here.
 
-    With `count` > 1 the factor is this Input's share of that same wave under
-    the chosen multi-phase family (_phase_weight) instead of the plain cosine.
-    `count` == 1 means "nobody to share with" and always takes the cosine path,
-    whatever the family says: that is what keeps a multi-phase string running
-    the wave it draws when the unit happens to hold a single Input, exactly as
-    the bare 'P' marker has always done.
+    `family` None is "no multi-phase marker": one wave, drawn as it is, and the
+    caller's phase_offset is expected already folded into `phase`. With a family
+    the factor is this Input's share of that same wave (_wave_factor), the
+    shift derived from `index`/`count` - the ordinal, not the angle, because a
+    partition's weights are defined over the whole set of Inputs at once. The
+    two ways of expressing the shift must never both be applied.
 
-    Note the two ways the shift arrives, which must not both be used at once:
-    the cosine path expects it already folded into `phase` (the caller adds
-    phase_offset), the partition families take `index`/`count` and derive it
-    themselves - they need the Input's ORDINAL, not just its angle, because
-    their weights are defined over the whole set.
+    `count` == 1 under a family is the degenerate single-Input case: not a
+    partition, but the family's kernel (see _phase_weight).
     """
     if not points:
         return points
 
-    multi = count > 1 and family != PHASE_FAMILY_COSINE
+    if family is None:
+        family, index, count = PHASE_FAMILY_COSINE, 0, 1
     out = []
     for i in range(samples + 1):
         x = i / samples
         theta = 2.0 * math.pi * oscillations * x - phase
-        factor = (_phase_weight(theta, index, count, family, kappa) if multi
-                  else 0.5 + 0.5 * math.cos(theta))
+        factor = _wave_factor(theta, x, index, count, family, kappa, converge)
         out.append((x, evaluate_weight_profile(points, x) * factor))
     return out
 
@@ -354,20 +421,24 @@ def parse_weight_profile(profile, phase_offset=0.0, phase_index=0,
     can express weight > 1 without learning the string grammar.
     Returns None if the profile is empty or invalid.
 
-    `phase_offset` (radians) is added to the cosine phase when the profile is
-    in cosine mode and ignored otherwise - the multi-phase feature ('P'
-    marker, see weight_profile_phase_family) parses one variant per Input
-    with offsets k * 2*pi/n. `phase_index` / `phase_count` say the same thing
-    as an ordinal instead of an angle, which the Fejer and von Mises families
-    need because their weights are defined over the whole set of Inputs rather
-    than one at a time; the default count of 1 is "no fan-out". The 'P...'
-    token itself is tolerated and skipped here: whether to fan out is the
-    CALLER's decision, so plain parses of a multi-phase string keep returning
-    input 1's profile.
+    `phase_index` / `phase_count` name the Input whose share is wanted when the
+    profile carries a multi-phase marker ('P...', see
+    weight_profile_phase_family); the default count of 1 is "no fan-out", which
+    for a marked profile means the degenerate single-Input KERNEL of its family
+    (_phase_weight) rather than a one-way split. The marker itself is tolerated
+    and skipped here: whether to fan out is the CALLER's decision, so plain
+    parses of a multi-phase string keep returning input 1's profile.
+    `phase_offset` (radians) is a legacy way of saying the same shift as an
+    angle; it applies only to an UNMARKED cosine profile, since a marked one
+    derives its own shift from the ordinal and applying both would double it.
 
     A 'G<e>' token (editor: the vertical response slider in the range column,
     e in [0.1, 10]) bends the normalized profile with y -> y**e after mids
     and wave, before the scale mapping (_apply_profile_gamma).
+
+    An 'A<x>@<e>' token (editor: the convergence button under the oscillatory
+    one) makes every Input's wave slide onto the flat share 1/n of the
+    envelope, reaching it at step x and holding it after, with dynamics e.
     """
     if profile is None:
         return None
@@ -376,7 +447,8 @@ def parse_weight_profile(profile, phase_offset=0.0, phase_index=0,
     mids = []
     cosine = None
     gamma = None
-    family, kappa = PHASE_FAMILY_COSINE, 0.0
+    converge = None
+    family, kappa = None, 0.0
     lo, hi = 0.0, 1.0
     try:
         if is_string:
@@ -424,6 +496,15 @@ def parse_weight_profile(profile, phase_offset=0.0, phase_index=0,
                     # with y -> y**e before the scale mapping
                     gamma = min(max(_finite(token[1:]), 1.0 / PROFILE_GAMMA_MAX),
                                 PROFILE_GAMMA_MAX)
+                elif token.startswith('A'):
+                    # convergence 'A<x>@<e>': the waves slide onto the flat
+                    # share of the envelope, arriving at step x with dynamics e
+                    at, exp_ = token[1:].split('@')
+                    converge = (
+                        min(max(_finite(at), 0.0), 1.0),
+                        min(max(_finite(exp_), 1.0 / PROFILE_CONVERGE_EXP_MAX),
+                            PROFILE_CONVERGE_EXP_MAX),
+                    )
                 else:
                     pairs.append(token.split('@'))
         else:
@@ -444,13 +525,16 @@ def parse_weight_profile(profile, phase_offset=0.0, phase_index=0,
         points = _flatten_profile_mids(points, mids)
     if cosine is not None:
         # after the mids, so the wave rides the envelope the editor draws.
-        # The cosine family takes its shift pre-folded into the phase; the
-        # partition families take the ordinal instead (see _apply_profile_wave)
-        if phase_count > 1 and family != PHASE_FAMILY_COSINE:
-            points = _apply_profile_wave(points, cosine[0], cosine[1], family, kappa,
-                                         phase_index, phase_count)
+        # A marked profile derives its shift from the ordinal; an unmarked one
+        # takes the legacy pre-folded angle (see _apply_profile_wave)
+        if family is None:
+            points = _apply_profile_wave(points, cosine[0], cosine[1] + phase_offset,
+                                         converge=converge)
         else:
-            points = _apply_profile_wave(points, cosine[0], cosine[1] + phase_offset)
+            count = max(int(phase_count), 1)
+            points = _apply_profile_wave(points, cosine[0], cosine[1], family, kappa,
+                                         phase_index if count > 1 else 0, count,
+                                         converge)
     if gamma is not None and abs(gamma - 1.0) > 1e-4:
         # after the wave (the bend applies to the effective normalized value,
         # waves included), before the scale mapping below

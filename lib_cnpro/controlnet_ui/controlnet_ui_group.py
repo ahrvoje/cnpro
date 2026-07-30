@@ -891,10 +891,12 @@ class ControlNetUiGroup(object):
                    ' pad y = 0..4 oscillations.'
                    + (' Multi-phase splits that one wave between the Inputs - input 1 as drawn,'
                       ' each next shifted by 2π/n - so they take turns steering across the steps.'
-                      ' Fejér and von Mises share the envelope exactly (their weights sum to 1 at'
-                      ' every step); von Mises adds κ, from 0 = every input equally on to 10 ='
-                      ' near-hard switching. Thin lines preview the sibling waves. With a single'
-                      ' input the multi-phase rungs change nothing.' if bands else '')
+                      ' All three share the envelope exactly: their weights sum to 1 at every'
+                      ' step, so the unit pulls exactly as hard as the curve you drew. von Mises'
+                      ' adds κ, from 0 = every input equally on to 10 = near-hard switching.'
+                      ' Thin lines preview the sibling waves. With a single input there is'
+                      ' nothing to split and the rung draws that family&#39;s single kernel'
+                      ' instead.' if bands else '')
                    + '">'
                    # one icon per rung, shown by data-osc-state (see style.css).
                    # 'off' shows the plain wave, unlit - the same reading the
@@ -919,7 +921,27 @@ class ControlNetUiGroup(object):
                       '<span data-osc="fejer" class="cnet-profile-osc-glyph">F</span>'
                       '<span data-osc="mises" class="cnet-profile-osc-glyph">M</span>'
                       if bands else '')
-                   + '</button>')
+                   + '</button>'
+                   # Convergence: right under the oscillatory button, because it
+                   # is a parameter OF that wave rather than a preset of its own
+                   # - it modulates whatever rung is selected and does nothing
+                   # while the wave is off (switching it on switches the wave on
+                   # with it). The icon is two waves damping onto one line.
+                   '<button type="button" class="cnet-profile-preset cnet-profile-converge"'
+                   ' data-preset="converge"'
+                   ' title="Convergence. The waves stop being a fixed split and slide onto the'
+                   ' FLAT share of the envelope - A/n with n Inputs, the whole envelope with'
+                   ' one - reaching it at a step you choose and holding it after. Their shares'
+                   ' still sum to 1 at every step, so the unit keeps pulling exactly as hard as'
+                   ' the drawn curve: this changes WHO steers, never HOW MUCH. Pad x = the step'
+                   ' the flat share is reached at; pad y = the dynamics of getting there, the'
+                   ' middle row linear, below it early-then-patient, above it the reverse.'
+                   ' Click to toggle (it turns the wave on if it is off).">'
+                   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"'
+                   ' stroke-linecap="round" stroke-linejoin="round">'
+                   '<path d="M3 5.5 C6 1.5 8.5 3 11 8 C13 12 15 12 21 12"/>'
+                   '<path d="M3 18.5 C6 22.5 8.5 21 11 16 C13 12 15 12 21 12"/>'
+                   '</svg></button>')
                 # (no invert toggle: the step preset spans both directions
                 # through the pad's vertical halves, which is what invert was
                 # used for - see applyPadPreset in weight_profile.js)

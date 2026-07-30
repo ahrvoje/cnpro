@@ -242,9 +242,17 @@ and diagnosed nothing, which is most of the way back to a silent miss.
 for t in tests/test_*.py; do python "$t"; done
 ```
 
+Three of them read the host's `canvas.html` / `canvas.css` and find the webui two
+levels up, which is right when this lives in `<webui>/extensions/<name>` and
+wrong for a standalone clone (it resolves to `C:\modules_forge\…`). Set
+**`CNPRO_WEBUI_DIR=<webui root>`** there, or `test_toolbar_dom`,
+`test_toolbar_layout` and `test_canvas_parity` skip — loudly, saying exactly
+that, rather than throwing ENOENT from inside the harness as they used to.
+
 | File | Needs | Covers |
 |---|---|---|
 | `test_profile_parity.py` | node | editor JS ≡ python profile evaluation |
+| `test_partition_of_unity.py` | node (half) | the n Inputs' shares sum to exactly 1 — every family, count, wave and convergence, on both sides |
 | `test_mask_profile_coupling.py` | node (half) | the mask slots follow the profile selector — toolbar and backend compared against each other |
 | `test_residual_layout.py` | torch | UNet weighting unchanged; token-layout mask invariants |
 | `test_zimage_config.py` | — | Z-Image config sniff; v2.x and merged files refused |
@@ -311,6 +319,8 @@ The strings belong in this file instead, because an agent reproducing a page
 
 ```
 main            x@y;x@y;...            y normalized, optional |lo~hi range suffix
+wave tokens     C<osc>@<phase>         cosine mode; P / PF / PV<κ> = multi-phase
+                A<at>@<e>              convergence onto the flat share
 band segments   #C<profile> #M<profile> #F<profile>      coarse / mid / fine
 band MODE       #B<band>               presence = the unit runs on the bands
 ```

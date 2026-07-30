@@ -3182,6 +3182,267 @@
         return null;
     };
 
+    // ---- Ctrl+C copies the hovered canvas, so it can be pasted into another
+    //
+    // The host already pastes INTO whichever canvas the pointer is over (its
+    // document-level `paste` handler, gated on pointerInsideContainer). The half
+    // that was missing is getting an image back OUT of one, which is what makes
+    // "put this Input's picture in that Input too" a two-key operation.
+    //
+    // The browser's own Copy image cannot do it, restored context menu or not:
+    // over the picture the topmost element is the TRANSPARENT scribble canvas
+    // (measured with elementFromPoint - the img sits under it), so the native
+    // menu is the plain page menu, and the one thing it would offer to copy is
+    // an empty layer. Hence a real shortcut rather than a UI affordance to
+    // discover: it is the key people press first, and it is the exact inverse of
+    // the paste that already works.
+    //
+    // What is copied is the DISPLAYED composite - byte for byte the raster the
+    // control receives (pinned by tests/test_canvas_parity.py), so what you see
+    // is what you paste: into another Input tab, another unit, or another
+    // application entirely.
+    //
+    // ONE document listener for every canvas rather than one per canvas: the
+    // hovered container is found by selector, so there is no per-instance state
+    // to keep in sync, and a canvas that appears later needs no registration.
+    function hoveredCanvasContainer() {
+        // innermost last, in the (unreal) case of nesting
+        const hovered = document.querySelectorAll('[id^="imageContainer_"]:hover');
+        return hovered.length ? hovered[hovered.length - 1] : null;
+    }
+
+    /** Brief outline on the container: a clipboard write is invisible, and a
+     *  shortcut with no answer is indistinguishable from a shortcut that did
+     *  not fire. Green = copied, red = refused (the console says why). */
+    function flashCopy(container, ok) {
+        const cls = ok ? 'cnpro-copied' : 'cnpro-copy-failed';
+        container.classList.remove('cnpro-copied', 'cnpro-copy-failed');
+        // force a reflow so a second Ctrl+C in a row flashes again
+        void container.offsetWidth;
+        container.classList.add(cls);
+        setTimeout(() => container.classList.remove(cls), 450);
+    }
+
+    /** The composite as a PNG blob. The canvas exports PNG already; anything
+     *  else is re-encoded, because the clipboard takes image/png only. */
+    function pngBlobOf(img) {
+        return fetch(img.src).then((r) => r.blob()).then((blob) => {
+            if (blob.type === 'image/png') return blob;
+            return new Promise((resolve, reject) => {
+                const im = new Image();
+                im.onload = () => {
+                    const c = document.createElement('canvas');
+                    c.width = im.naturalWidth;
+                    c.height = im.naturalHeight;
+                    c.getContext('2d').drawImage(im, 0, 0);
+                    c.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG encode failed'))),
+                             'image/png');
+                };
+                im.onerror = () => reject(new Error('could not decode the displayed image'));
+                im.src = img.src;
+            });
+        });
+    }
+
+    // Last image copied FROM a canvas here, kept so canvas-to-canvas paste
+    // survives a browser that will not let the page read the clipboard (see
+    // pasteIntoCanvas). It is the composite's data URL, nothing else.
+    let lastCopiedDataUrl = null;
+
+    function copyCanvasToClipboard(container, img) {
+        lastCopiedDataUrl = img.src;
+        if (!navigator.clipboard || !window.ClipboardItem) {
+            // http://<lan-ip>:7860 is not a secure context and the async
+            // clipboard is simply absent there - say so, since "nothing
+            // happened" would otherwise look like a bug in this feature
+            console.warn('[cnpro] Ctrl+C: the clipboard API is unavailable - it needs a '
+                         + 'secure context (localhost or https).');
+            flashCopy(container, false);
+            return;
+        }
+        pngBlobOf(img)
+            .then((png) => navigator.clipboard.write([new ClipboardItem({'image/png': png})]))
+            .then(() => flashCopy(container, true))
+            .catch((err) => {
+                console.warn('[cnpro] Ctrl+C: copying the canvas failed:', err);
+                flashCopy(container, false);
+            });
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (!e.ctrlKey || e.altKey || e.metaKey) return;
+        if ((e.key || '').toLowerCase() !== 'c') return;
+        const container = hoveredCanvasContainer();
+        if (!container) return;
+        // a selection anywhere still belongs to the browser: copying text the
+        // user highlighted must not be hijacked by the canvas under the pointer
+        const selection = window.getSelection && window.getSelection();
+        if (selection && String(selection).length) return;
+        const img = container.querySelector('img.forge-image');
+        if (!img || !img.src || !img.naturalWidth) return;   // empty canvas: nothing to copy
+        e.preventDefault();
+        copyCanvasToClipboard(container, img);
+    });
+
+    /** Read an image off the clipboard into this canvas - the menu's Paste, and
+     *  the same destination the host's Ctrl+V uses (uploadBase64, i.e. the
+     *  inflow every other arrival goes through: adjustments reset, gradio
+     *  synced).
+     *
+     *  Reading the clipboard is a PERMISSION, unlike writing it: Chrome asks
+     *  the first time and remembers the answer. If that answer is no - or the
+     *  page is not in a secure context, or the API is absent - canvas-to-canvas
+     *  paste still works, from the image this session last copied out of a
+     *  canvas (`lastCopiedDataUrl`). That fallback is the whole point of
+     *  keeping it: the common case is moving a picture between two Input tabs,
+     *  and it must not depend on a permission dialog. Which source was used is
+     *  said in the console, because the two are not the same thing. */
+    function pasteIntoCanvas(container) {
+        const uuid = container.id.replace('imageContainer_', '');
+        const inst = instances.find((i) => i.uuid === uuid);
+        if (!inst) {
+            console.warn('[cnpro] paste: no canvas registered for', uuid);
+            flashCopy(container, false);
+            return;
+        }
+        const fallback = (why) => {
+            if (!lastCopiedDataUrl) {
+                console.warn('[cnpro] paste:', why);
+                flashCopy(container, false);
+                return;
+            }
+            console.warn('[cnpro] paste: ' + why + ' - using the last image copied from a '
+                         + 'canvas here instead.');
+            inst.fc.uploadBase64(lastCopiedDataUrl);
+            flashCopy(container, true);
+        };
+        if (!navigator.clipboard || !navigator.clipboard.read) {
+            fallback('the clipboard API is unavailable (it needs a secure context, '
+                     + 'localhost or https)');
+            return;
+        }
+        navigator.clipboard.read().then((items) => {
+            for (const item of items) {
+                const type = item.types.find((t) => t.startsWith('image/'));
+                if (!type) continue;
+                return item.getType(type).then((blob) => new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => { inst.fc.uploadBase64(reader.result); resolve(true); };
+                    reader.onerror = () => reject(new Error('could not read the clipboard image'));
+                    reader.readAsDataURL(blob);
+                }));
+            }
+            // an empty clipboard is not a failure of permission - say the
+            // difference, and do not silently paste something older instead
+            throw new Error('the clipboard holds no image');
+        }).then(() => flashCopy(container, true))
+          .catch((err) => {
+              const why = err && err.message ? err.message : String(err);
+              if (/no image/.test(why)) {
+                  console.warn('[cnpro] paste: ' + why + '.');
+                  flashCopy(container, false);
+              } else {
+                  fallback('the clipboard could not be read (' + why + ')');
+              }
+          });
+    }
+
+    // ---- the canvas context menu
+    //
+    // The browser's own menu cannot serve this canvas. Its Copy image would copy
+    // the TRANSPARENT scribble canvas that sits over the picture (see the Ctrl+C
+    // note above), and it has no Paste to offer at all outside a text field -
+    // nor any way for a page to route one into a canvas if it did. So the menu
+    // is ours: two items that do exactly what the two shortcuts do.
+    //
+    // Registered once, in the CAPTURE phase, because the host's ForgeCanvas
+    // answers `contextmenu` on the container with preventDefault() and an
+    // extension can neither edit that file nor unregister its handler. Capture
+    // on `document` runs before it either way, and stopPropagation keeps the
+    // two menus from racing.
+    //
+    // A right-click on a text field inside the widget (the pen's hex box, a
+    // menu input) is left alone: the native cut/copy/paste is the right menu
+    // there, and ours has nothing to say about text.
+    let canvasMenu = null;
+
+    function closeCanvasMenu() {
+        if (!canvasMenu) return;
+        canvasMenu.remove();
+        canvasMenu = null;
+    }
+
+    function openCanvasMenu(container, x, y) {
+        closeCanvasMenu();
+        const img = container.querySelector('img.forge-image');
+        const hasImage = !!(img && img.src && img.naturalWidth);
+        const menu = document.createElement('div');
+        menu.className = 'cnpro-canvas-menu';
+        menu.setAttribute('role', 'menu');
+
+        const item = (label, shortcut, enabled, run) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'cnpro-canvas-menu-item';
+            b.setAttribute('role', 'menuitem');
+            b.disabled = !enabled;
+            const name = document.createElement('span');
+            name.textContent = label;
+            const key = document.createElement('span');
+            key.className = 'cnpro-canvas-menu-key';
+            key.textContent = shortcut;
+            b.appendChild(name);
+            b.appendChild(key);
+            b.addEventListener('click', () => { closeCanvasMenu(); run(); });
+            menu.appendChild(b);
+            return b;
+        };
+        // Copy is disabled rather than hidden on an empty canvas: a menu whose
+        // items move around is a menu you have to read every time
+        item('Copy image', 'Ctrl+C', hasImage,
+             () => copyCanvasToClipboard(container, img));
+        item('Paste image', 'Ctrl+V', true, () => pasteIntoCanvas(container));
+
+        // NOT the image container: it is `overflow: hidden` and routinely
+        // smaller than the menu, which would clip it to a sliver. The gradio
+        // container is preferred over <body> so the theme's CSS variables
+        // (--background-fill-primary, --primary-400) resolve.
+        const host = document.querySelector('.gradio-container') || document.body;
+        host.appendChild(menu);
+        const r = menu.getBoundingClientRect();
+        const left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4));
+        const top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4));
+        menu.style.left = left + 'px';
+        menu.style.top = top + 'px';
+        canvasMenu = menu;
+        const first = menu.querySelector('button:not([disabled])');
+        if (first) first.focus();
+    }
+
+    document.addEventListener('contextmenu', (e) => {
+        const target = e.target;
+        if (!target || !target.closest) return;
+        if (target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) {
+            return;   // text controls keep the browser's own menu
+        }
+        const container = target.closest('[id^="imageContainer_"]');
+        if (!container) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openCanvasMenu(container, e.clientX, e.clientY);
+    }, true);
+
+    // every ordinary way of dismissing a menu
+    document.addEventListener('pointerdown', (e) => {
+        if (canvasMenu && !canvasMenu.contains(e.target)) closeCanvasMenu();
+    }, true);
+    document.addEventListener('keydown', (e) => {
+        if (canvasMenu && e.key === 'Escape') { e.preventDefault(); closeCanvasMenu(); }
+    });
+    window.addEventListener('blur', closeCanvasMenu);
+    window.addEventListener('resize', closeCanvasMenu);
+    document.addEventListener('scroll', closeCanvasMenu, true);
+
     let ensurePending = null;
     function scheduleEnsure() {
         if (ensurePending) return;

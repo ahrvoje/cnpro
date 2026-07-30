@@ -18,14 +18,16 @@
  *   left margin edits Y of the profile start (x = 0), right margin edits Y of
  *   the profile end (x = 1), bottom margin places a point at y = 0 at the
  *   clicked X, top margin places a point at y = 1.
- * - Presets in a column left of the plot - step (button) and cosine mode
- *   (toggle) - plus a square parameter pad next to them carrying TWO
- *   parameters of whichever preset holds focus.
+ * - Presets in a column left of the plot - step (button), the oscillatory
+ *   ladder and the convergence toggle - plus a square parameter pad next to
+ *   them carrying TWO parameters of whichever preset holds focus.
  *   Click rule follows how destructive the preset is:
  *     step REPLACES the drawn profile, so the first click only aims the pad at
  *       it and a confirming second click rebuilds the profile;
  *     cos only decides whether the drawn polyline is read as an envelope, so
- *       it toggles (and draws the wave) on the very first click.
+ *       it toggles (and draws the wave) on the very first click;
+ *     converge modulates that wave and touches no drawn point, so it toggles
+ *       on the first click too.
  *   Moving the pad point always rewrites the focused preset's parameters.
  *     step: pad x = jump position; pad y = height AND direction. Above the
  *       pad's middle the raised part is on the RIGHT (0 then h), below it on
@@ -41,6 +43,11 @@
  *       The drawn polyline becomes the ENVELOPE of the wave and stays
  *       editable point by point; the wave itself pulses between 0 and that
  *       envelope, so it never flips sign.
+ *     converge: pad x = the step by which the waves have settled onto the flat
+ *       share of the envelope (they hold it for the rest of the range), pad y =
+ *       the dynamics of the approach, the middle row being linear. The shares
+ *       still sum to 1 at every step, so the unit's total pull is the drawn
+ *       envelope whether the waves are converged or not.
  *
  * Two range selects sit right of the plot - the upper one is the range top,
  * the lower one the range bottom - mapping the normalized profile [0, 1] onto
@@ -258,7 +265,7 @@
         return {
             points: [{ x: 0, y: y }, { x: 1, y: y }],
             cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
-            phaseFamily: null, kappa: 0, gamma: 1,
+            phaseFamily: null, kappa: 0, converge: null, gamma: 1,
         };
     }
 
@@ -268,6 +275,14 @@
     const COS_DEFAULT_OSC = 1;
     const KAPPA_MAX = 10;         // pad right in von Mises: near-hard switching
     const KAPPA_DEFAULT = 3;
+    // Convergence pad: y is the dynamics exponent, log-mapped exactly like the
+    // response slider so both directions get equal travel - the pad's middle
+    // row is the linear 1, the bottom the tenth root (leave early, arrive
+    // patiently) and the top the tenth power (the other way round).
+    const CONVERGE_EXP_MAX = 10;
+    // arrives exactly at the end of the step range, linearly: the whole plot
+    // shows the approach, which is what the button is for
+    const CONVERGE_DEFAULT = { at: 1, exp: 1 };
 
     /**
      * The oscillatory button's ladder, in click order. `null` family = the
@@ -296,7 +311,7 @@
     }
 
     /**
-     * One Fejer weight at circular offset u for an N-way split - the JS face
+     * The Fejer kernel of order `count` at circular offset u - the JS face
      * of _fejer_weight in lib_cnpro/external_code.py, and the singularity
      * guard has to match it: sin(N*u/2)/sin(u/2) -> N as u -> 0, so the
      * weight -> 1.
@@ -309,25 +324,60 @@
     }
 
     /**
+     * The family's raw lobe at circular offset u: 1 at u = 0, never negative.
+     * Mirrors _phase_kernel (external_code.py) - see there for what each family
+     * means. The partition is made by dividing by the sum of the shifted
+     * copies, so summing to 1 is a property of that division and not of any
+     * single family.
+     */
+    function phaseKernel(u, count, family, kappa) {
+        if (family === "fejer") return fejerWeight(u, Math.max(count, 2));
+        if (family === "mises") return Math.exp(kappa * (Math.cos(u) - 1));
+        return 0.5 + 0.5 * Math.cos(u);
+    }
+
+    /**
      * Share of the envelope that Input `index` of `count` takes at wave angle
-     * `theta`. Mirrors _phase_weight (external_code.py) - see there for what
-     * each family means and why they all sum to a constant at every theta.
+     * `theta`: its own lobe over the sum of all of them, so the count weights
+     * sum to EXACTLY 1 at every theta in every family. Mirrors _phase_weight
+     * (external_code.py).
+     *
+     * `count` 1 is the degenerate case and is deliberately NOT normalized (a
+     * lobe over itself is a flat 1, i.e. the drawn wave would vanish): it
+     * returns the kernel itself - one Input, one wave, not a partition of
+     * anything.
      */
     function phaseWeight(theta, index, count, family, kappa) {
-        const offset = (TAU * index) / count;
-        if (family === "fejer") return fejerWeight(theta - offset, count);
-        if (family === "mises") {
-            // cos - 1 in the exponent (never positive) instead of cos: it
-            // cancels between numerator and denominator and keeps exp() in
-            // [0, 1], so a large kappa cannot overflow its way to a NaN
-            const top = Math.exp(kappa * (Math.cos(theta - offset) - 1));
-            let total = 0;
-            for (let j = 0; j < count; j++) {
-                total += Math.exp(kappa * (Math.cos(theta - (TAU * j) / count) - 1));
-            }
-            return total > 0 ? top / total : 1 / count;
+        const own = phaseKernel(theta - (TAU * index) / count, count, family, kappa);
+        if (count <= 1) return own;
+        let total = 0;
+        for (let j = 0; j < count; j++) {
+            total += phaseKernel(theta - (TAU * j) / count, count, family, kappa);
         }
-        return 0.5 + 0.5 * Math.cos(theta - offset);
+        return total > 0 ? own / total : 1 / count;
+    }
+
+    /** How far the waves have converged onto the flat share at step x: 0 = the
+     *  wave as drawn, 1 = the flat share, reached at `at` and held after.
+     *  Twin of _converge_blend (external_code.py). */
+    function convergeBlend(x, at, exponent) {
+        if (at <= 0) return 1;
+        return Math.pow(clamp01(x / at), exponent);
+    }
+
+    /**
+     * One Input's share pulled `blend` of the way toward the flat 1/count.
+     *
+     * THE SUM IS SAFE BY CONSTRUCTION - a convex combination of two things
+     * that each already sum to 1 over the Inputs, so the total stays exactly 1
+     * for any blend. Neither the convergence position nor its dynamics appears
+     * anywhere but inside `blend`, which is why no setting of them can make the
+     * Inputs together pull more or less than the drawn envelope. Twin of
+     * _converged_weight (external_code.py).
+     */
+    function convergedWeight(weight, count, blend) {
+        if (blend <= 0) return weight;
+        return weight + blend * (1 / count - weight);
     }
 
     /** Normalized y whose EFFECTIVE value is `neutral` (default the multiplier
@@ -413,6 +463,10 @@
             // the von Mises hand-over sharpness and is meaningless otherwise.
             this.phaseFamily = parsed.phaseFamily || null;
             this.kappa = parsed.kappa || 0;
+            // convergence: null = off, {at, exp} = the waves slide onto the
+            // flat share 1/n of the envelope, arriving at step `at` with
+            // dynamics `exp` and holding it after ('A<at>@<exp>')
+            this.converge = parsed.converge || null;
             // response exponent (vertical slider in the range column): bends
             // the normalized [0, 1] profile with y -> y^gamma BEFORE the
             // scale mapping; 1 = linear (neutral), serialized as 'G<e>'
@@ -462,7 +516,7 @@
             return {
                 points: [{ x: 0, y: y }, { x: 1, y: y }],
                 cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
-                phaseFamily: null, kappa: 0, gamma: 1,
+                phaseFamily: null, kappa: 0, converge: null, gamma: 1,
             };
         }
 
@@ -514,9 +568,16 @@
                          depthLo: DEPTH_RANGE_DEFAULT.lo, depthHi: DEPTH_RANGE_DEFAULT.hi,
                          driftLo: DRIFT_RANGE_DEFAULT.lo, driftHi: DRIFT_RANGE_DEFAULT.hi };
             }
+            // every field of the grammar, main or not: a band CAN be put on a
+            // family rung or given a convergence (the ladder acts on whichever
+            // curve is selected) and serializeProfile writes both out, so
+            // dropping them here would lose them on the next reload - and make
+            // the editor draw a band that python parses differently
             const toProfile = (p) => ({
                 points: p.points,
                 cosOn: p.cosOn, cosN: p.cosN, cosPhase: p.cosPhase,
+                phaseFamily: p.phaseFamily || null, kappa: p.kappa || 0,
+                converge: p.converge || null,
                 gamma: p.gamma,
             });
             // step axis: covers main + the band segments; never the depth or
@@ -604,6 +665,7 @@
                 points: this.points,
                 cosOn: this.cosOn, cosN: this.cosN, cosPhase: this.cosPhase,
                 phaseFamily: this.phaseFamily || null, kappa: this.kappa || 0,
+                converge: this.converge || null,
                 gamma: this.gamma || 1,
             };
         }
@@ -618,9 +680,11 @@
             this.cosPhase = P.cosPhase;
             this.phaseFamily = P.phaseFamily || null;
             this.kappa = P.kappa || 0;
+            this.converge = P.converge || null;
             this.gamma = P.gamma || 1;
             this.syncPadFromWave();
             this.setOscButtonState();
+            this.setConvergeButtonState();
             this.updatePad();
             this.updateScaleSelects();
             this.updateGammaSlider();
@@ -731,10 +795,18 @@
             const points = [];
             const mids = [];
             let cosOn = false;
-            let cosN = 0;
+            // A string with no 'C' token carries no oscillation count, and the
+            // default has to be the same one a brand new profile gets: the
+            // buttons that switch the wave ON (the ladder, the convergence
+            // toggle) do not invent one, so a 0 here made them produce
+            // 'C0@0' - a wave with zero oscillations, i.e. a flat factor of 1.
+            // The click then appeared to do nothing at all. An EXPLICIT 'C0@0'
+            // still parses as zero, because that sets cosOn with it.
+            let cosN = COS_DEFAULT_OSC;
             let cosPhase = 0;
             let phaseFamily = null;
             let kappa = 0;
+            let converge = null;
             let gamma = 1;
             for (const pair of parts[0].split(";")) {
                 let token = pair.trim();
@@ -769,6 +841,21 @@
                     cosOn = true;
                     cosN = Math.min(Math.max(n, 0), COS_MAX_OSC);
                     cosPhase = ((ph % TAU) + TAU) % TAU;
+                    continue;
+                }
+                // 'A<at>@<exponent>' = convergence: the waves slide onto the
+                // flat share 1/n of the envelope, arriving at step `at` and
+                // holding it after (see convergeBlend / convergedWeight)
+                if (token[0] === "A") {
+                    const cv = token.slice(1).split("@");
+                    if (cv.length !== 2) return null;
+                    const at = parseFloat(cv[0]);
+                    const exp = parseFloat(cv[1]);
+                    if (!isFinite(at) || !isFinite(exp)) return null;
+                    converge = {
+                        at: clamp01(at),
+                        exp: Math.min(Math.max(exp, 1 / CONVERGE_EXP_MAX), CONVERGE_EXP_MAX),
+                    };
                     continue;
                 }
                 // 'G<exponent>' = response exponent: the normalized profile is
@@ -809,7 +896,8 @@
             return {
                 points: points, scaleLo: scaleLo, scaleHi: scaleHi,
                 cosOn: cosOn, cosN: cosN, cosPhase: cosPhase,
-                phaseFamily: phaseFamily, kappa: kappa, gamma: gamma,
+                phaseFamily: phaseFamily, kappa: kappa, converge: converge,
+                gamma: gamma,
             };
         }
 
@@ -831,6 +919,11 @@
             if (P.cosOn && P.phaseFamily === "cos") tokens.push("P");
             if (P.cosOn && P.phaseFamily === "fejer") tokens.push("PF");
             if (P.cosOn && P.phaseFamily === "mises") tokens.push(`PV${fmt(P.kappa || 0)}`);
+            // convergence needs a wave for the same reason the family marker
+            // does: there is nothing to converge without one
+            if (P.cosOn && P.converge) {
+                tokens.push(`A${fmt(P.converge.at)}@${fmt(P.converge.exp)}`);
+            }
             if (Math.abs((P.gamma || 1) - 1) > 1e-4) tokens.push(`G${fmt(P.gamma)}`);
             const base = tokens.join(";");
             // the range is the PLOT's, so every segment of one plot gets the
@@ -925,6 +1018,41 @@
         }
 
         /**
+         * THE wave multiplier, for any stored profile and any Input - the JS
+         * face of _wave_factor (external_code.py) and the only place either
+         * side of the editor computes one.
+         *
+         * `name` is the profile's slot, because only the MAIN profile ever
+         * fans out: python reads the 'P' marker off the main segment alone
+         * (weight_profile_phase_family) and parses every other segment with a
+         * count of 1, so a band drawn on a family rung has to preview as the
+         * single kernel it will actually run, not as a split.
+         */
+        waveFactorOf(P, name, x, index) {
+            if (!P.cosOn) return 1;
+            const theta = TAU * (P.cosN || 0) * x - (P.cosPhase || 0);
+            const count = this.waveCountOf(P, name);
+            // family null = no marker: the plain single wave, which is the
+            // cosine kernel at a count of 1 - same call, no second formula
+            const w = phaseWeight(theta, index, count,
+                                  P.phaseFamily || "cos", P.kappa || 0);
+            if (!P.converge) return w;
+            return convergedWeight(
+                w, count, convergeBlend(x, P.converge.at, P.converge.exp));
+        }
+
+        /**
+         * Waves a stored profile is drawn as: the Input count for the main
+         * profile on a family rung, 1 for everything else (see waveFactorOf).
+         * A count of 1 is a real state now, not a floor - a unit holding one
+         * Input draws and runs ONE wave, the family's kernel.
+         */
+        waveCountOf(P, name) {
+            return (name === "main" && P.cosOn && P.phaseFamily)
+                ? this.phaseCount() : 1;
+        }
+
+        /**
          * Response exponent: bends the NORMALIZED [0, 1] value with y -> y^g
          * before the scale mapping (toScreen applies the range afterwards, so
          * the bend is range-independent, matching python's
@@ -937,48 +1065,33 @@
         }
 
         /**
-         * The wave multiplier Input `index` runs, matching _apply_profile_wave
-         * in lib_cnpro/external_code.py: the drawn profile is the ENVELOPE of
-         * the wave, and the wave pulses between 0 and that envelope (it never
-         * flips sign, so the scale range keeps its meaning). The phase is
-         * SUBTRACTED so that dragging the pad point right shifts the wave
-         * right, which is what the gesture reads as.
+         * The wave multiplier Input `index` runs on the WORKING COPY, matching
+         * _apply_profile_wave in lib_cnpro/external_code.py: the drawn profile
+         * is the ENVELOPE of the wave, and the wave pulses between 0 and that
+         * envelope (it never flips sign, so the scale range keeps its meaning).
+         * The phase is SUBTRACTED so that dragging the pad point right shifts
+         * the wave right, which is what the gesture reads as.
          *
-         * Off a multi-phase family this is the plain cosine and `index` is
-         * irrelevant. On one, it is that Input's share of the same wave - and
-         * the count comes from phaseCount(), NOT from multiPhaseCount()
-         * directly: this runs once per curve sample (hundreds per frame) and
-         * counting the Inputs walks the unit's DOM.
+         * The working copy carries the same field names as a stored profile,
+         * so this is waveFactorOf on `this` - one implementation, and the
+         * selected curve cannot end up drawn by different math from the rest.
          */
         waveFactor(x, index) {
-            if (!this.cosOn) return 1;
-            const count = this.phaseCount();
-            const theta = TAU * this.cosN * x - this.cosPhase;
-            // A count of 1 means there is nobody to share with, and then the
-            // cosine path runs whatever the family says - the same rule python
-            // applies (_apply_profile_wave), and what keeps a unit that holds a
-            // single Input running the wave it draws rather than a degenerate
-            // one-way split that is flat 1 everywhere.
-            if (count > 1 && this.phaseFamily && this.phaseFamily !== "cos") {
-                return phaseWeight(theta, index, count, this.phaseFamily, this.kappa || 0);
-            }
-            return 0.5 + 0.5 * Math.cos(theta - (count > 1 ? (TAU * index) / count : 0));
+            return this.waveFactorOf(this, this.band, x, index);
         }
 
         /**
          * Input count the phase families divide the wave between. Resolved
          * once per frame by draw() (multiPhaseCount walks the DOM) and cached
-         * here; 2 is the floor multiPhaseCount itself applies, so a preview
-         * that renders before the first count still shows a real split.
+         * here, because this runs once per curve sample - hundreds per frame -
+         * and counting the Inputs walks the unit's DOM.
          *
-         * NOTE this is the PREVIEW's count. At generation time a unit holding
-         * a single Input does not fan out at all and runs the plain cosine
-         * (python: phase_count == 1 takes the cosine path whatever the family
-         * says), which is the same divergence the floor of 2 has always
-         * carried - the editor cannot draw a split that does not happen.
+         * Floors at 1, which is not a fallback but the honest degenerate case:
+         * a unit with a single Input (or none loaded yet) fans out nowhere, and
+         * both sides then run the family's kernel as one wave.
          */
         phaseCount() {
-            return this._phaseCount || 2;
+            return this._phaseCount || 1;
         }
 
         /**
@@ -1045,6 +1158,7 @@
                     cosOn: packed.main.cosOn, cosN: packed.main.cosN,
                     cosPhase: packed.main.cosPhase,
                     phaseFamily: packed.main.phaseFamily, kappa: packed.main.kappa,
+                    converge: packed.main.converge,
                     gamma: packed.main.gamma,
                 };
                 for (const b of BAND_ORDER) {
@@ -1126,6 +1240,7 @@
             this.padPos = {
                 step: { x: 0.5, y: 1 },
                 osc: { x: 0, y: 0 },
+                converge: { x: CONVERGE_DEFAULT.at, y: 0.5 },
             };
             this.syncPadFromWave();
             this.pad = this.container.querySelector(".cnet-profile-preset-pad");
@@ -1143,6 +1258,12 @@
                         // from and the click acts immediately - no second
                         // confirming click, unlike step below.
                         this.cycleOsc();
+                        return;
+                    }
+                    if (name === "converge") {
+                        // same reasoning: it modulates the wave and touches no
+                        // drawn point, so it toggles on the first click
+                        this.toggleConverge();
                         return;
                     }
                     // Step is DESTRUCTIVE - it replaces the drawn profile - so
@@ -1373,7 +1494,9 @@
         setActivePreset(name) {
             this.activePreset = name;
             for (const key in this.presetButtons) {
-                if (key === "osc") continue;  // its highlight tracks the rung, not focus
+                // these two highlight their STATE (the rung / whether the
+                // convergence runs), not which of them the pad is aimed at
+                if (key === "osc" || key === "converge") continue;
                 this.presetButtons[key].classList.toggle("cnet-profile-preset-active", key === name);
             }
             if (this.pad) {
@@ -1394,6 +1517,11 @@
                         ? "von Mises parameters: x = hand-over sharpness κ (0 = every input "
                           + "equally on ... 10 = near-hard switching), y = oscillations (0 ... 4)"
                         : "Wave parameters: x = phase (0 ... 2π), y = oscillations (0 ... 4)",
+                    converge: "Convergence parameters: x = the step by which the waves have "
+                        + "reached the flat share of the envelope (and hold it after), "
+                        + "y = the dynamics of getting there - the middle row is linear, "
+                        + "below it the approach leaves early and arrives patiently, above "
+                        + "it the other way round",
                 }[name] || "Preset parameters (click a preset first)";
                 // the halves only mean something for the step preset, so the
                 // centre line is shown only while it holds focus
@@ -1435,12 +1563,45 @@
         }
 
         /**
+         * Turn the convergence on or off.
+         *
+         * On, the n waves stop being a fixed partition and slide onto the flat
+         * share 1/n of the envelope - reaching it at the pad's x and holding it
+         * for the rest of the range. The n shares still sum to 1 at every step
+         * (convergedWeight is a convex combination of two things that do), so
+         * the unit's total pull is the drawn envelope throughout, converged or
+         * not. With one Input the share IS the envelope, so the single wave
+         * simply fades into it.
+         *
+         * It is a parameter OF THE WAVE, like the phase and the oscillation
+         * count: it survives the oscillatory ladder and is not applied (nor
+         * serialized) while the wave is off. Switching it on with no wave
+         * therefore turns the wave on too, since "converging nothing" is not a
+         * state the user can see - the ladder stays in charge of WHICH wave.
+         */
+        toggleConverge() {
+            if (this.converge) {
+                this.converge = null;
+                this.setActivePreset(null);
+            } else {
+                this.cosOn = true;
+                this.converge = { at: CONVERGE_DEFAULT.at, exp: CONVERGE_DEFAULT.exp };
+                this.syncPadFromWave();
+                this.setActivePreset("converge");
+            }
+            this.drawAndSync();
+        }
+
+        /**
          * Point the pad at the wave's current parameters.
          *
          * The wave is the source of truth, not the pad. The pad's X changes
          * MEANING between rungs - phase everywhere except von Mises, where it
          * is kappa - so a position carried across a rung change would be read
-         * back as the wrong quantity and silently move the curve.
+         * back as the wrong quantity and silently move the curve. The
+         * convergence pad is refreshed here too: it is a wave parameter and has
+         * to follow the same source, or a band switch would leave it showing
+         * the previous curve's numbers.
          */
         syncPadFromWave() {
             if (!this.padPos) return;
@@ -1448,6 +1609,12 @@
                 ? clamp01((this.kappa || 0) / KAPPA_MAX)
                 : clamp01(this.cosPhase / TAU);
             this.padPos.osc.y = clamp01(this.cosN / COS_MAX_OSC);
+            const converge = this.converge || CONVERGE_DEFAULT;
+            this.padPos.converge.x = clamp01(converge.at);
+            // exponent = CONVERGE_EXP_MAX^(2y - 1), inverted: log-mapped like
+            // the response slider, so 1 (linear) is exactly the middle row
+            this.padPos.converge.y = clamp01(
+                0.5 + Math.log(converge.exp) / (2 * Math.log(CONVERGE_EXP_MAX)));
         }
 
         /** Move the visible pad dot to the focused preset's parameters. */
@@ -1466,6 +1633,7 @@
         /** Visual refresh only - no serialization (mid-drag path). */
         drawOnly() {
             this.setOscButtonState();
+            this.setConvergeButtonState();
             this.updatePad();
             this.draw();
         }
@@ -1486,9 +1654,21 @@
             button.classList.toggle("cnet-profile-preset-active", !!this.cosOn);
         }
 
+        /** Light the convergence button when a convergence is actually RUNNING.
+         *  Stored-but-idle is a real state - it survives the ladder's off rung
+         *  like every other wave parameter - and a lit button there would
+         *  promise something the flat curve on screen is not doing. */
+        setConvergeButtonState() {
+            const button = this.presetButtons.converge;
+            if (!button) return;
+            button.classList.toggle("cnet-profile-preset-active",
+                                    !!(this.converge && this.cosOn));
+        }
+
         /** Waves the multi-phase preview draws: one per Input tab holding an
-         *  image, at least two (with a single input the preview would show
-         *  nothing and the marker does nothing at generation either). Muted
+         *  image, at least one. A unit with a single Input (or none loaded
+         *  yet) draws exactly ONE wave, because that is what it will run - the
+         *  family's kernel, no split. Muted
          *  inputs (tab-title checkbox off) are skipped: the generation
          *  fan-out counts len(get_input_data(...)), which drops them, and the
          *  preview must count the same thing that runs. The watch tick
@@ -1514,7 +1694,7 @@
                         count += 1;
                     });
             }
-            return Math.max(count, 2);
+            return Math.max(count, 1);
         }
 
         /**
@@ -1536,6 +1716,20 @@
             if (!pos) return;
 
             const finish = () => (defer ? this.drawOnly() : this.drawAndSync());
+
+            if (this.activePreset === "converge") {
+                // x = where the waves have arrived at the flat share, y = the
+                // dynamics of the approach, log-mapped so both directions get
+                // equal travel and the middle row is exactly linear
+                const exp = Math.pow(CONVERGE_EXP_MAX, 2 * clamp01(pos.y) - 1);
+                this.cosOn = true;
+                this.converge = {
+                    at: clamp01(pos.x),
+                    exp: Math.abs(exp - 1) <= 1e-3 ? 1 : exp,   // snap the middle
+                };
+                finish();
+                return;
+            }
 
             if (this.activePreset === "osc") {
                 this.cosOn = true;
@@ -1988,22 +2182,13 @@
             };
         }
 
-        /** Effective (normalized) profile value of a stored profile object.
-         *  The standalone twin of evaluate/waveFactor, for curves that are NOT
-         *  the working copy (band overlays, the depth line). Those never carry
-         *  a family today - parsePacked drops it off everything but main - but
-         *  it is honored here anyway so the two paths cannot disagree about the
-         *  same profile object. */
-        profileValueAt(P, x) {
-            const env = this.envelopeOf(P.points, x);
-            let v = env;
-            if (P.cosOn) {
-                const count = this.phaseCount();
-                const theta = TAU * P.cosN * x - P.cosPhase;
-                v = env * (count > 1 && P.phaseFamily && P.phaseFamily !== "cos"
-                    ? phaseWeight(theta, 0, count, P.phaseFamily, P.kappa || 0)
-                    : 0.5 + 0.5 * Math.cos(theta));
-            }
+        /** Effective (normalized) value of a stored profile object at x - the
+         *  standalone twin of evaluate(), for curves that are NOT the working
+         *  copy (band overlays, the depth line). Same wave math through
+         *  waveFactorOf, so the two paths cannot disagree about the same
+         *  profile object; the slot NAME is what decides whether it fans out. */
+        profileValueAt(P, name, x) {
+            let v = this.envelopeOf(P.points, x) * this.waveFactorOf(P, name, x, 0);
             const g = P.gamma || 1;
             if (Math.abs(g - 1) > 1e-4) v = Math.pow(Math.min(Math.max(v, 0), 1), g);
             return v;
@@ -2012,7 +2197,7 @@
         /** Thin overlay line of a non-selected band profile. Its points are
          *  directly grabbable (band selection only routes the presets), so
          *  they are drawn as small hollow markers. */
-        drawBandOverlay(P, color) {
+        drawBandOverlay(P, name, color) {
             const ctx = this.ctx;
             const n = P.cosOn ? COS_CURVE_SAMPLES : BAND_CURVE_SAMPLES;
             ctx.save();
@@ -2020,7 +2205,7 @@
             ctx.beginPath();
             for (let i = 0; i <= n; i++) {
                 const x = i / n;
-                const s = this.toScreen({ x: x, y: this.profileValueAt(P, x) });
+                const s = this.toScreen({ x: x, y: this.profileValueAt(P, name, x) });
                 if (i === 0) ctx.moveTo(s.sx, s.sy);
                 else ctx.lineTo(s.sx, s.sy);
             }
@@ -2050,6 +2235,8 @@
             return {
                 points: this.points,
                 cosOn: this.cosOn, cosN: this.cosN, cosPhase: this.cosPhase,
+                phaseFamily: this.phaseFamily || null, kappa: this.kappa || 0,
+                converge: this.converge || null,
                 gamma: this.gamma || 1,
             };
         }
@@ -2158,7 +2345,7 @@
             // unit's DOM, hence once per frame and cached on the instance
             // (waveFactor runs per curve sample - hundreds of times).
             this._phaseCount = (this.cosOn && this.phaseFamily)
-                ? this.multiPhaseCount() : 2;
+                ? this.multiPhaseCount() : 1;
             this._lastPhaseCount = this._phaseCount;
             const c = this.colors();
 
@@ -2237,7 +2424,7 @@
             const curveColor = this.curveColorOf(this.band);
             if (!this.mainModeSelector(this.band)) {
                 for (const b of BAND_ORDER) {
-                    if (b !== this.band) this.drawBandOverlay(this.store[b], BAND_COLORS[b]);
+                    if (b !== this.band) this.drawBandOverlay(this.store[b], b, BAND_COLORS[b]);
                 }
             }
             // A drawn depth curve is NOT echoed onto the main plot (2026-07-25,
@@ -2294,9 +2481,12 @@
             // shifted by 2pi/n, as thin underlays below the main wave (the
             // main wave IS input 1's profile - and under a partition family it
             // is input 1's SHARE of the wave, which is why the count above had
-            // to be resolved before waveScreen was sampled).
-            const phaseCount = (this.cosOn && this.phaseFamily) ? this._phaseCount : 0;
-            if (phaseCount) {
+            // to be resolved before waveScreen was sampled). With ONE Input
+            // there is no sibling and none is drawn: the loops below are empty
+            // at a count of 1, so the degenerate case needs no special case -
+            // the single line already shows the kernel that runs.
+            const phaseCount = this.waveCountOf(this, this.band);
+            if (phaseCount > 1) {
                 ctx.save();
                 ctx.globalAlpha = 0.4;
                 for (let k = 1; k < phaseCount; k++) {
@@ -2397,7 +2587,7 @@
                 ctx.textBaseline = "bottom";
                 for (const b of BAND_ORDER) {
                     const lx = BAND_LABEL_X[b];
-                    const s = this.toScreen({ x: lx, y: this.profileValueAt(this.bandProfileFor(b), lx) });
+                    const s = this.toScreen({ x: lx, y: this.profileValueAt(this.bandProfileFor(b), b, lx) });
                     ctx.fillStyle = BAND_COLORS[b];
                     ctx.fillText(BAND_LABELS[b], s.sx, Math.max(s.sy - 3, r.top + 11));
                 }

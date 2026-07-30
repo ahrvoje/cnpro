@@ -75,9 +75,15 @@ def run():
                           "then re-run with CNPRO_TEST_NODE_PATH=<dir>")
         return None, "node harness failed:\n%s" % err
     try:
-        return json.loads(proc.stdout), None
+        data = json.loads(proc.stdout)
     except ValueError:
         return None, "harness produced no JSON:\n%s\n%s" % (proc.stdout[:400], proc.stderr[:400])
+    # the harness says so itself when the host template is not reachable - a
+    # standalone clone has no webui two levels up, and that is a skip, not a
+    # failure of the toolbar
+    if data.get("unavailable"):
+        return None, data["unavailable"]
+    return data, None
 
 
 def main():

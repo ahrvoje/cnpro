@@ -1,5 +1,4 @@
 import os
-import math
 from typing import Optional, Tuple
 
 import cv2
@@ -905,28 +904,25 @@ class ControlNetForForgeOfficial(scripts.Script):
         # shifted by 2*pi/n relative to the previous input, so the inputs take
         # turns steering across the steps (oscillatory amalgamation).
         #
-        # The share exists so the unit's SUMMED per-step pull equals the drawn
-        # envelope itself - unit weight keeps meaning "how hard this unit
-        # pulls", the same principle as the 1/N share above - and it is the
-        # family's summing constant inverted:
-        #   cosine: the shifted waves sum to n/2, so 2/n. NOT the plain 1/n,
-        #     which left the unit silently half as strong as without
-        #     multi-phase - observed as "half the steps missed" on an
-        #     IP-Adapter face unit with 5 inputs (2026-07-24).
-        #   Fejer / von Mises: partitions of unity, summing to exactly 1 at
-        #     every step on their own, so there is nothing to correct.
+        # NO share factor here, by construction: every family's weights are its
+        # own lobe over the sum of all of them (external_code._phase_weight), so
+        # the n variants sum to exactly 1 at every step and their summed pull IS
+        # the drawn envelope - unit weight keeps meaning "how hard this unit
+        # pulls", the same principle as the 1/N share above. The cosine used to
+        # be the exception (its raw waves sum to n/2, corrected by a 2/n applied
+        # right here); folding that into the weight removed the one place where
+        # a family could be added without its correction and leave the unit
+        # silently half as strong - which is exactly what a plain 1/n did to the
+        # cosine, observed as "half the steps missed" on an IP-Adapter face unit
+        # with 5 inputs (2026-07-24).
         multiphase_profiles = None
         phase_family = (external_code.weight_profile_phase_family(unit.weight_profile)
                         if weight_profile is not None and len(conds) > 1 else None)
         if phase_family is not None:
             family, kappa = phase_family
-            share = (2.0 / len(conds)
-                     if family == external_code.PHASE_FAMILY_COSINE else 1.0)
             multiphase_profiles = [
-                [(x, y * share) for x, y in external_code.parse_weight_profile(
-                    unit.weight_profile,
-                    phase_offset=index * 2.0 * math.pi / len(conds),
-                    phase_index=index, phase_count=len(conds))]
+                external_code.parse_weight_profile(
+                    unit.weight_profile, phase_index=index, phase_count=len(conds))
                 for index in range(len(conds))
             ]
             # the unit-level range gate was derived from input 1's wave

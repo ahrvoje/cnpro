@@ -32,7 +32,11 @@ const path = require('path');
 
 const HERE = __dirname;
 const EXT = path.dirname(HERE);
-const ROOT = path.dirname(path.dirname(EXT));               // .../sd-webui-forge-neo
+// two levels up when this lives in <webui>/extensions/<name>; a standalone
+// clone is elsewhere, and reading the host template then threw ENOENT from
+// inside the harness - a crash where the honest answer is "the host is not
+// here". CNPRO_WEBUI_DIR overrides it; absent either way is a skip below.
+const ROOT = process.env.CNPRO_WEBUI_DIR || path.dirname(path.dirname(EXT));
 const FC = path.join(ROOT, 'modules_forge', 'forge_canvas');
 
 const CHROME_CANDIDATES = [
@@ -125,6 +129,12 @@ const CASES = [
     const exe = CHROME_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch (e) { return false; } });
     if (!exe) {
         out.skip = 'no Chrome/Edge binary found; set CNPRO_CHROME to one';
+        process.stdout.write(JSON.stringify(out));
+        return;
+    }
+    if (!fs.existsSync(path.join(FC, 'canvas.html'))) {
+        out.skip = "the host's canvas.html is not at " + FC + ' - this checkout is '
+            + 'not inside a webui tree. Set CNPRO_WEBUI_DIR to the webui root.';
         process.stdout.write(JSON.stringify(out));
         return;
     }

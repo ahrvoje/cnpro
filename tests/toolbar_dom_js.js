@@ -32,7 +32,11 @@ const Module = require('module');
 
 const HERE = __dirname;
 const EXTENSION = path.join(HERE, '..');
-const WEBUI = path.join(EXTENSION, '..', '..');
+// Two levels up when this lives in <webui>/extensions/<name>; a standalone
+// clone is elsewhere and the guess then points at a directory that does not
+// exist. CNPRO_WEBUI_DIR overrides it, and a missing template is reported as
+// unavailable below rather than thrown as an ENOENT stack.
+const WEBUI = process.env.CNPRO_WEBUI_DIR || path.join(EXTENSION, '..', '..');
 const CANVAS_HTML = path.join(WEBUI, 'modules_forge', 'forge_canvas', 'canvas.html');
 const NODES_JS = path.join(EXTENSION, 'javascript', 'canvas_nodes.js');
 const TOOLS_JS = path.join(EXTENSION, 'javascript', 'canvas_tools.js');
@@ -50,6 +54,13 @@ function loadJsdom() {
         Module._initPaths();
     }
     return require('jsdom');
+}
+
+if (!fs.existsSync(CANVAS_HTML)) {
+    process.stdout.write(JSON.stringify({unavailable:
+        "the host's canvas.html is not at " + CANVAS_HTML + " - this checkout " +
+        "is not inside a webui tree. Set CNPRO_WEBUI_DIR to the webui root."}));
+    process.exit(0);
 }
 
 const {JSDOM} = loadJsdom();

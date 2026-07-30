@@ -2,15 +2,15 @@
 
 Run:  python resources/partition-of-unity.py     (needs matplotlib)
 
-3 columns (the three multi-phase families) x 2 rows (two and five Inputs).
+3 columns (the three multi-phase families) x 3 rows (two Inputs, five Inputs,
+and five Inputs with the convergence switched on).
 
-The CURVES are the raw family weights - exactly what the weight editor draws,
-so the picture and the tool have the same layout. The editor deliberately shows
-no share factor: it draws the shape of each Input's wave, and the share is
-applied later, per generation, in scripts/cnpro.py. The SUM line is therefore
-the other quantity - what the unit actually pulls once those shares are in -
-which is flat at the envelope for every family. Keeping both on one plot is the
-point of the figure: the inputs redistribute the envelope and never amplify it.
+The CURVES are the family weights - exactly what the weight editor draws and
+exactly what each Input runs, since the weights are normalized in
+_phase_weight itself and nothing downstream corrects them any more. The SUM
+line is then the point of the figure: it is flat at the envelope in every
+panel, because that is what a partition of unity means. The inputs
+redistribute the envelope and never amplify it.
 
 The weights come from lib_cnpro.external_code so the picture cannot drift from
 the code it documents.
@@ -51,7 +51,16 @@ COLUMNS = [
     ("Fej\u00e9r", ec.PHASE_FAMILY_FEJER, 0.0),
     ("von Mises   \u03ba = 3", ec.PHASE_FAMILY_MISES, KAPPA),
 ]
-ROWS = [2, 5]
+# (row label, Input count, convergence). The third row is the same five-way
+# split as the second with the convergence button on: the waves leave their
+# partition and slide onto the flat 1/5 share, arriving at CONVERGE_AT. The sum
+# line stays where it is, which is the whole point of drawing it here.
+CONVERGE = (0.6, 1.0)          # arrives at 60% of the schedule, linearly
+ROWS = [
+    ("2 inputs", 2, None),
+    ("5 inputs", 5, None),
+    ("5 inputs\nconverging", 5, CONVERGE),
+]
 
 THEMES = {
     "": dict(surface="#fcfcfb", ink="#0b0b0b", muted="#52514e",
@@ -61,13 +70,13 @@ THEMES = {
 }
 
 
-def weight_curve(family, kappa, index, count, xs):
-    """One Input's wave, as the weight editor draws it - NO share factor.
+def weight_curve(family, kappa, index, count, xs, converge=None):
+    """One Input's wave - what the editor draws AND what that Input runs.
 
-    The editor's `evaluate` is envelope * waveFactor and stops there; the share
-    is a generation-time correction (scripts/cnpro.py), not part of the shape.
-    Scaling here instead would squash the cosine column to a 2/n-tall smear and
-    the docs would stop looking like the tool.
+    There is no share factor left to leave out: every family's weights are its
+    own lobe over the sum of all of them, so they already are the shares. The
+    cosine column is therefore 2/n tall rather than full height, which is the
+    honest picture of a five-way split.
     """
     # phase puts input k's peak at (k + 0.5) / count, so no lobe is cut by the
     # plot edge - a presentation choice, nothing the code does
@@ -75,21 +84,17 @@ def weight_curve(family, kappa, index, count, xs):
     out = []
     for x in xs:
         theta = 2.0 * math.pi * OSC * x - phase
-        out.append(ec._phase_weight(theta, index, count, family, kappa))
+        out.append(ec._wave_factor(theta, x, index, count, family, kappa, converge))
     return out
 
 
-def share_of(family, count):
-    """The generation-time share, inverting the family's summing constant."""
-    return 2.0 / count if family == ec.PHASE_FAMILY_COSINE else 1.0
-
-
 def render(suffix, t):
-    fig, axes = plt.subplots(2, 3, figsize=(10.5, 5.3), sharex=True, sharey=True)
+    fig, axes = plt.subplots(len(ROWS), 3, figsize=(10.5, 7.6),
+                             sharex=True, sharey=True)
     fig.patch.set_facecolor(t["surface"])
     xs = [i / 400 for i in range(401)]
 
-    for row, count in enumerate(ROWS):
+    for row, (row_label, count, converge) in enumerate(ROWS):
         for col, (title, family, kappa) in enumerate(COLUMNS):
             ax = axes[row][col]
             ax.set_facecolor(t["surface"])
@@ -101,15 +106,14 @@ def render(suffix, t):
             ax.grid(True, color=t["grid"], linewidth=0.8, alpha=0.7)
             ax.set_axisbelow(True)
 
-            curves = [weight_curve(family, kappa, k, count, xs) for k in range(count)]
-            share = share_of(family, count)
+            curves = [weight_curve(family, kappa, k, count, xs, converge)
+                      for k in range(count)]
             # siblings first, thin - the eye should land on input 1 and the sum
             for k in range(1, count):
                 ax.plot(xs, curves[k], color=t["series"], linewidth=1.2, alpha=t["sib"])
             ax.plot(xs, curves[0], color=t["series"], linewidth=2.0)
-            # the summed PULL: the curves above are shapes, this is what the
-            # unit delivers once the share factor is in
-            ax.plot(xs, [sum(c[i] for c in curves) * share for i in range(len(xs))],
+            # the summed PULL: flat at 1 by construction, no correction applied
+            ax.plot(xs, [sum(c[i] for c in curves) for i in range(len(xs))],
                     color=t["total"], linewidth=2.0, linestyle=(0, (5, 3)))
 
             # the two top-left panels are identical on purpose (Fejer IS the
@@ -119,31 +123,42 @@ def render(suffix, t):
                             xycoords="axes fraction", ha="center",
                             color=t["muted"], fontsize=9, style="italic")
 
+            # the convergence row says where the waves arrive, since the answer
+            # is a setting rather than a property of the family
+            if converge is not None:
+                ax.axvline(converge[0], color=t["muted"], linewidth=1,
+                           linestyle=(0, (2, 3)), alpha=0.8)
+                if col == 0:
+                    ax.annotate("flat A/n from here", ha="center",
+                                xy=((converge[0] + 1.0) / 2, 0.62),
+                                xycoords=("data", "axes fraction"),
+                                color=t["muted"], fontsize=8.5, style="italic")
+
             if row == 0:
                 ax.set_title(title, color=t["ink"], fontsize=12,
                              fontweight="600", pad=10)
             if col == 0:
-                ax.set_ylabel(f"{count} inputs", color=t["ink"], fontsize=11,
+                ax.set_ylabel(row_label, color=t["ink"], fontsize=11,
                               fontweight="600", labelpad=10)
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1.18)
             ax.set_yticks([0, 0.5, 1])
             ax.set_xticks([0, 0.5, 1])
             ax.tick_params(colors=t["muted"], labelsize=9, length=0)
-            if row == 1:
+            if row == len(ROWS) - 1:
                 ax.set_xlabel("relative sampling step", color=t["muted"], fontsize=9)
 
     handles = [
-        Line2D([], [], color=t["series"], linewidth=2.0, label="input 1 \u2014 as the editor draws it"),
-        Line2D([], [], color=t["series"], linewidth=1.2, alpha=t["sib"], label="inputs 2\u2026n \u2014 the same wave, shifted"),
-        Line2D([], [], color=t["total"], linewidth=2.0, linestyle=(0, (5, 3)), label="their summed pull \u2014 the envelope, intact"),
+        Line2D([], [], color=t["series"], linewidth=2.0, label="input 1 \u2014 its share of the wave"),
+        Line2D([], [], color=t["series"], linewidth=1.2, alpha=t["sib"], label="inputs 2\u2026n \u2014 the same share, shifted"),
+        Line2D([], [], color=t["total"], linewidth=2.0, linestyle=(0, (5, 3)), label="their sum \u2014 the envelope, intact"),
     ]
     legend = fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False,
                         fontsize=10, bbox_to_anchor=(0.5, -0.005))
     for text in legend.get_texts():
         text.set_color(t["muted"])
 
-    fig.tight_layout(rect=(0, 0.075, 1, 1))
+    fig.tight_layout(rect=(0, 0.052, 1, 1))
     out = os.path.join(REPO, "resources", f"partition-of-unity{suffix}.png")
     fig.savefig(out, dpi=150, facecolor=t["surface"])
     plt.close(fig)

@@ -17,6 +17,13 @@
 // stdin:  {"cases": ["0@1;1@0.5|2", ...], "samples": 21}
 // stdout: {"results": [{"scaleLo":0,"scaleHi":2,"main":[...],"bands":{...},
 //                       "depth":[...]|null,"drift":[...]|null}, ...]}
+//
+// A payload may instead (or also) carry {"sums": [{"text":..., "count": n}, ...]},
+// answered as {"sums": [[total at each of `samples` x, ...], ...]}: the sum of
+// all n Inputs' shares of the wave, which must be 1 everywhere. That lives here
+// rather than in a harness of its own so it goes through the same load() - a
+// second copy of "point the editor at a profile" is exactly how the two sides
+// of a parity test start testing different things.
 // Values are EFFECTIVE (scale-mapped), sampled on an even grid over [0, 1].
 // Main and the bands share the step plot's range; the depth curve and the drift
 // curve are each a plot of their own and are sampled on the range their '#D' /
@@ -36,8 +43,17 @@ function bareEditor(isBalance) {
     return ed;
 }
 
-/** One profile's EFFECTIVE value at a single x (the sample() loop's body). */
+/** One profile's EFFECTIVE value at a single x (the sample() loop's body).
+ *  The '#D' / '#S' segments this is used for never fan out - python parses
+ *  every non-main segment with a count of 1 - hence the count of 1 here. */
 function valueAt(ed, profile, lo, hi, x) {
+    return lo + load(ed, profile, 1).valueAt(x, 0) * (hi - lo);
+}
+
+/** Point the bare editor at one parsed profile and hand back the sampler.
+ *  `count` is the Input count the wave is split between; `band` follows it,
+ *  because only the MAIN profile fans out (waveCountOf). */
+function load(ed, profile, count) {
     ed.points = profile.points;
     ed.cosOn = !!profile.cosOn;
     ed.cosN = profile.cosN || 0;
@@ -45,8 +61,16 @@ function valueAt(ed, profile, lo, hi, x) {
     ed.gamma = profile.gamma || 1;
     ed.phaseFamily = profile.phaseFamily || null;
     ed.kappa = profile.kappa || 0;
-    ed._phaseCount = 2;
-    return lo + ed.gammaAt(ed.envelopeAt(x) * ed.waveFactor(x, 0)) * (hi - lo);
+    ed.converge = profile.converge || null;
+    ed.band = "main";
+    // _phaseCount is normally resolved once per frame by draw(); there is no
+    // canvas here, so stand in for it (waveFactor reads it through
+    // phaseCount(), which floors at 1 - the degenerate single-Input case)
+    ed._phaseCount = count || 1;
+    return {
+        valueAt: (x, index) =>
+            ed.gammaAt(ed.envelopeAt(x) * ed.waveFactor(x, index)),
+    };
 }
 
 /**
@@ -70,26 +94,25 @@ function depthMultiplier(ed, packed, depth, x) {
 /** Effective values of one parsed profile object, sampled over [0, 1]. */
 function sample(ed, profile, lo, hi, samples, phaseIndex, phaseCount) {
     // evaluate() reads the working copy, so load this profile into it
-    ed.points = profile.points;
-    ed.cosOn = !!profile.cosOn;
-    ed.cosN = profile.cosN || 0;
-    ed.cosPhase = profile.cosPhase || 0;
-    ed.gamma = profile.gamma || 1;
-    ed.phaseFamily = profile.phaseFamily || null;
-    ed.kappa = profile.kappa || 0;
-    // _phaseCount is normally resolved once per frame by draw(); there is no
-    // canvas here, so stand in for it (waveFactor reads it through
-    // phaseCount(), which floors at 2)
-    ed._phaseCount = phaseCount || 2;
+    const curve = load(ed, profile, phaseCount);
     const index = phaseIndex || 0;
     const out = [];
     for (let i = 0; i < samples; i++) {
         const x = samples === 1 ? 0 : i / (samples - 1);
         // evaluate() is waveFactor(x, 0); ask for the requested Input's share
-        const v = ed.gammaAt(ed.envelopeAt(x) * ed.waveFactor(x, index));
-        out.push(lo + v * (hi - lo));
+        out.push(lo + curve.valueAt(x, index) * (hi - lo));
     }
     return out;
+}
+
+/** Sum of every Input's share of the wave at x - the partition contract, read
+ *  straight out of the editor's own wave math (tests/test_partition_of_unity.py
+ *  compares it against python's and against 1). */
+function waveSum(ed, profile, count, x) {
+    load(ed, profile, count);
+    let total = 0;
+    for (let k = 0; k < count; k++) total += ed.waveFactor(x, k);
+    return total;
 }
 
 let raw = '';
@@ -97,7 +120,18 @@ process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
     const input = JSON.parse(raw);
     const samples = input.samples || 21;
-    const results = input.cases.map((entry) => {
+    const sums = (input.sums || []).map((spec) => {
+        const ed = bareEditor(false);
+        const packed = ed.parsePacked(spec.text);
+        if (!packed.main) return null;
+        const out = [];
+        for (let i = 0; i < samples; i++) {
+            const x = samples === 1 ? 0 : i / (samples - 1);
+            out.push(waveSum(ed, packed.main, spec.count || 1, x));
+        }
+        return out;
+    });
+    const results = (input.cases || []).map((entry) => {
         const spec = typeof entry === 'string' ? { text: entry } : entry;
         const ed = bareEditor(input.isBalance);
         const packed = ed.parsePacked(spec.text);
@@ -144,5 +178,5 @@ process.stdin.on('end', () => {
             selected: packed.selected,
         };
     });
-    process.stdout.write(JSON.stringify({ results: results }));
+    process.stdout.write(JSON.stringify({ results: results, sums: sums }));
 });

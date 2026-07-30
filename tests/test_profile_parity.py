@@ -82,9 +82,15 @@ CASES = [
     ("0@1;M0.3@0.9;0.6@0.2;1@0.8|2", 5e-3),
     ("0@1;1@1;C1@0", 5e-3),                       # cosine mode
     ("0@1;1@1;C2.5@1.5|2", 5e-3),
-    ("0@1;1@1;C1@0;P", 5e-3),                     # multi-phase marker tolerated
-    ("0@1;1@1;C1@0;PF", 5e-3),                    # ...and so are the family markers
+    # a marked profile parsed WITHOUT a fan-out (count 1): the degenerate
+    # single-Input case, where a family is not a partition of anything but
+    # still has a shape - the cosine and Fejer lobes are the plain wave, von
+    # Mises the exp(kappa*cos) pulse. Both sides must draw and run the same one.
+    ("0@1;1@1;C1@0;P", 5e-3),
+    ("0@1;1@1;C1@0;PF", 5e-3),
     ("0@1;1@1;C1@0;PV4", 5e-3),
+    ("0@1;1@1;C1@0.8;PV10|0~2", 5e-3),            # the narrowest single lobe
+    ("0@1;1@0.5;C2@0;PV1;G0.6", 5e-3),
     # the fan-out itself: every Input's share, in each family. Input 0 of a
     # 2-way cosine split must equal the plain wave (offset 0), and Fejer at
     # N=2 must equal the cosine everywhere - the identity that makes 'PF' a
@@ -100,12 +106,29 @@ CASES = [
     ("0@1;1@1;C1@0;PV3", 5e-3, 2, 5),
     ("0@1;1@1;C1@0;PV10", 5e-3, 0, 3),            # kappa max = near-hard switching
     ("0@1;M0.5@0.3;1@1;C2@2;PV6;G1.7|-1~2", 5e-3, 4, 6),  # every feature at once
+    # convergence ('A<at>@<e>'): the waves slide onto the flat share, reaching
+    # it at `at` and holding it. Every family, both sides of the pad's middle
+    # row, and the degenerate single wave (which converges onto the envelope).
+    ("0@1;1@1;C2@0;P;A1@1", 5e-3, 1, 3),
+    ("0@1;1@1;C2@0;PF;A0.5@1", 5e-3, 2, 4),
+    ("0@1;1@1;C2@0;PF;A0.5@1", 5e-3, 0, 4),
+    ("0@1;1@1;C2@0;PV5;A0.75@0.25", 5e-3, 3, 5),
+    ("0@1;1@1;C2@0;PV5;A0.75@4", 5e-3, 3, 5),
+    ("0@1;1@0.6;C3@1;A0.6@2", 5e-3),              # no family: one wave, fades to the envelope
+    ("0@1;1@1;C2@0;P;A0@1", 5e-3, 1, 3),          # arrives at 0: flat share throughout
+    ("0@1;1@1;C1@0.4;PV3;A0.8@0.5;G1.5|0.5~1.5", 5e-3, 2, 3),
     ("0@1;1@0.2;G2", 5e-3),                       # response exponent
     ("0@1;1@0.2;G0.5|2", 5e-3),
     ("0@1;1@1;C1@0.5;G3|-1~2", 5e-3),             # wave + bend + scale
     # band segments ride along and must not disturb the main profile
     ("0@1;1@0.5|2#C0@0.75;1@0.75|2#M0@0.25;1@0.25|2", 1e-9),
     ("0@1;1@1#C0@0.5;1@0.9;C1@0#BC", 5e-3),
+    # ...including a band the ladder put on a family rung or gave a
+    # convergence: ONLY the main profile fans out, so python parses these with
+    # a count of 1 and the editor has to preview the same single kernel
+    ("0@1;1@1#C0@1;1@1;C2@0;PV5", 5e-3),
+    ("0@1;1@1#M0@1;1@1;C2@0;PF;A0.5@1", 5e-3),
+    ("0@1;1@1;C1@0;PF;A0.5@2#F0@1;1@1;C2@0;P;A0.3@0.5", 5e-3, 1, 3),
     # depth segment: same grammar, and equally invisible to the main parse
     ("0@1;1@0.5|2#D0@0.25;1@0.75|2", 1e-9),
     ("0@1;1@1#D0@0;M0.5@0.9;1@1", 5e-3),
@@ -213,9 +236,10 @@ def main():
 
     failures = []
     for (case, tol, index, count), js in zip(specs, results):
+        # no phase_offset: a marked profile derives its own shift from the
+        # ordinal, and passing both would apply it twice (external_code)
         py_main = external_code.parse_weight_profile(
-            case, phase_offset=index * 2.0 * math.pi / count,
-            phase_index=index, phase_count=count)
+            case, phase_index=index, phase_count=count)
         if js.get("main") is None or py_main is None:
             failures.append(f"{case!r}: parsed by only one side "
                             f"(python={py_main is not None}, editor={js.get('main') is not None})")

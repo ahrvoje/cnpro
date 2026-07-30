@@ -199,6 +199,21 @@
     margin-top: 10px !important;
 }
 
+/* A row whose every child is hidden still costs its 10px top margin AND the
+   unit column's 10px gap, so it reads as a mysterious empty strip. The
+   Hires-Fix row (`controlnet_modes`) is one all the time: its only component is
+   `visible=False` until a hires pass is configured, i.e. almost never - ~20px
+   of nothing at the bottom of every unit.
+   This must NOT be a blanket `display: none` on that row: the space is real
+   when the component IS shown, and the same is true of any other row that
+   fills up conditionally. `:has()` is live, so the row comes back by itself the
+   moment gradio drops the `hidden` class from a child - which is exactly how
+   gradio marks a component's visibility. A browser without :has() simply keeps
+   the strip. */
+.controlnet_row:not(:has(> :not(.hidden))) {
+    display: none;
+}
+
 /* JSON pose upload button styling */
 .cnet-upload-pose input[type=file] {
     position: absolute;
@@ -357,6 +372,13 @@
     flex: 0 0 auto;
 }
 
+/* `margin: 0` needs the !important: this widget is gradio HTML, so it renders
+   inside a `.prose` container, and `.gradio-container-… .prose button` sets
+   `margin-bottom: var(--spacing-sm)` (4px) at a higher specificity than a
+   single class. That margin is invisible on its own and it stacks: it added
+   4px under each preset button and each band bar - 32px of nothing down the
+   column, which is what pushed it past the 200px plot when the third preset
+   button arrived. Measured, not guessed (CDP getMatchedStylesForNode). */
 .cnet-profile-preset {
     flex: 0 0 auto;
     width: 32px;
@@ -365,7 +387,7 @@
     align-items: center;
     justify-content: center;
     padding: 0;
-    margin: 0;
+    margin: 0 !important;
     border: 1px solid rgba(127, 127, 127, 0.4);
     border-radius: var(--block-radius);
     background: transparent;
@@ -390,7 +412,8 @@
    two axes are the two parameters of whichever preset holds focus (step:
    jump position x height; oscillatory: phase x oscillation count, or - in the
    von Mises rung, the one family with a shape parameter of its own -
-   hand-over sharpness x oscillation count), so the pad
+   hand-over sharpness x oscillation count; convergence: the step the waves
+   settle onto the flat share at x the dynamics of the approach), so the pad
    replaces the old single free-parameter slider. Inert until a preset is
    clicked - that click binds the pad without touching the profile. */
 .cnet-profile-preset-pad {
@@ -471,6 +494,12 @@
     display: flex;
 }
 
+/* The convergence button under it (.cnet-profile-converge) carries ONE static
+   icon - two waves damping onto a single line - so it needs no rules of its
+   own beyond .cnet-profile-preset above: it is lit by the same
+   .cnet-profile-preset-active class, tracking whether a convergence is running
+   rather than which preset the pad is aimed at. */
+
 /* letter icons: sized to sit on the same 18px optical box as the svg ones */
 .cnet-profile-osc-glyph {
     width: 18px;
@@ -515,7 +544,10 @@
     width: 32px;
     height: 11px;
     padding: 0;
-    margin: 0;
+    /* !important for the same reason as .cnet-profile-preset above: the
+       `.prose button` bottom margin outranks a single class, and six bars of it
+       is 20px of column nobody can see */
+    margin: 0 !important;
     border: 1px solid rgba(127, 127, 127, 0.4);
     border-radius: 3px;
     /* the theme's button reset kills background-image, hence the !important */
@@ -536,6 +568,19 @@
     background-color: color-mix(in srgb, var(--primary-400, #4b7ecb) 15%, transparent);
 }
 
+/* The plot height is FIXED, and must stay fixed - it is what sets the row's
+   height, and the presets column beside it comes to exactly 200px with three
+   preset buttons and six band bars (measured; see the margin note on
+   .cnet-profile-preset for the 32px that used to be added to that on top).
+   That is the whole budget: a fourth button in the column would push past the
+   plot again.
+   Do NOT try to fix such an overflow with `min-height: 200px` and an auto
+   height so the canvas stretches to the row - it was tried and it runs away. A
+   canvas with an auto height takes its intrinsic size from its width/height
+   ATTRIBUTES, which resize() writes from the box it measures, so the box feeds
+   itself: measured 200 -> 231 -> 249 -> 277 -> 373px as the panel got wider.
+   A stretching plot needs an absolutely positioned wrapper, not an auto
+   height. */
 .cnet-weight-profile-canvas {
     flex: 1 1 0;
     min-width: 0;
@@ -1375,6 +1420,74 @@
        canvas_nodes.js::selfCheck says so out loud when a row has no labelMax. */
     --cnpro-label-w: 100px;
     --cnpro-label-fs: 12px; /* menu label text */
+}
+
+/* The canvas context menu (canvas_extra.js): Copy image / Paste image, because
+   the browser's own menu can offer neither over this widget. Appended to the
+   gradio container rather than to the image container, which is
+   `overflow: hidden` and routinely smaller than the menu. Below .cnet-modal,
+   above everything inside a canvas (highest there is 9). */
+.cnpro-canvas-menu {
+    position: fixed;
+    z-index: 2147483000;
+    min-width: 168px;
+    padding: 4px;
+    border: 1px solid var(--border-color-primary, rgba(127, 127, 127, 0.45));
+    border-radius: var(--block-radius, 6px);
+    background: var(--background-fill-primary, #1f2229);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    font-size: 12px;
+    user-select: none;
+}
+
+.cnpro-canvas-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    width: 100%;
+    padding: 5px 8px;
+    /* `.prose button` again - see the presets column note */
+    margin: 0 !important;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--body-text-color, #e6e6e6);
+    text-align: left;
+    cursor: pointer;
+}
+
+.cnpro-canvas-menu-item:hover:not(:disabled),
+.cnpro-canvas-menu-item:focus-visible {
+    background: color-mix(in srgb, var(--primary-400, #4b7ecb) 22%, transparent);
+    outline: none;
+}
+
+.cnpro-canvas-menu-item:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* the shortcut column: present so the menu teaches the keys, quiet so it does
+   not compete with the action */
+.cnpro-canvas-menu-key {
+    opacity: 0.55;
+    font-size: 11px;
+}
+
+/* Ctrl+C over a canvas copies its composite to the clipboard (canvas_extra.js),
+   and a clipboard write is invisible - so the container answers for ~0.45s.
+   Green: it is on the clipboard, hover another canvas and press Ctrl+V. Red: it
+   was refused, and the console says why (no secure context is the usual one).
+   An INSET shadow, not an outline: the container is `overflow: hidden` and sits
+   in a tight grid, so anything drawn outside its box would be clipped or would
+   nudge the layout. */
+.forge-image-container.cnpro-copied {
+    box-shadow: inset 0 0 0 2px rgba(76, 175, 80, 0.9);
+}
+
+.forge-image-container.cnpro-copy-failed {
+    box-shadow: inset 0 0 0 2px rgba(229, 57, 53, 0.9);
 }
 
 /* ---------------------------------------------------------------- the toolbar

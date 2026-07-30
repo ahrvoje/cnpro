@@ -102,7 +102,13 @@ pieces would move.
   collision guards.)
   In cosine mode the drawn curve is the ENVELOPE and the effective
   profile is `envelope(x) * (0.5 + 0.5*cos(2*pi*n*x - phase))` — phase
-  subtracted so the pad point moving right shifts the wave right — expanded into
+  subtracted so the pad point moving right shifts the wave right. The
+  oscillation count of a profile string with **no** `C` token defaults to
+  `COS_DEFAULT_OSC`, not 0 (editor `parse`, 2026-07-30): the buttons that switch
+  the wave on do not invent a count, so a 0 there made them write `C0@0` — a
+  wave of zero oscillations, a flat factor of 1 — and the click looked like it
+  had done nothing. An explicit `C0@0` still parses as zero, since that sets
+  `cosOn` with it. Expanded into
   a dense polyline by `parse_weight_profile` exactly like the parabola mids —
   so the string (and the infotext) stays short and the evaluation math never
   learns about cosines. The multi-phase families replace that factor with this
@@ -149,68 +155,106 @@ pieces would move.
   Input tabs holding images, input k (0-based) runs the SAME envelope with
   the wave shifted by `k * 2*pi/n` — input 1 exactly as drawn, each
   next shifted right — so the inputs take turns steering across the steps
-  (oscillatory amalgamation). The family decides HOW they divide that one
-  wave; all three are partitions of it, summing to a constant at every step so
-  the Inputs only ever redistribute the envelope and never amplify it
-  (`_phase_weight` in external_code.py, `phaseWeight` in weight_profile.js):
-  - **cosine** `0.5 + 0.5*cos(θ - 2πk/n)`, sums to n/2. An input still holds a
-    quarter of its peak at the neighbouring node, so the hand-over is soft and
-    softens further with more inputs.
-  - **Fejér** `(1/n²)·[sin(n·u/2)/sin(u/2)]²`, sums to exactly 1 and is
-    CARDINAL — 1 at its own node, exactly 0 at every other one, so the inputs
-    hand over cleanly instead of all leaking at once. No parameter: the
-    sharpness is fixed by the input count. At n=2 it IS the cosine factor, so
-    `P → PF` changes nothing on a two-input unit and the families only part
-    company from three inputs up. Removable singularity at u≡0 (the ratio → n,
-    the weight → 1); the `|sin(u/2)| < 1e-9` guard must match on both sides.
-  - **von Mises** `softmax(κ·cos(u))`, sums to 1 by construction, κ being the
-    hand-over sharpness: 0 = every input equally on (plain averaging), 10 =
-    near-hard switching. `cos - 1` in the exponent (never positive, cancels
-    between numerator and denominator) keeps `exp` in [0, 1] so a large κ
-    cannot overflow to NaN — again on both sides.
-  A count of **1 always takes the cosine path whatever the family says**
-  (`_apply_profile_wave`, editor `waveFactor`): a unit holding a single Input
-  does not fan out, and a one-way "split" would be flat 1 — i.e. the wave the
-  user drew would silently vanish. This is the one place the editor knowingly
-  previews something else: `multiPhaseCount()` floors at 2 so the plot shows a
-  real split, as it has since the preview existed.
+  (oscillatory amalgamation). The family decides HOW they divide that one wave.
+  **THE PARTITION IS STRUCTURAL, NOT PER-FAMILY** (2026-07-30). A weight is the
+  family's raw lobe (`_phase_kernel` / `phaseKernel`) over the SUM of the n
+  shifted copies of it (`_phase_weight` / `phaseWeight`), so the n weights sum
+  to exactly 1 at every θ *because of the division*, not because each family
+  happens to. Adding a family means adding a lobe and nothing else; there is no
+  correction anywhere downstream that a new one could be missing. The lobes:
+  - **cosine** `0.5 + 0.5*cos(u)`, whose shifts sum to n/2, so the weight is
+    `(1 + cos(u))/n`. An input still holds ~65% of its peak at the neighbouring
+    node, so the hand-over is soft and softens further with more inputs — and
+    the peak itself is only 2/n, which is what a soft n-way split leaves.
+  - **Fejér** `(1/n²)·[sin(n·u/2)/sin(u/2)]²`, already summing to 1 (the
+    division is the identity) and CARDINAL — 1 at its own node, exactly 0 at
+    every other one, so the inputs hand over cleanly instead of all leaking at
+    once. No parameter: the sharpness is fixed by the input count. At n=2 it IS
+    the cosine factor, so `P → PF` changes nothing on a two-input unit and the
+    families only part company from three inputs up. Removable singularity at
+    u≡0 (the ratio → n, the weight → 1); the `|sin(u/2)| < 1e-9` guard must
+    match on both sides.
+  - **von Mises** `exp(κ·cos(u))`, i.e. a softmax after the division, κ being
+    the hand-over sharpness: 0 = every input equally on (plain averaging), 10 =
+    near-hard switching. `cos - 1` in the exponent (never positive, cancels in
+    the division) keeps `exp` in [0, 1] so a large κ cannot overflow to NaN —
+    again on both sides.
+  Until 2026-07-30 the cosine was the exception: its raw wave was used as the
+  weight and a **2/n** was applied by hand in `scripts/cnpro.py`. The numbers
+  are unchanged (`(1+cos)/n` is the same product), but the correction is gone
+  from the call site, and with it the way a family could be added without one.
+  A plain 1/n there had made the cosine unit silently HALF as strong as without
+  multi-phase — "half the steps missed" on an IP-Adapter face unit with 5
+  inputs (2026-07-24). Note the identity is exact on the NORMALIZED profile: a
+  scale range with `lo != 0` maps each input affinely, so the sum carries an
+  extra `(n-1)*lo`, and a response exponent `G≠1` bends each input's curve
+  separately. Both are pre-existing and the same for every family.
+  **A count of 1 is the family's KERNEL, not a partition** (2026-07-30,
+  replacing "always takes the cosine path"): one lobe over itself would be a
+  flat 1, i.e. the drawn wave silently gone, so `_phase_weight` returns the
+  un-normalized lobe there — cosine and Fejér give the plain wave (Fejér falls
+  back to its order-2 lobe, which IS the cosine), von Mises the `exp(κ·cos)`
+  pulse whose width κ still sets. So a single-Input unit on `PV6` now runs a
+  narrow pulse instead of a plain cosine, which is the shape the rung promises.
+  The editor draws exactly that: `multiPhaseCount()` floors at **1**, not 2,
+  and one Input means ONE line on the plot. It no longer previews a split that
+  will not happen.
   Editor draws the sibling waves as thin
   underlays (n from counting loaded `img.forge-image` under the unit's
-  `_input_image` containers, min 2 for a meaningful preview; MUTED inputs are
+  `_input_image` containers; MUTED inputs are
   excluded — the id mapping of tab_marks.js resolves each image's
   `_input_enabled_<n>` checkbox — because the generation fan-out counts
   `len(get_input_data(...))`, which drops them, and the preview must count
   what runs. The 500 ms watch tick re-checks the count and redraws on change,
   so the preview follows uploads / clears / mutes live; nothing the editor
   otherwise observes moves when an Input tab gains or loses an image).
+  ONLY THE MAIN PROFILE FANS OUT — python reads the marker off the main segment
+  alone and parses every other segment with a count of 1 — so the editor's
+  `waveCountOf(P, name)` returns the Input count for `main` and 1 for a band /
+  depth / drift curve put on a family rung by the same ladder.
   Fan-out happens
   in `process_unit_before_every_sampling`: each pass of the per-input loop
   sets `params.model.weight_profile` to
-  `parse_weight_profile(string, phase_offset=k*2*pi/n, phase_index=k,
-  phase_count=n)`. The two ways of saying the shift are NOT redundant and must
-  not both be applied: the cosine path wants it pre-folded into the phase, the
-  partition families take the ordinal because their weights are defined over
-  the whole set of inputs rather than one at a time. The `P...` token itself is
+  `parse_weight_profile(string, phase_index=k, phase_count=n)`, with NO
+  `phase_offset` — a marked profile derives its own shift from the ordinal,
+  because a partition's weights are defined over the whole set of inputs rather
+  than one at a time, and passing both would apply the shift twice. The
+  `phase_offset` parameter survives for unmarked cosine profiles only.
+  The `P...` token itself is
   tolerated and skipped by the parse, so plain parses keep returning input 1's
   profile — `weight_profile_phase_family` is the caller-side switch (and
   returns `(family, kappa)`; `weight_profile_is_multiphase` is its boolean
   face, kept for callers that only need to know THAT a profile fans out).
-  Variants are scaled by the inverse of the family's summing constant, so the
-  unit's SUMMED per-step pull equals the drawn envelope and unit weight keeps
-  meaning "how hard this unit pulls":
-  **2/n for the cosine** (its shifted waves sum to n/2, the 2 cancelling the
-  wave's 0.5 mean) and **1 for Fejér and von Mises**, which are partitions of
-  unity and need no correction. With 1/n the cosine unit was silently
-  HALF as strong as without multi-phase — measured in practice as "half the
-  steps missed" on an IP-Adapter face unit with 5 inputs (2026-07-24). Note
-  the identity is exact on the NORMALIZED profile: a scale range with
-  `lo != 0` maps each input affinely, so the sum carries an extra `(n-1)*lo`.
-  That is the range's pre-existing behaviour and is the same for every family.
   The
   coarse start/end gate is opened to 0..1 in multi-phase mode: it was derived
   from input 1's wave support and would chop sibling phases near the edges;
   every patcher gates per step through its profile LUT anyway. Single input /
   band mode: marker rides along, does nothing.
+  `tests/test_partition_of_unity.py` pins the sum at 1e-12 over every family,
+  Input count, wave and convergence, on BOTH sides.
+- **Wave convergence** (2026-07-30) — a toggle button directly under the
+  oscillatory one, serialized `A<at>@<e>` in the same segment. The n waves stop
+  being a fixed split and slide onto the FLAT share 1/n of the envelope,
+  reaching it at step `at` (pad x) and holding it for the rest of the range,
+  with `e` (pad y, log-mapped over [0.1, 10] exactly like the response slider,
+  middle row = linear 1) the dynamics of the approach. Early schedule: the
+  inputs take turns. Late schedule: they average, which is what the last steps
+  usually want — a reference switched off at step 25 cannot help settle the
+  surface every reference has to share.
+  **The total is safe by construction**: `_converged_weight` /
+  `convergedWeight` is a CONVEX combination of two things that each already sum
+  to 1 over the inputs — `(1-s)*partition + s*flat` — so the sum is
+  `(1-s)*1 + s*n*(1/n) = 1` for any s, and the position and dynamics appear
+  nowhere except inside s. Do not "optimize" that into a scaled deviation: a
+  uniform factor on `(1/n - w)` keeps the SUM at 1 while overshooting the
+  constant, which is why the test pins the plateau (`= 1/n` exactly past `at`)
+  as well as the sum.
+  It is a parameter OF THE WAVE, like phase and oscillation count: it survives
+  the oscillatory ladder, is neither applied nor serialized while the wave is
+  off, and switching it on with the wave off switches the wave on with it
+  (converging nothing is not a state the user can see). With ONE Input the flat
+  share is the whole envelope — A/n with n=1 is A — so the single wave simply
+  fades into the envelope, no special case anywhere.
 - **Control Balance Profile** — same editor and serialization; replaces the
   Control Mode radio (Balanced / My prompt / ControlNet) with a per-step
   cond/uncond balance curve (0.5 balanced, 1 control-only-on-cond, 0
@@ -720,6 +764,10 @@ Extension-side (this directory):
 - `tests/test_profile_parity.py` + `tests/profile_parity_js.js` — the
   python/editor grammar equality check (invariant 2). Standalone scripts, no
   test framework: run with the forge python, needs `node`.
+- `tests/test_partition_of_unity.py` — the multi-phase contract: the n Inputs'
+  shares sum to exactly 1 (1e-12) over every family, count, wave and
+  convergence, and land exactly on 1/n past the convergence position. Drives
+  the same node harness for the editor half, so both sides are held to it.
 
 Transport / lifetime rules worth knowing before touching the patcher side:
 `ControlModelPatcher.reset_run_state()` (modules_forge/supported_controlnet.py)
@@ -775,7 +823,38 @@ Core-side (would need monkey-patching or shipping-with the addon):
   dataUrl)` (add on top as a new editable layer) and
   `window.forgeCanvasDebugLayers(uuid)` (read-only state snapshot for
   Playwright/jsdom diagnosis); an addon build must ship or re-create these
-  hooks. Also hosts the 1-click Topaz tools
+  hooks.
+  **CANVAS CLIPBOARD** (2026-07-30) — `Ctrl+C` over a canvas copies its
+  composite, and a right-click opens a two-item menu, `Copy image` /
+  `Paste image`. Both halves live at module scope in `canvas_extra.js`, not in
+  `attach()`: one document-level listener each, finding the container by
+  selector, so a canvas that appears later needs no registration.
+  Why a CNPro menu rather than the browser's: over the picture the topmost
+  element is the **transparent scribble canvas** (`elementFromPoint`, measured),
+  so the native Copy image would copy an empty layer, and the native menu has no
+  Paste to offer outside a text field — nor any way for a page to route one into
+  a canvas. The host makes it moot anyway by answering `contextmenu` on the
+  container with `preventDefault()`; an extension can neither edit that file nor
+  unregister the handler, so ours is registered in the CAPTURE phase on
+  `document`, which runs first whatever the host did. A right-click on an
+  `input`/`textarea`/`contenteditable` inside the widget is passed through: the
+  native cut/copy/paste is the right menu there.
+  The menu is appended to `.gradio-container` (the image container is
+  `overflow: hidden` and smaller than the menu; the gradio root also resolves
+  the theme variables) and closes on click-away, Escape, scroll, resize or blur.
+  What is copied is the DISPLAYED composite, which `test_canvas_parity.py`
+  already pins to the value the control receives — verified pixel-identical end
+  to end (1496×490, 2.9M channels, zero differing). Paste goes to
+  `fc.uploadBase64`, the same inflow as a drop or the host's own Ctrl+V.
+  Reading the clipboard is a PERMISSION where writing is not, so paste keeps
+  `lastCopiedDataUrl` — the last image copied out of a canvas this session — and
+  falls back to it when the read is refused or unavailable, saying in the
+  console which source it used. Moving a picture between two Input tabs must not
+  depend on a permission dialog. An empty clipboard is NOT routed to that
+  fallback: it is a different outcome and gets its own message.
+  The container flashes green/red for 450ms (`.cnpro-copied` /
+  `.cnpro-copy-failed`) because a clipboard write is otherwise invisible.
+  Also hosts the 1-click Topaz tools
   (`topaz_tools.py` + `x2`/`DN` toolbar buttons): Photo AI `tpai.exe` CLI
   behind `/forge-canvas/topaz/process`, buttons availability-gated at
   runtime — general canvas tools, not ControlNet-specific, optional for any
@@ -932,6 +1011,23 @@ support) keep patchers that only understand constant weight behaving sanely.
    Verified by playwright measurement (scratchpad verify_heights.py pattern:
    equal row height on all five tabs, button-row bottom == last selector
    bottom, canvas height constant across panel widths).
+   Two traps in the same spirit, both found by measuring (2026-07-30):
+   * **`.prose button` adds `margin-bottom: 4px` to every button in a gradio
+     HTML component**, at a higher specificity than a single class - so
+     `.cnet-profile-preset { margin: 0 }` lost, and the profile editor's
+     presets column silently carried 4px under each of its 9 buttons. 32px of
+     invisible margin, which is what made the column outgrow the 200px plot the
+     moment a third preset button was added. Anything laid out inside a
+     `gradio-html` block needs `margin: 0 !important`, and the check is
+     `getComputedStyle(el).margin`, not the rule you wrote.
+   * **A gradio Row whose every child is `visible=False` still costs its own
+     `margin-top` plus the unit column's `gap`** - ~20px of empty strip that
+     belongs to nothing on screen. `.controlnet_row:not(:has(> :not(.hidden)))
+     { display: none }` collapses exactly those and nothing else; `:has()` is
+     live, so the row returns by itself when gradio drops the `hidden` class
+     (the Hires-Fix row does this whenever hires fix is enabled - verified both
+     ways in a browser). Do not replace it with a static `display: none` on a
+     named row: the space is real when its component is shown.
 2. Profile string format is parsed in exactly two places that must agree:
    `external_code.parse_weight_profile` (python) and
    `WeightProfileEditor.parse` (weight_profile.js). ENFORCED since 2026-07-25
@@ -945,9 +1041,11 @@ support) keep patchers that only understand constant weight behaving sanely.
    the end of that file exist for. Do not remove them. Same for evaluation:
    `weight_profile.evaluate_weight_profile` ↔ editor `evaluate()`; parabola
    flattening `samples=24` == `MID_CURVE_STEPS`; the wave factor
-   `_apply_profile_wave` ↔ editor `waveFactor()`, both
-   `0.5 + 0.5*cos(2*pi*n*x - phase)` with n capped at 4, and both routing the
-   multi-phase families through `_phase_weight` ↔ `phaseWeight`. Parity cases
+   `_wave_factor` ↔ editor `waveFactorOf()`, both
+   `0.5 + 0.5*cos(2*pi*n*x - phase)` with n capped at 4, and both routing
+   EVERY case through `_phase_weight` ↔ `phaseWeight` (the unmarked single wave
+   is the cosine lobe at a count of 1, so there is no second formula to keep in
+   sync) plus `_converged_weight` ↔ `convergedWeight`. Parity cases
    may carry `(index, count)` to pin which Input's share is being compared —
    the editor discovers that count by walking the unit's DOM, of which the
    headless harness has none, so it is injected. The editor keeps the

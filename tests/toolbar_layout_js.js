@@ -37,7 +37,13 @@ const path = require('path');
 
 const HERE = __dirname;
 const EXTENSION = path.join(HERE, '..');
-const WEBUI = path.join(EXTENSION, '..', '..');
+// The host tree is two levels up when this lives in <webui>/extensions/<name>.
+// A standalone clone is somewhere else entirely, and then that guess resolves to
+// a directory that does not exist - which used to surface as an ENOENT stack
+// from inside the harness, i.e. a crash where the honest answer is "the host is
+// not here". CNPRO_WEBUI_DIR overrides it; missing either way is a loud skip
+// below, not a throw.
+const WEBUI = process.env.CNPRO_WEBUI_DIR || path.join(EXTENSION, '..', '..');
 const CANVAS_DIR = path.join(WEBUI, 'modules_forge', 'forge_canvas');
 
 function loadPlaywright() {
@@ -65,6 +71,13 @@ const UUID = 'lay0ut';
         return;
     }
 
+    if (!fs.existsSync(path.join(CANVAS_DIR, 'canvas.html'))) {
+        out.unavailable = "the host's canvas.html is not at " + CANVAS_DIR +
+            " - this checkout is not inside a webui tree. Set CNPRO_WEBUI_DIR" +
+            " to the webui root to measure against the real template.";
+        process.stdout.write(JSON.stringify(out));
+        return;
+    }
     const template = fs.readFileSync(path.join(CANVAS_DIR, 'canvas.html'), 'utf8')
         .split('forge_mixin').join(UUID);
     const hostCss = fs.readFileSync(path.join(CANVAS_DIR, 'canvas.css'), 'utf8');
