@@ -45,20 +45,60 @@ import logging
 logger = logging.getLogger("CNPro")
 
 
-def _types():
-    # Imported lazily: the patcher modules pull in torch and the host backend,
-    # and the UI layer must be importable without paying for that.
-    from .patchers.zimage import ZImageControlNetPatcher
-    from .patchers.lllite import ControlLLLitePatcher
-    from .patchers.ipadapter import IPAdapterPatcher
-    from .patchers.controlnet import ControlNetPatcher
+# Z-Image first: its discriminator (`control_layers.0.after_proj.weight`)
+# appears in no other family, so the check is exact AND cheap - it fails on
+# the first dict lookup for every UNet-era file, which is what most users
+# have most of. Ordering it early costs nothing and keeps the expensive
+# UNet-config sniff off the path for DiT models.
+_PATCHER_MODULES = [
+    (".patchers.zimage", "ZImageControlNetPatcher"),
+    (".patchers.lllite", "ControlLLLitePatcher"),
+    (".patchers.ipadapter", "IPAdapterPatcher"),
+    (".patchers.controlnet", "ControlNetPatcher"),
+]
 
-    # Z-Image first: its discriminator (`control_layers.0.after_proj.weight`)
-    # appears in no other family, so the check is exact AND cheap - it fails on
-    # the first dict lookup for every UNet-era file, which is what most users
-    # have most of. Ordering it early costs nothing and keeps the expensive
-    # UNet-config sniff off the path for DiT models.
-    return [ZImageControlNetPatcher, ControlLLLitePatcher, IPAdapterPatcher, ControlNetPatcher]
+#: {patcher name: why it could not be imported}. Populated by _types(), reported
+#: by load_control_model, and logged exactly once per entry.
+_unavailable = {}
+
+
+def _types():
+    """The patcher classes that are importable on THIS host.
+
+    Imported lazily: the patcher modules pull in torch and the host backend, and
+    the UI layer must be importable without paying for that.
+
+    EACH IMPORT IS ISOLATED, and that is the point. These modules bind to host
+    internals at module scope (`backend.nn.*`, `backend.operations`, ...), so a
+    host refactor can make exactly one of them unimportable. When they were
+    imported as one block, that one failure propagated out of `_types()` and
+    every control model of every family stopped loading - a Z-Image-only symbol
+    move took SD1.5 ControlNets down with it, which is both wrong and a
+    completely misleading thing to debug.
+
+    A patcher that cannot import is a family that is unavailable. It is dropped
+    from the list, logged once with its real traceback, and named in the error
+    the caller finally sees if nothing claims their file. Every other family
+    keeps working, which is what the user can actually observe and what they
+    should get.
+    """
+    import importlib
+
+    types = []
+    for module_name, class_name in _PATCHER_MODULES:
+        try:
+            module = importlib.import_module(module_name, __package__)
+            types.append(getattr(module, class_name))
+            _unavailable.pop(class_name, None)
+        except Exception as exc:
+            reason = "%s: %s" % (type(exc).__name__, exc)
+            if _unavailable.get(class_name) != reason:
+                _unavailable[class_name] = reason
+                logger.exception(
+                    "CNPro: %s is UNAVAILABLE on this host - it could not be "
+                    "imported. Control models of that family will not load; "
+                    "every other family is unaffected.", class_name)
+    return types
 
 
 def load_control_model(ckpt_path):
@@ -124,12 +164,22 @@ def load_control_model(ckpt_path):
         if model is not None:
             return model
 
+    # A patcher that could not be imported never got to look at the file, so it
+    # is neither "declined" nor "broke" - but it IS the likeliest reason a file
+    # of its family went unrecognised, and the user cannot see the startup log
+    # from the error dialog. Carried into both messages below.
+    missing = ["%s (not importable on this host: %s)" % (n, why)
+               for n, why in _unavailable.items()]
+
     if broke:
         raise RuntimeError(
             "CNPro: could not load %s. %d of %d loaders raised while sniffing it, "
-            "so this is a BUG IN CNPRO, not an unsupported file:\n  %s"
-            % (ckpt_path, len(broke), len(tried), "\n  ".join(broke)))
+            "so this is a BUG IN CNPRO, not an unsupported file:\n  %s%s"
+            % (ckpt_path, len(broke), len(tried), "\n  ".join(broke),
+               ("\nAlso unavailable:\n  " + "\n  ".join(missing)) if missing else ""))
 
     raise RuntimeError(
-        "CNPro: %s is not a control model CNPro recognises. Tried: %s."
-        % (ckpt_path, ", ".join(tried)))
+        "CNPro: %s is not a control model CNPro recognises. Tried: %s.%s"
+        % (ckpt_path, ", ".join(tried) if tried else "(none)",
+           ("\nUnavailable loaders, one of which may be the one this file needs:"
+            "\n  " + "\n  ".join(missing)) if missing else ""))

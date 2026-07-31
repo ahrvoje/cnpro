@@ -75,7 +75,6 @@ import torch.nn as nn
 from backend import memory_management
 from backend.misc import image_resize
 from backend.attention import attention_function
-from backend.nn.flux import apply_rope
 from backend.operations import using_forge_operations
 from backend.patcher.base import ModelPatcher
 
@@ -96,6 +95,45 @@ from .zimage_config import (  # noqa: F401  (re-exports)
 )
 
 logger = logging.getLogger("CNPro")
+
+
+def _resolve_apply_rope():
+    """The RoPE helper the base model's own JointAttention uses, wherever it lives.
+
+    The control branch MUST apply position encoding exactly the way the branch it
+    steers does, or the residuals land on rotated-differently tokens and the model
+    degrades in a way that looks like a bad ControlNet rather than a bug. So this
+    resolves the host's helper instead of vendoring a copy - a vendored RoPE
+    cannot be wrong on the day it is written and cannot stay right afterwards.
+
+    It has moved once already: Forge Neo lifted `apply_rope` out of
+    `backend.nn.flux` into the comfy-kitchen dispatcher (`backend.quant_ops.ck`),
+    which is what `backend/nn/lumina.py` - the DiT this patcher hooks - now calls.
+    Both spellings take `(xq, xk, freqs_cis)` and return `(q, k)`, so the newest
+    home is tried first and the older one is the fallback. A host that has
+    neither gets a diagnosis naming both, not an AttributeError three frames deep.
+    """
+    try:
+        from backend.quant_ops import ck
+        return ck.apply_rope
+    except (ImportError, AttributeError):
+        pass
+    try:
+        from backend.nn.flux import apply_rope as legacy
+        return legacy
+    except (ImportError, AttributeError):
+        pass
+    raise ImportError(
+        "CNPro Z-Image: this host exposes no RoPE helper where CNPro knows to "
+        "look - neither backend.quant_ops.ck.apply_rope (Forge Neo) nor "
+        "backend.nn.flux.apply_rope (older Forge). The Z-Image ControlNet needs "
+        "the host's own helper to stay in step with the base DiT, so it is "
+        "unavailable on this host; other control model families are unaffected. "
+        "Check what backend/nn/lumina.py calls and add that spelling here.")
+
+
+#: Resolved once at import. See _resolve_apply_rope for why it is not vendored.
+apply_rope = _resolve_apply_rope()
 
 
 def _inpaint_enabled():

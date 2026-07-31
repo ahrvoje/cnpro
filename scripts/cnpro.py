@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import torch
@@ -162,6 +162,11 @@ class ControlNetCachedParameters:
 
 class ControlNetForForgeOfficial(scripts.Script):
     sorting_priority = 10
+
+    # (unit, params) pairs prepared by process() and consumed by the later
+    # hooks. Class-level default so the attribute exists even if a hook fires
+    # on an instance whose process() never ran; rebound (never mutated) there.
+    current_units: List[Tuple[ControlNetUnit, ControlNetCachedParameters]] = []
 
     def title(self):
         return "CNPro"
@@ -1309,30 +1314,38 @@ class ControlNetForForgeOfficial(scripts.Script):
 
     @torch.no_grad()
     def process(self, p, *args, **kwargs):
-        self.current_params = {}
+        # The single point where the enabled set is resolved for the whole run.
+        # get_enabled_units() reads unit.enabled off objects the UI mutates in
+        # place, so re-deriving it in the later hooks let the list change size
+        # or order mid-run (toggle a unit while sampling) and the params were
+        # matched back by position - a shifted index silently paired a unit
+        # with another unit's params, and a shrunk-to-empty list at click time
+        # raised KeyError in postprocess_batch_list. Pairing unit with its own
+        # params once here makes both impossible by construction.
+        self.current_units = []
         enabled_units = self.get_enabled_units(args)
         Infotext.write_infotext(enabled_units, p)
-        for i, unit in enumerate(enabled_units):
+        for unit in enabled_units:
             self.bound_check_params(unit)
             params = ControlNetCachedParameters()
             self.process_unit_after_click_generate(p, unit, params, *args, **kwargs)
-            self.current_params[i] = params
+            self.current_units.append((unit, params))
         return
 
     @torch.no_grad()
     def process_before_every_sampling(self, p, *args, **kwargs):
-        for i, unit in enumerate(self.get_enabled_units(args)):
-            self.process_unit_before_every_sampling(p, unit, self.current_params[i], *args, **kwargs)
+        for unit, params in self.current_units:
+            self.process_unit_before_every_sampling(p, unit, params, *args, **kwargs)
         return
 
     @torch.no_grad()
     def postprocess_batch_list(self, p, pp, *args, **kwargs):
-        for i, unit in enumerate(self.get_enabled_units(args)):
-            self.process_unit_after_every_sampling(p, unit, self.current_params[i], pp, *args, **kwargs)
+        for unit, params in self.current_units:
+            self.process_unit_after_every_sampling(p, unit, params, pp, *args, **kwargs)
         return
 
     def postprocess(self, p, processed, *args):
-        self.current_params = {}
+        self.current_units = []
         return
 
 
