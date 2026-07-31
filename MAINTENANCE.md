@@ -671,6 +671,17 @@ pieces would move.
   band segments are worth serializing / forwarding) and still compares
   EFFECTIVE (scale-mapped) values with the same 5e-4 epsilon as python
   `band_points_are_neutral`.
+- **Dormant weight-mask dimming** — REMOVED (2026-07-31, user decision). The
+  `.cnet-wmask-dormant` opacity rules (0.35, 0.75 on hover) and the class that
+  drove them are gone; the slot buttons now look and behave identically
+  whatever the profile selector says. A slot the selected profile does not use
+  is still armable, paintable and kept, which it always was — but at 0.35 it
+  read as DISABLED, so the toolbar was telling users to activate the band
+  profiles before they could start a C/M/F mask, a constraint invariant 6 does
+  not impose. The coupling is unchanged and still stated twice (the slot
+  tooltip in `weight_mask.js::reflectProfileBand`, and
+  `report_masks_not_in_force` at generation time). Do not re-add a disabled
+  look without asking — invariant 21.
 - **Per-step ws listing** — REMOVED (2026-07-23, user decision). It had
   shipped unreachable (inside the display:none hidden-options column), was
   briefly revived during the review round, and was then judged unneeded:
@@ -1115,14 +1126,19 @@ support) keep patchers that only understand constant weight behaving sanely.
 
    Restrict-to-painted still applies WITHIN the live set: absent band = zero
    control for its layers (`resolve_band_mask` returns None ⇒ layer zeroed).
-   Paint in a dormant slot is KEPT, never discarded — the toolbar dims the
-   slot and says why in its tooltip, and `report_masks_not_in_force` warns at
-   generation time if such paint exists, because silently ignoring it while
-   the button still shows its painted-mask border is the worst option
-   available.
+   Paint in a dormant slot is KEPT, never discarded — the slot's tooltip says
+   why it is not in force, and `report_masks_not_in_force` warns at generation
+   time if such paint exists, because silently ignoring it while the button
+   still shows its painted-mask border is the worst option available.
 
-   The output mask is orthogonal to all of them: it belongs to no band, is
-   never dimmed, multiplies the result, never calls `apply_knowledge_gate`,
+   THE COUPLING IS NOT A GATE. All four slots stay armable and paintable at
+   all times and are styled identically whatever the selector says — the
+   dormant dimming was removed 2026-07-31 (see below). Painting a band mask
+   under the main profile is legitimate preparation; requiring a profile
+   switch before the brush works is a constraint the rule never needed.
+
+   The output mask is orthogonal to all of them: it belongs to no band,
+   multiplies the result, never calls `apply_knowledge_gate`,
    and must stay folded in AFTER `preprocessor.process_before_every_sampling`
    (the inpaint preprocessors read the same `mask` argument as their hole
    definition).

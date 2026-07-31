@@ -773,18 +773,23 @@
             reflectProfileBand();
         }
 
-        // Dim the slots the SELECTED PROFILE does not use, and say why in the
-        // tooltip. Without this the coupling is invisible: a painted C mask
-        // keeps its red "has paint" border while main mode is selected, the
-        // overlay still draws the strokes, and the generation ignores all of
-        // it. The python side logs the same fact at generation time
+        // Say in the TOOLTIP which slots the selected profile does not use.
+        // Without this the coupling is invisible: a painted C mask keeps its
+        // red "has paint" border while main mode is selected, the overlay
+        // still draws the strokes, and the generation ignores all of it. The
+        // python side logs the same fact at generation time
         // (report_masks_not_in_force); this is the half that arrives BEFORE
         // the user spends a minute painting.
         //
-        // Clickable on purpose. Painting a band mask while main is selected is
-        // legitimate preparation - the mask is kept, and pressing the matching
-        // profile selector puts it in force. Blocking the click would make a
-        // hint into an obstacle.
+        // TOOLTIP ONLY - the button itself is left fully enabled, and looks
+        // it. The slots used to be dimmed to opacity 0.35 as well, which reads
+        // as disabled and turned a hint into an obstacle: it pushed the
+        // workflow into "activate the band profiles first" before a C/M/F mask
+        // could be started at all. Painting a band mask while main is selected
+        // is legitimate preparation - the mask is kept, and pressing the
+        // matching profile selector puts it in force. All four slots are
+        // armable and paintable at all times; which ones RUN is still the
+        // selector's decision alone (liveSlotKeys / masks_in_force), unchanged.
         let lastBand = null;
         function reflectProfileBand() {
             const band = isOutputMask ? null : selectedProfileBand(unit);
@@ -793,7 +798,6 @@
             const live = band === null ? null : liveSlotKeys(band);
             for (const slot of slots) {
                 const isLive = live === null || live.indexOf(slot.key) !== -1;
-                slot.button.classList.toggle('cnet-wmask-dormant', !isLive);
                 if (slot.baseTitle === undefined) slot.baseTitle = slot.button.title;
                 slot.button.title = isLive ? slot.baseTitle
                     : slot.baseTitle + '\n\nNOT IN USE: the ' +
@@ -813,10 +817,10 @@
         }
 
         painterWatches.push(watchSlots);
-        // ...and once now, so the dormant slots are dimmed on the first frame
-        // the toolbar is visible rather than up to 500 ms later. The tick keeps
-        // it in step afterwards; the editor and the painter attach in either
-        // order, so neither can push to the other.
+        // ...and once now, so the tooltips describe the right selector on the
+        // first frame the toolbar is visible rather than up to 500 ms later.
+        // The tick keeps it in step afterwards; the editor and the painter
+        // attach in either order, so neither can push to the other.
         reflectProfileBand();
 
         // The rAF loop exists ONLY to keep the overlay glued to the displayed

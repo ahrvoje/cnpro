@@ -888,17 +888,19 @@
     color: #64b5f6;
 }
 
-/* A slot the selected profile does not use. Dimmed, NOT disabled: painting a
-   band mask while main is selected is legitimate preparation, and the paint is
-   kept. weight_mask.js also puts the reason in the tooltip, and the python side
-   warns at generation time if paint in a dormant slot never got applied. */
-.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn.cnet-wmask-dormant {
-    opacity: 0.35;
-}
+/* DORMANT-SLOT DIMMING — REMOVED (2026-07-31, user decision). A slot the
+   selected profile does not use used to sit at opacity 0.35, which reads as
+   DISABLED: the four slots are always armable and always paintable, and making
+   three of them look dead pushed the workflow into "select a band profile
+   first" before a C/M/F mask could even be started. Painting a band mask while
+   main is selected is legitimate preparation - the paint is kept, and pressing
+   the matching profile selector puts it in force.
 
-.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-btn.cnet-wmask-dormant:hover {
-    opacity: 0.75;
-}
+   The coupling itself is unchanged (MAINTENANCE invariant 6: main/depth/drift
+   run on G, a band selection runs on C/M/F) and is still told twice, by the
+   slot tooltip (weight_mask.js::reflectProfileBand) and by
+   `report_masks_not_in_force` at generation time. Do not re-add a disabled
+   look here without asking - see invariant 21. */
 
 /* rainbow-hue weight mask (canvas toolbar tool): custom-drawn track shows the
    value-to-color mapping (left = 0 = violet ... right = 1 = red, 270deg span);
