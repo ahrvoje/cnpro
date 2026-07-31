@@ -790,7 +790,7 @@ class ControlNetUiGroup(object):
             band_buttons = (
                 '<div class="cnet-profile-bands">'
                 '<button type="button" class="cnet-profile-band cnet-profile-band-active"'
-                ' data-band="main" style="--band-color:#ffffff"'
+                ' data-band="main" style="--band-color:var(--cnet-main-line, #ffffff)"'
                 ' title="Main weight profile: per-step strength of the whole unit.'
                 ' Selected = this is the profile the unit runs on; select a band'
                 ' below the separator to run on the band profiles instead.'

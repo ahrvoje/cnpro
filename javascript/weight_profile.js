@@ -146,9 +146,16 @@
     // wherever 1 falls on the shared axis, not at the top.
     const BAND_ORDER = ["coarse", "mid", "fine"];
     const BAND_PREFIX = { coarse: "C", mid: "M", fine: "F" };
-    // single source of the band colors: CSS variables in style.css (the band
-    // buttons use the same ones); resolved lazily because this module
-    // evaluates before stylesheets are guaranteed applied
+    // single source of the curve colors: CSS variables in style.css (the
+    // selector bars use the same ones); resolved lazily because this module
+    // evaluates before stylesheets are guaranteed applied.
+    //
+    // They are also THEME-DEPENDENT (javascript/theme.js writes
+    // `data-cnpro-theme` on <html>, style.css overrides the affected ones
+    // under it), which is why the resolution is a cache with an invalidator
+    // rather than a one-shot: read from document.documentElement, so the
+    // root-scoped override is what is seen, and dropped again when the theme
+    // flips under a running UI.
     const BAND_COLOR_FALLBACK = { coarse: "#e53935", mid: "#fdd835", fine: "#1e88e5" };
     let BAND_COLORS = null;
     function resolveBandColors() {
@@ -161,10 +168,19 @@
         }
         DEPTH_COLOR = styles.getPropertyValue("--cnet-depth-line").trim() || DEPTH_COLOR_FALLBACK;
         DRIFT_COLOR = styles.getPropertyValue("--cnet-drift-line").trim() || DRIFT_COLOR_FALLBACK;
+        MAIN_COLOR = styles.getPropertyValue("--cnet-main-line").trim() || MAIN_COLOR_FALLBACK;
+    }
+    function invalidateCurveColors() {
+        BAND_COLORS = null;
     }
     const BAND_LABELS = { coarse: "C", mid: "M", fine: "F" };
     const BAND_LABEL_X = { coarse: 0.08, mid: 0.5, fine: 0.92 };
-    const MAIN_COLOR = "#ffffff";
+    // The main profile's line is achromatic - it is the one curve that is not
+    // a band, and every other line here carries a hue - but WHICH achromatic
+    // is the theme's call: white on dark, near-black on the light theme, where
+    // white was simply not drawn as far as the user could tell.
+    const MAIN_COLOR_FALLBACK = "#ffffff";
+    let MAIN_COLOR = MAIN_COLOR_FALLBACK;
     const BAND_CURVE_SAMPLES = 96;
 
     // Depth profile (weight editor only): the SAME depth axis the three bands
@@ -2153,30 +2169,44 @@
             const styles = getComputedStyle(this.canvas);
             const accent = styles.getPropertyValue("--primary-400").trim() || "#4b7ecb";
             const background = getComputedStyle(document.body).backgroundColor || "#000";
-            // step separators: white on dark themes, gray on light; the dotted
-            // duty cycle already mutes them, so the dot alpha sits above the
-            // solid quarter grid's to end up quieter overall, not invisible
-            const rgb = background.match(/\d+/g);
-            const darkTheme = !rgb || (Number(rgb[0]) + Number(rgb[1]) + Number(rgb[2])) / 3 < 128;
+            // Step separators. ONE tone, deliberately, and the dotted duty
+            // cycle already mutes them - the dot alpha sits above the solid
+            // quarter grid's to end up quieter overall, not invisible.
+            //
+            // This used to be a ternary: white on dark themes, this gray on
+            // light, chosen by measuring `document.body`'s background right
+            // here. The probe never worked. Gradio leaves body WHITE on both
+            // themes and paints the real fill onto the app element inside it,
+            // so the measurement read 255 and the light arm won always -
+            // verified on the running app in dark mode: 926 px of this tone on
+            // the plot, none of the white one. The gray is therefore what the
+            // dark theme has always looked like, and it carries on the light
+            // one too (0.38 alpha over white is a legible 194 gray), so there
+            // is nothing left for a branch to decide. Do not reinstate one
+            // without measuring the plot in both themes first.
             return {
                 accent: accent,
                 background: background,
                 text: "rgba(127, 127, 127, 0.9)",
                 grid: "rgba(127, 127, 127, 0.16)",
-                stepLine: darkTheme ? "rgba(255, 255, 255, 0.36)" : "rgba(96, 96, 96, 0.38)",
+                stepLine: "rgba(96, 96, 96, 0.38)",
                 // Value dots take ONE muted tone instead of their curve's
-                // color: a white dot on the white main line is invisible
-                // except for its halo ring, while this mid tone reads on both
-                // sides of the plot's contrast range - clearly under a
-                // full-strength curve, still over the 0.4-alpha multi-phase
-                // underlays it also has to mark. Neutral on purpose, so it
-                // never competes with the band colors for meaning. Kept well
-                // below white: on the 2px white main line the separation IS
-                // the mark, and lighter tones left it nearly invisible (196 ->
-                // 158 -> this, ~half the line's luminance). Darkening also
-                // quiets the multi-phase underlays, which want less weight -
-                // the same move serves both ends of the plot.
-                stepDot: darkTheme ? "rgb(126, 135, 162)" : "rgb(56, 62, 80)",
+                // color: a same-colored dot on the main line would show only as
+                // its halo ring, while one muted tone reads across the plot's
+                // whole contrast range - clearly under a full-strength curve,
+                // still over the 0.4-alpha multi-phase underlays it also has to
+                // mark. Neutral on purpose, so it never competes with the band
+                // colors for meaning. On the 2px main line the SEPARATION is
+                // the mark, which is the one thing that has to survive a theme:
+                // the value is a CSS variable (style.css) so it can be flipped
+                // to the far side of the line when the line itself is, and the
+                // two are decided together instead of in two files. The
+                // fallback below is the dark theme's, matching that variable -
+                // MAINTENANCE.md's tuning story describes the OTHER tone this
+                // used to select on paper, which the broken probe next to
+                // stepLine meant it never actually painted.
+                stepDot: styles.getPropertyValue("--cnet-plot-step-dot").trim()
+                    || "rgb(56, 62, 80)",
                 border: "rgba(127, 127, 127, 0.4)",
                 marginFill: "rgba(127, 127, 127, 0.07)",
             };
@@ -2651,6 +2681,27 @@
         onAfterUiUpdate(reloadAll);
     } else {
         onUiUpdate(reloadAll);
+    }
+
+    // A theme flip changes the curve colors (javascript/theme.js), and a plot
+    // is a canvas: nothing about it re-renders on its own when a CSS variable
+    // changes. Drop the resolved cache and repaint, or the main line keeps the
+    // colour of the theme the page was loaded in - which on a switch INTO the
+    // light theme is white on white, exactly the failure this exists to fix.
+    if (window.cnproTheme) {
+        window.cnproTheme.onChange(() => {
+            invalidateCurveColors();
+            // No editors yet means this is onChange's registration call, which
+            // lands while this module is still evaluating - the exact moment
+            // the resolution is lazy to avoid (no stylesheet guaranteed). Drop
+            // the cache and let the constructor do it, as before.
+            if (!editors.length) return;
+            // With editors live it MUST be eager: curveColorOf() reads
+            // BAND_COLORS directly and only the constructor ever fills it, so a
+            // null cache here is a null dereference on the next draw.
+            resolveBandColors();
+            for (const editor of editors) editor.draw();
+        });
     }
     // shared tick (active_canvas.js): one timer for every module here, and
     // skipped entirely while no unit body is laid out

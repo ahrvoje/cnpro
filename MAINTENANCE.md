@@ -90,10 +90,12 @@ pieces would move.
   cut (r 1.8 on an opaque r 2.8 halo, in the curve's own color) cut the curves
   into beaded strings, made a 4-wave plot read as noise and swallowed the
   green mid handle. Final is r 1.15 on a 0.6-alpha halo in ONE muted neutral
-  (`stepDot`) — a same-colored dot on the white main line shows only as its
-  halo ring, while a mid tone reads on both ends of the plot's contrast range
-  (under a full-strength curve, over the 0.4-alpha multi-phase underlays) and
-  never competes with the band colors. Curves first, samples on a closer look. Both cues drop out in depth mode (X is the injection layer there,
+  (`stepDot`) — a same-colored dot on the main line shows only as its
+  halo ring, while a separated tone reads on both ends of the plot's contrast
+  range (under a full-strength curve, over the 0.4-alpha multi-phase underlays)
+  and never competes with the band colors. WHICH side of the line that tone
+  sits on is the theme's (invariant 33): darker than the white line on dark,
+  lighter than the near-black one on light, same separation either way. Curves first, samples on a closer look. Both cues drop out in depth mode (X is the injection layer there,
   not the step) and once the marks would collide. Where the scheduler really
   places each step inside the timestep range is deliberately NOT modeled: the
   editor's X is the relative step range, uniform cells. (Verified headless
@@ -771,6 +773,12 @@ Extension-side (this directory):
 - `javascript/tab_marks.js` — strip-injected tab chrome: filled/muted marks,
   the mute checkboxes in the tab titles, and the visual tab order
   (`applyStripOrder` from the `input_order` channel).
+- `javascript/theme.js` — the ONE light/dark decision, published as
+  `data-cnpro-theme` on `<html>` (invariant 33). Written on the root element
+  and not on body so that `getComputedStyle(document.documentElement)` — the
+  plot's only way to read a colour — sees the same override the cascade does.
+  Enters light only on a POSITIVE detection (gradio's `dark` class absent AND
+  the app's background measured light), so anything it cannot read stays dark.
 - `style.css` — widget layout + editor/painter styling.
 - `tests/test_profile_parity.py` + `tests/profile_parity_js.js` — the
   python/editor grammar equality check (invariant 2). Standalone scripts, no
@@ -1389,6 +1397,31 @@ support) keep patchers that only understand constant weight behaving sanely.
    step 1". v1 could never show it, because for v1 the padding is a no-op - so a
    v1-only test proves nothing here. `tests/test_zimage_injection.py` now calls the
    hint path four times for both 16- and 33-channel configs.
+33. THE THEME IS ONE ATTRIBUTE, AND IT IS NEVER MEASURED FROM `document.body`.
+   `javascript/theme.js` writes `data-cnpro-theme="light" | "dark"` on the ROOT
+   element; style.css overrides the affected variables under
+   `:root[data-cnpro-theme="light"]` and `weight_profile.js` reads those same
+   variables (the plot is a canvas — it cannot be styled, only painted). Three
+   things this pins:
+   - **Root, not body.** Gradio's own `dark` class lives on body, and a
+     variable declared there is invisible to
+     `getComputedStyle(document.documentElement)`. Splitting the two would let
+     the CSS switch while the plot kept painting the other theme's colours.
+   - **Detect light POSITIVELY, default dark.** The class check comes first and
+     the background measurement only breaks ties, so an unreadable or
+     not-yet-built page renders exactly what it rendered before this existed.
+   - **`document.body.backgroundColor` IS NOT THE THEME.** Gradio leaves body
+     white on BOTH themes and paints the real fill onto the app element inside
+     it. `colors()` used to branch on that probe and therefore took the light
+     arm always: the dark theme was rendering the "light" step separators and
+     step dots, and had been for its whole life. Measured on the running app,
+     dark mode: 926 px of the light-arm separator tone on the plot, 0 of the
+     dark arm's. Those two values are now pinned to what was actually shipping
+     (`--cnet-plot-step-dot`, and one literal `stepLine`), because "correct
+     detection" would otherwise have restyled a finished theme as a side
+     effect. Anything that claims to know the theme from a colour must probe
+     the app container, not body — and must be checked in pixels, in both
+     themes, before it is believed.
 
 ## 5. Known limitations / open fragilities (accepted, not bugs)
 

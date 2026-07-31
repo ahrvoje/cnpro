@@ -868,18 +868,31 @@
 
    Each slot wears the colour of the profile it belongs to, and the profile
    editor's band selector decides which slots a generation actually uses: G is
-   the MAIN profile's mask, C/M/F are the band profiles'. The colours come from
-   the same three variables the plot lines use (--cnet-band-*), so a slot and
-   its curve can never drift apart into two different reds.
+   the MAIN profile's mask, C/M/F are the band profiles'.
 
-   G stays white because the main profile's line is white. Styled by CLASS, not
-   by id, so a slot added to the registry is coloured by declaring itself. */
+   THE VALUES ARE LITERALS, NOT `var(--cnet-band-*)`, AND THAT IS THE POINT.
+   The toolbar is not part of the page's theme: it paints its own dark panel
+   (rgba(47, 47, 47, 0.8), the host's canvas.css) over the user's image, on
+   every theme, and its buttons are #4a4a4a with white text to match. So a slot
+   here needs the colour that reads on THAT panel, while the plot needs the one
+   that reads on the page - and on the light theme those stop being the same
+   colour. Fine was already split for exactly this reason; when yellow gained a
+   light-theme variant, coarse and mid had to be split too, or the M slot would
+   have followed the page and gone dark-on-dark. Pinning all three states the
+   rule instead of leaving one variable-driven slot as a trap.
+
+   The pairs to keep in sync by hand are therefore (slot here, `--cnet-band-*`
+   in the palette block below): same hue, each picked for its own background.
+
+   G stays white: the toolbar's own text colour, and the main profile's line on
+   the dark theme. Styled by CLASS, not by id, so a slot added to the registry
+   is coloured by declaring itself. */
 .forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-wmask-slot-coarse {
-    color: var(--cnet-band-coarse, #e53935);
+    color: #e53935;
 }
 
 .forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-wmask-slot-mid {
-    color: var(--cnet-band-mid, #fdd835);
+    color: #fdd835;
 }
 
 .forge-image-container[data-cnpro-nodes="1"] .forge-toolbar .forge-wmask-slot-fine {
@@ -1165,6 +1178,88 @@
        which the yellow band already does not, so it is not worth losing here
        too. */
     --cnet-drift-line: #00c853;
+    /* The MAIN profile's line, and the bar of the selector that carries it.
+       Achromatic on purpose: it is the one curve that is not a band, and every
+       other line on this plot carries a hue. WHICH achromatic is the only
+       thing the theme changes - see the light block below. */
+    --cnet-main-line: #ffffff;
+    /* The per-step value dots. Here rather than in weight_profile.js's colors()
+       because the theme override then sits beside the curve color it has to
+       stay legible against: the dot's whole job is to read ON the main line,
+       so the two are one decision, not two.
+
+       THIS IS THE VALUE THE DARK THEME HAS ALWAYS RENDERED, and it is not the
+       one the code appeared to choose. colors() used to pick between two tones
+       by measuring `document.body`'s background - but gradio leaves body WHITE
+       on both themes and paints the real fill onto the app element inside it,
+       so the probe read 255 and the "light" arm won every time. Measured on
+       the running app: 926 px of the light-arm separator tone on the plot, 0
+       of the dark arm's. The dark branch was unreachable, so the dark theme
+       the user has been looking at - and calls finished - is THIS one.
+       Correcting the detection without pinning this would have silently
+       restyled a theme nobody asked to change. */
+    --cnet-plot-step-dot: rgb(56, 62, 80);
+}
+
+/* ------------------------------------------------- the default LIGHT theme
+
+   The palette above is tuned for Forge's dark theme and stays exactly as it
+   is; this block is only the handful of values that STOP WORKING on a light
+   background - white on white is not a weaker cue, it is no cue, and the main
+   profile is the control the whole editor is about.
+
+   `data-cnpro-theme` is written on <html> by javascript/theme.js, which enters
+   light only on a positive detection, so anything it cannot read stays dark.
+   Contrast ratios below are against gradio's light `--background-fill-primary`
+   (#ffffff); the dark palette's own lines sit at 3.3-4.3:1 there, so these are
+   matched to that band rather than pushed to maximum.
+
+   Everything NOT listed here was checked and left alone: red 4.2:1, blue
+   3.7:1, purple 4.3:1 and the drift green all carry on a light background (the
+   drift comment above says so already), and the toolbar chrome is
+   theme-independent - it paints on its own dark panel over the image. */
+:root[data-cnpro-theme="light"] {
+    /* near-black rather than pure black: the plot's neutral grid and text are
+       rgba(127, 127, 127, ...), and a curve wants to be clearly the darkest
+       thing in the frame without reading as a printed rule */
+    --cnet-main-line: #1f2328;
+    /* yellow is the one band color with no light-background version of itself:
+       #fdd835 on white is 1.4:1. Dark goldenrod keeps the hue - the bar and the
+       line still read as "the yellow one" next to red and blue - at 3.3:1. */
+    --cnet-band-mid: #b8860b;
+    /* The dot marks where a step samples its curve, and the separation from the
+       MAIN line is the mark (MAINTENANCE.md). The dark theme's tone is DARKER
+       than its white line (10.6:1 under it); flipping the line to near-black
+       for this theme without flipping the dot would have left the two 1.5:1
+       apart - the dot swallowed by the very line it annotates. This is that
+       relationship mirrored: a mid tone OVER a near-black line, 3.6:1 against
+       it and 4.4:1 against the page, so it is lost neither on the line nor in
+       the paper. Keeps the dark tone's faint blue cast, so it stays exactly as
+       neutral against the band colors as it was. */
+    --cnet-plot-step-dot: rgb(112, 120, 140);
+}
+
+/* The two remaining light-theme casualties, found by sweeping every CNPro
+   element on the running page for paint that lands within 2:1 of the surface
+   under it rather than by eye - both are conditional UI a screenshot of the
+   idle panel does not contain, which is how "some other" stays unnamed.
+
+   The modal close glyph is the one that is genuinely GONE. It is a white
+   &times; placed at the top of the fixed overlay, and the modal's own panel is
+   `--background-fill-primary` - white on this theme - which the glyph's lower
+   half overlaps. Dark grey instead: 4.4:1 on the shaded backdrop above the
+   panel AND high contrast on the panel itself, so it reads over both halves of
+   what it sits on. The dark theme keeps the white, where the panel is dark and
+   white is what works.
+
+   The balance support note is legibility rather than absence: #e8a33d is 2.2:1
+   on white at 12px. Same amber, taken down to 5.2:1. */
+:root[data-cnpro-theme="light"] .cnet-modal-close {
+    color: #333333 !important;
+}
+
+:root[data-cnpro-theme="light"] .cnet-balance-support-note p {
+    color: #a15c00;
 }
 
 /* denied-click feedback: flashed on tool buttons whose action needs an image

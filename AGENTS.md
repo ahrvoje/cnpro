@@ -267,6 +267,7 @@ that, rather than throwing ENOENT from inside the harness as they used to.
 | `test_toolbar_dom.py` | node + jsdom | injects into the host's real canvas.html; ids match the wiring both ways |
 | `test_toolbar_layout.py` | node + playwright | **measures pixels**: square buttons, one baseline, menus fit the toolbar |
 | `test_toolbar_live.py` | node + playwright + running app | **what the user sees** |
+| `test_theme_live.py` | node + playwright + running app | **that both themes paint a visible profile**: reads the plot canvas back and measures the main line, its selector bar, the step dot and the band colours against the surface they are on, in dark AND light — and pins dark to what it was measured to paint |
 | `test_canvas_parity.py` | node + puppeteer-core + Chrome | **that the control gets the canvas** — decodes both sides, every pixel, 22 states |
 | `test_unit_state_writes.py` | — | nothing rebuilds the unit State from a snapshot (lost-update guard) |
 | `test_generate_live.py` | running app `--api` + models | **that a ControlNet steers a real image** |
