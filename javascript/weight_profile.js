@@ -455,7 +455,7 @@
             this.canvas.tabIndex = 0;  // keyboard access (arrows / Delete)
             this.ctx = this.canvas.getContext("2d");
             const packed = this.parsePacked(textarea.value);
-            const parsed = packed.main || this.defaultMainProfile();
+            const parsed = packed.main || this.defaultMainProfile(packed.scaleLo, packed.scaleHi);
             this.points = parsed.points;
             // ONE range per plot (see parsePacked), and this editor holds two
             // plots: the STEP axis below is the Y axis of the main curve and
@@ -526,14 +526,46 @@
             this.resize();
         }
 
-        /** Default main profile: flat 1 (weight) / flat 0.5 (balance). */
-        defaultMainProfile() {
-            const y = this.isBalance ? 0.5 : 1;
+        /**
+         * Default main profile: flat at the EFFECTIVE value that does nothing -
+         * the multiplier 1 for the weight editor, 0.5 for the balance one.
+         *
+         * The range is an ARGUMENT rather than `this.scaleLo/Hi` for two
+         * reasons. The constructor calls this before those fields exist (they
+         * are assigned from the same parse a line later), so reading them here
+         * would silently produce NaN in exactly the path that handles a missing
+         * profile. And "flat 1" is a position that depends on the axis: on the
+         * default [0, 1] it is the top of the plot, on a [0, 2] axis the top is
+         * the multiplier 2 and the neutral line sits in the middle. Callers
+         * with the default axis therefore get the same profile they always did.
+         */
+        defaultMainProfile(lo, hi) {
+            const y = neutralY(lo, hi, this.isBalance ? 0.5 : 1);
             return {
                 points: [{ x: 0, y: y }, { x: 1, y: y }],
                 cosOn: false, cosN: COS_DEFAULT_OSC, cosPhase: 0,
                 phaseFamily: null, kappa: 0, converge: null, gamma: 1,
             };
+        }
+
+        /**
+         * THE default of any slot, on the axis that slot is drawn on. One
+         * function, because "reset this curve" and "this unit has no profile"
+         * have to mean the same thing - the empty-value path in maybeReload
+         * builds the same four objects, and two definitions of neutral that
+         * drift apart is how a reset stops being a reset.
+         *
+         * Note what it does NOT reset: the plot's Y RANGE. That belongs to the
+         * plot and is shared by the main profile and all three bands (see
+         * attachScaleSelects), so clearing one curve must not move the other
+         * three - the neutral is placed on whatever axis is currently up
+         * instead. The empty-value path CAN reset the range, because there it
+         * is clearing all of them at once.
+         */
+        defaultProfileFor(name) {
+            const range = this.rangeFor(name);
+            if (name === "main") return this.defaultMainProfile(range.lo, range.hi);
+            return defaultBandProfile(range.lo, range.hi, neutralValueOf(name));
         }
 
         /**
@@ -686,6 +718,32 @@
             };
         }
 
+        /**
+         * Put one curve back to its default: flat neutral, no wave, no
+         * convergence, no response exponent, no parabola handles.
+         *
+         * Reached by double-clicking that profile's selector bar, and the WHOLE
+         * profile goes - not just its points. A curve whose points were cleared
+         * while an oscillation, a multi-phase family or a bent response stayed
+         * lit would still be drawn as a wave, and the buttons above it would
+         * still be pressed: a "reset" that leaves the control panel armed is the
+         * worst of both. defaultProfileFor is the single answer to what neutral
+         * is, shared with the empty-value path in maybeReload.
+         *
+         * Reloading is not optional when the target is the SELECTED curve: the
+         * working copy holds `points` by reference and the wave fields by
+         * value, so replacing the store entry alone would leave the editor
+         * drawing the old arrays. loadBand re-points both and refreshes the
+         * preset column with them.
+         */
+        resetProfile(name) {
+            this.store[name] = this.defaultProfileFor(name);
+            this.selPoint = null;
+            if (name === this.band) this.loadBand(name);
+            this.draw();
+            this.sync();
+        }
+
         /** Load a stored profile into the working copy (the editable one). */
         loadBand(name) {
             const P = this.store[name];
@@ -738,6 +796,18 @@
                 button.addEventListener("click", (e) => {
                     e.preventDefault();
                     this.selectBand(button.dataset.band);
+                });
+                // Double-click = clear that profile. The button IS its line (a
+                // solid bar in the line's colour), so this reads as "wipe this
+                // curve" and needs no target of its own on the plot - where the
+                // three double-click gestures are already taken by the point and
+                // the mid handle. Same idiom as the response slider's
+                // double-click reset. The first of the two clicks selects the
+                // profile, which is what makes the wipe visible: whatever you
+                // clear, you are looking at.
+                button.addEventListener("dblclick", (e) => {
+                    e.preventDefault();
+                    this.resetProfile(button.dataset.band);
                 });
             });
         }
@@ -1207,7 +1277,7 @@
                 this.depthHi = DEPTH_RANGE_DEFAULT.hi;
                 this.driftLo = DRIFT_RANGE_DEFAULT.lo;
                 this.driftHi = DRIFT_RANGE_DEFAULT.hi;
-                this.store.main = this.defaultMainProfile();
+                this.store.main = this.defaultMainProfile(this.scaleLo, this.scaleHi);
                 for (const b of BAND_ORDER) {
                     this.store[b] = defaultBandProfile(this.scaleLo, this.scaleHi);
                 }

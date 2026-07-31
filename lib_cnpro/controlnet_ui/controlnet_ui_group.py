@@ -796,7 +796,8 @@ class ControlNetUiGroup(object):
                 ' below the separator to run on the band profiles instead.'
                 ' Its spatial half is the G weight mask on the canvas toolbar: while main'
                 ' (or depth, or drift) is selected, G is the mask that applies and C/M/F'
-                ' are dormant."></button>'
+                ' are dormant.'
+                ' Double-click this bar to reset the profile to flat 1."></button>'
                 # Depth profile: the same depth axis the three bands quantize,
                 # un-quantized. It does NOT replace the main profile the way a
                 # band does - it multiplies it, so the unit runs on
@@ -812,7 +813,8 @@ class ControlNetUiGroup(object):
                 ' (default 0..2, neutral 1 in the middle) while it is selected.'
                 ' Bands and depth are alternatives: selecting a band runs the band profiles instead.'
                 ' Because depth multiplies MAIN, the G weight mask is the one that applies while'
-                ' it is selected, exactly as in main mode."></button>'
+                ' it is selected, exactly as in main mode.'
+                ' Double-click this bar to reset the profile to flat 1 (off)."></button>'
                 # Depth-DRIFT profile: the third degree of freedom of the
                 # main x depth pair. Without it that product is separable, so the
                 # depth shape is frozen in time - the one thing the band profiles
@@ -830,7 +832,8 @@ class ControlNetUiGroup(object):
                 ' Its own plot (default -1..1, neutral 0 in the middle).'
                 ' This is the one thing main x depth cannot otherwise express: without a drift'
                 ' the depth shape cannot change while sampling. The bands buy that same freedom'
-                ' by quantizing depth into three buckets; this keeps depth continuous."></button>'
+                ' by quantizing depth into three buckets; this keeps depth continuous.'
+                ' Double-click this bar to reset the profile to flat 0 (off)."></button>'
                 # The group boundary. Above: three curves that multiply into one
                 # field. Below: three that each replace it.
                 '<div class="cnet-profile-band-sep" aria-hidden="true"></div>'
@@ -840,21 +843,24 @@ class ControlNetUiGroup(object):
                 ' layers - composition. Its spatial half is the C weight mask on the canvas'
                 ' toolbar, which multiplies it where painted.'
                 ' While a band is selected the unit runs on the band profiles rather than the'
-                ' main one, and on the C/M/F masks rather than G."></button>'
+                ' main one, and on the C/M/F masks rather than G.'
+                ' Double-click this bar to reset the profile to neutral."></button>'
                 '<button type="button" class="cnet-profile-band" data-band="mid"'
                 ' style="--band-color:var(--cnet-band-mid, #fdd835)"'
                 ' title="Mid band profile (M): per-step strength of the middle injection'
                 ' layers - form. Its spatial half is the M weight mask on the canvas toolbar,'
                 ' which multiplies it where painted.'
                 ' While a band is selected the unit runs on the band profiles rather than the'
-                ' main one, and on the C/M/F masks rather than G."></button>'
+                ' main one, and on the C/M/F masks rather than G.'
+                ' Double-click this bar to reset the profile to neutral."></button>'
                 '<button type="button" class="cnet-profile-band" data-band="fine"'
                 ' style="--band-color:var(--cnet-band-fine, #1e88e5)"'
                 ' title="Fine band profile (F): per-step strength of the shallowest injection'
                 ' layers - texture. Its spatial half is the F weight mask on the canvas'
                 ' toolbar, which multiplies it where painted.'
                 ' While a band is selected the unit runs on the band profiles rather than the'
-                ' main one, and on the C/M/F masks rather than G."></button>'
+                ' main one, and on the C/M/F masks rather than G.'
+                ' Double-click this bar to reset the profile to neutral."></button>'
                 '</div>'
             ) if bands else ''
             return (
@@ -1000,7 +1006,8 @@ class ControlNetUiGroup(object):
                     'Control Weight Profile',
                     '(X: relative step, Y: strength;'
                     ' click: add/move point, double-click: delete point;'
-                    ' drag green midpoint: bend segment, double-click it: straighten)',
+                    ' drag green midpoint: bend segment, double-click it: straighten;'
+                    ' double-click a profile bar: reset that profile)',
                     bands=True,
                 ),
                 elem_id=f"{elem_id_tabname}_{tabname}_controlnet_weight_profile_editor",
