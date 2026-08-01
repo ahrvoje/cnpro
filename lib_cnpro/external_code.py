@@ -587,6 +587,32 @@ def weight_profile_to_string(points) -> str:
     return f"{body}|{num(lo)}~{num(hi)}"
 
 
+def _segment_phase_family(segment) -> Optional[Tuple[str, float]]:
+    """(family, kappa) of ONE step-domain segment's multi-phase marker, or None.
+
+    Shared by the main profile and the band profiles because the marker means
+    the same thing in both: the editor serializes it from whichever curve is
+    selected (weight_profile.js serialize() runs serializeProfile over
+    store.main AND store[band] with the same token writer), so a band segment
+    can carry one and it has to be read the same way it is written.
+
+    Only meaningful alongside a cosine token ('C...'): the phase kernels
+    partition the WAVE, and the fan-out path deliberately skips the 1/N input
+    share because those kernels sum to 1 at every step. Without a 'C' there is
+    no wave to partition - each input would get the full un-shared envelope
+    and the unit would pull N TIMES the drawn curve. The editor always writes
+    the pair; this guard is for hand-edited infotext and raw API strings,
+    which now degrade to the ordinary shared path instead of multiplying.
+    """
+    tokens = [token.strip() for token in segment.split('|', 1)[0].split(';')]
+    if not any(token.startswith('C') for token in tokens):
+        return None
+    for token in tokens:
+        if token.startswith('P'):
+            return _parse_phase_family(token)
+    return None
+
+
 def weight_profile_phase_family(profile) -> Optional[Tuple[str, float]]:
     """(family, kappa) of the MAIN weight profile's multi-phase marker, or None.
 
@@ -597,25 +623,41 @@ def weight_profile_phase_family(profile) -> Optional[Tuple[str, float]]:
     The suffix picks the family: bare 'P' cosine, 'PF' Fejer, 'PV<kappa>' von
     Mises (kappa is 0.0 for the other two, which take no parameter).
 
-    Only the main profile can be multi-phase; band segments are not inspected.
-    Only meaningful alongside a cosine token ('C...'): the phase kernels
-    partition the WAVE, and the fan-out path deliberately skips the 1/N input
-    share because those kernels sum to 1 at every step. Without a 'C' there is
-    no wave to partition - each input would get the full un-shared envelope
-    and the unit would pull N TIMES the drawn curve. The editor always writes
-    the pair; this guard is for hand-edited infotext and raw API strings,
-    which now degrade to the ordinary shared path instead of multiplying.
+    MAIN segment only. Band segments carry their own markers and are read by
+    band_profile_phase_families - in band mode the main profile is not applied
+    at all (scripts/cnpro.py), so reading its marker there would fan out a
+    curve that never runs.
     """
     if not isinstance(profile, str):
         return None
-    main = profile.split('#', 1)[0].split('|', 1)[0]
-    tokens = [token.strip() for token in main.split(';')]
-    if not any(token.startswith('C') for token in tokens):
-        return None
-    for token in tokens:
-        if token.startswith('P'):
-            return _parse_phase_family(token)
-    return None
+    return _segment_phase_family(profile.split('#', 1)[0])
+
+
+def band_profile_phase_families(profile) -> dict:
+    """{band name: (family, kappa)} for every band segment carrying a marker.
+
+    The band twin of weight_profile_phase_family. Bands are the depth axis
+    quantized into three buckets with a step curve each, and a step curve is
+    exactly the thing multi-phase partitions - so a wave drawn on the coarse
+    band should hand each Input its own lobe of that wave, the same way the
+    main curve does. Before this it could not: the marker was serialized into
+    the band segment by the editor and then read by nobody, so every Input ran
+    the identical band curve and the ensemble never took turns.
+
+    Returns {} when no band carries one, which is the common case and lets the
+    caller skip the fan-out entirely.
+    """
+    if not isinstance(profile, str) or '#' not in profile:
+        return {}
+    families = {}
+    for segment in profile.split('#')[1:]:
+        segment = segment.strip()
+        if not segment or segment[0] not in PROFILE_BAND_PREFIXES:
+            continue
+        family = _segment_phase_family(segment[1:])
+        if family is not None:
+            families[PROFILE_BAND_PREFIXES[segment[0]]] = family
+    return families
 
 
 def weight_profile_is_multiphase(profile) -> bool:
@@ -732,16 +774,24 @@ def band_points_are_neutral(points) -> bool:
     return profile_points_are_neutral(points, 1.0)
 
 
-def parse_band_profiles(profile) -> Optional[dict]:
+def parse_band_profiles(profile, phase_index=0, phase_count=1) -> Optional[dict]:
     """Per-band (coarse/mid/fine) step profiles from a packed profile string.
 
     The UI packs them after the main weight profile as
     'main#C<profile>#M<profile>#F<profile>' where each <profile> uses the
-    standard 'x@y;...' grammar (scale suffix, mids and cosine tokens
-    included). Only non-neutral bands are present. Returns a dict
+    standard 'x@y;...' grammar (scale suffix, mids, cosine AND multi-phase
+    tokens included). Only non-neutral bands are present. Returns a dict
     band-name -> calculation-ready point list, or None when the string
     carries no (non-neutral) band profiles. The values multiply the band's
     injection layers per step (backend band_of mapping).
+
+    `phase_index` / `phase_count` name the Input whose share is wanted, exactly
+    as in parse_weight_profile: a band carrying a 'P...' marker hands Input k
+    its own lobe of that band's wave, and the n lobes sum to the drawn band
+    curve at every step. Bands WITHOUT a marker ignore both arguments and
+    return the same curve for every Input - their 1/N share is applied by the
+    caller, because a segment cannot know how many of its siblings fan out.
+    The defaults are the single-Input case, so existing callers are unchanged.
     """
     if not isinstance(profile, str) or '#' not in profile:
         return None
@@ -750,7 +800,14 @@ def parse_band_profiles(profile) -> Optional[dict]:
         segment = segment.strip()
         if not segment or segment[0] not in PROFILE_BAND_PREFIXES:
             continue
-        points = parse_weight_profile(segment[1:])
+        # a band with no marker parses at the degenerate count of 1, so its
+        # curve is untouched rather than silently divided by the wave kernel
+        # of a family it never declared
+        fans_out = _segment_phase_family(segment[1:]) is not None
+        points = parse_weight_profile(
+            segment[1:],
+            phase_index=phase_index if fans_out else 0,
+            phase_count=phase_count if fans_out else 1)
         if points is None or band_points_are_neutral(points):
             continue
         bands[PROFILE_BAND_PREFIXES[segment[0]]] = points

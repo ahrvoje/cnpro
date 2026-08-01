@@ -952,6 +952,62 @@ class ControlNetForForgeOfficial(scripts.Script):
             logger.info(f"ControlNet multi-phase profile: {len(conds)} inputs, {family} wave "
                         f"phase-shifted by 2pi/{len(conds)} per input (summed pull = envelope).")
 
+        # Multi-phase on the BANDS. A band is a step curve over one third of the
+        # depth axis, which is exactly the thing a phase family partitions, so a
+        # wave drawn on the coarse band should hand each Input its own lobe of
+        # it - the ensemble taking turns within that band while another band is
+        # held steady by a single reference. The marker was already serialized
+        # into the band segment by the editor; nothing read it, so every Input
+        # ran the identical band curve.
+        #
+        # The main path above cannot serve this: the band-mode branch clears
+        # `weight_profile` (the main curve is not applied in band mode), so that
+        # block's `weight_profile is not None` gate is False by construction and
+        # it is skipped no matter what the user drew.
+        multiphase_band_profiles = None
+        band_families = (external_code.band_profile_phase_families(unit.weight_profile)
+                         if band_mode and len(conds) > 1 else {})
+        if band_families:
+            count = len(conds)
+            multiphase_band_profiles = [
+                external_code.parse_band_profiles(
+                    unit.weight_profile, phase_index=index, phase_count=count)
+                for index in range(count)
+            ]
+        if band_families and any(b is None for b in multiphase_band_profiles):
+            # One Input parsing to nothing would be handed band_weight_profiles
+            # = None, which the engine reads as "no band profiles" - a neutral
+            # 1.0 at every site, i.e. that Input pulling HARDER than any curve
+            # drawn for it. Refuse the whole fan-out and say so rather than let
+            # one phase silently run unweighted (AGENTS.md section 4).
+            logger.warning("Multi-phase band profiles ignored: at least one "
+                           "Input's phase leaves every band neutral, and running "
+                           "it unweighted would pull harder than the drawn curve. "
+                           "Falling back to the shared (1/N) band path.")
+            multiphase_band_profiles = None
+            band_families = {}
+        if band_families:
+            # The 1/N share applied above lives on the unit strength, and the
+            # phase kernels already sum to 1 at every step - leaving both on
+            # would make the unit 1/N as strong as the curve it draws. Take the
+            # share back off the scalar, and put it instead on the bands that
+            # did NOT fan out, which still hand every Input the same curve and
+            # therefore still need dividing. Every band then sums to exactly
+            # what was drawn for it, fanned out or not.
+            params.model.strength = 1.0
+            share = 1.0 / count
+            for per_input_bands in multiphase_band_profiles:
+                for band in list(per_input_bands):
+                    if band not in band_families:
+                        per_input_bands[band] = [(x, y * share)
+                                                 for x, y in per_input_bands[band]]
+            params.model.start_percent = 0.0
+            params.model.end_percent = 1.0
+            named = ', '.join(f"{band}={family}" for band, (family, _) in band_families.items())
+            logger.info(f"ControlNet multi-phase BAND profile: {count} inputs, {named} "
+                        f"phase-shifted by 2pi/{count} per input (each band's summed "
+                        f"pull = the curve drawn for that band).")
+
         params.model.cond_layer_weights = None
         params.model.uncond_layer_weights = None
         params.model.frame_weights = None
@@ -1122,6 +1178,10 @@ class ControlNetForForgeOfficial(scripts.Script):
             # (each pass reads params.model.weight_profile at patch time)
             if multiphase_profiles is not None:
                 params.model.weight_profile = multiphase_profiles[index]
+            # same, for band mode - the bands ARE the weights there, so the
+            # per-input variant has to land on band_weight_profiles instead
+            if multiphase_band_profiles is not None:
+                params.model.band_weight_profiles = multiphase_band_profiles[index]
 
             kwargs.update(dict(
                 unit=unit,

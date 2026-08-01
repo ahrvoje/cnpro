@@ -1167,7 +1167,14 @@
             // hand-written 'P' in a balance string must not make the preview
             // divide the wave by the Input count. Preview what runs.
             if (this.isBalance) return 1;
-            return (name === "main" && P.cosOn && P.phaseFamily)
+            // main AND the three bands fan out: a band is a step curve over one
+            // third of the depth axis, and python partitions it per Input just
+            // like the main curve (external_code.parse_band_profiles takes
+            // phase_index/phase_count). DEPTH and DRIFT are excluded - depth has
+            // no step axis to partition, and the drift's y is a shift, not a
+            // weight, so a partition of unity means nothing on it.
+            const fansOut = name === "main" || BAND_ORDER.indexOf(name) !== -1;
+            return (fansOut && P.cosOn && P.phaseFamily)
                 ? this.phaseCount() : 1;
         }
 

@@ -45,15 +45,17 @@ function bareEditor(isBalance) {
 
 /** One profile's EFFECTIVE value at a single x (the sample() loop's body).
  *  The '#D' / '#S' segments this is used for never fan out - python parses
- *  every non-main segment with a count of 1 - hence the count of 1 here. */
-function valueAt(ed, profile, lo, hi, x) {
-    return lo + load(ed, profile, 1).valueAt(x, 0) * (hi - lo);
+ *  the depth and drift segments with a count of 1 - hence the count of 1 and
+ *  the slot name, which is what waveCountOf actually gates on. */
+function valueAt(ed, profile, lo, hi, x, name) {
+    return lo + load(ed, profile, 1, name).valueAt(x, 0) * (hi - lo);
 }
 
 /** Point the bare editor at one parsed profile and hand back the sampler.
- *  `count` is the Input count the wave is split between; `band` follows it,
- *  because only the MAIN profile fans out (waveCountOf). */
-function load(ed, profile, count) {
+ *  `count` is the Input count the wave is split between and `name` the slot it
+ *  occupies: main and the three bands fan out over the Inputs, depth and drift
+ *  never do (waveCountOf, mirrored by external_code.parse_band_profiles). */
+function load(ed, profile, count, name) {
     ed.points = profile.points;
     ed.cosOn = !!profile.cosOn;
     ed.cosN = profile.cosN || 0;
@@ -62,7 +64,11 @@ function load(ed, profile, count) {
     ed.phaseFamily = profile.phaseFamily || null;
     ed.kappa = profile.kappa || 0;
     ed.converge = profile.converge || null;
-    ed.band = "main";
+    // the SLOT this curve occupies, not a constant: waveCountOf gates the
+    // fan-out on it (main and the three bands divide the wave between the
+    // Inputs; depth and drift never do), so pinning it to "main" here would
+    // exercise one branch and pass whatever the others did
+    ed.band = name || "main";
     // _phaseCount is normally resolved once per frame by draw(); there is no
     // canvas here, so stand in for it (waveFactor reads it through
     // phaseCount(), which floors at 1 - the degenerate single-Input case)
@@ -85,16 +91,16 @@ function load(ed, profile, count) {
 function depthMultiplier(ed, packed, depth, x) {
     if (!packed.depth) return 1;
     const shift = packed.drift
-        ? valueAt(ed, packed.drift, packed.driftLo, packed.driftHi, x)
+        ? valueAt(ed, packed.drift, packed.driftLo, packed.driftHi, x, 'drift')
         : 0;
     return valueAt(ed, packed.depth, packed.depthLo, packed.depthHi,
-                   driftedDepth(depth, shift));
+                   driftedDepth(depth, shift), 'depth');
 }
 
 /** Effective values of one parsed profile object, sampled over [0, 1]. */
-function sample(ed, profile, lo, hi, samples, phaseIndex, phaseCount) {
+function sample(ed, profile, lo, hi, samples, phaseIndex, phaseCount, name) {
     // evaluate() reads the working copy, so load this profile into it
-    const curve = load(ed, profile, phaseCount);
+    const curve = load(ed, profile, phaseCount, name);
     const index = phaseIndex || 0;
     const out = [];
     for (let i = 0; i < samples; i++) {
@@ -139,11 +145,13 @@ process.stdin.on('end', () => {
         const lo = packed.scaleLo;
         const hi = packed.scaleHi;
         const bands = {};
-        // only the MAIN profile can be multi-phase (python inspects no other
-        // segment), so the bands, the depth curve and the drift curve are always
-        // sampled as Input 1 of a non-splitting profile
+        // a band carries its own family marker and fans out over the Inputs
+        // exactly as the main curve does, so it is sampled at the SAME index
+        // and count (python: parse_band_profiles(phase_index=, phase_count=)).
+        // A band with no marker ignores both and returns the one curve.
         for (const key of Object.keys(packed.bands)) {
-            bands[key] = sample(ed, packed.bands[key], lo, hi, samples, 0, 0);
+            bands[key] = sample(ed, packed.bands[key], lo, hi, samples,
+                                spec.phaseIndex, spec.phaseCount, key);
         }
         return {
             scaleLo: lo,
@@ -152,10 +160,10 @@ process.stdin.on('end', () => {
                          spec.phaseIndex, spec.phaseCount),
             bands: bands,
             depth: packed.depth
-                ? sample(ed, packed.depth, packed.depthLo, packed.depthHi, samples, 0, 0)
+                ? sample(ed, packed.depth, packed.depthLo, packed.depthHi, samples, 0, 0, 'depth')
                 : null,
             drift: packed.drift
-                ? sample(ed, packed.drift, packed.driftLo, packed.driftHi, samples, 0, 0)
+                ? sample(ed, packed.drift, packed.driftLo, packed.driftHi, samples, 0, 0, 'drift')
                 : null,
             // depth-under-drift on a (depth, step) grid, flattened row-major
             // over the same `samples` grid in both coordinates. Null when there

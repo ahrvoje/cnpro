@@ -175,6 +175,62 @@ def parsed_sum_failures(external_code):
     return failures
 
 
+def band_sum_failures(external_code):
+    """The same contract, one level down: on a BAND.
+
+    A band is a step curve over one third of the depth axis, so it partitions
+    per Input exactly as the main curve does - Input k gets `band(x) * w_k(x)`
+    and the n of them sum to the curve drawn for that band. Two things this
+    catches that parsed_sum_failures cannot:
+
+      * the marker is read from the band segment at all
+        (band_profile_phase_families); it used to be read only from the main
+        segment, so a wave drawn on a band handed every Input the identical
+        curve and the ensemble never took turns; and
+      * a band WITHOUT a marker sitting next to one that has it is left alone.
+        It must come back unchanged for every Input, because its 1/N share is
+        the caller's job (scripts/cnpro.py) - dividing it here as well would
+        make it N times too quiet.
+    """
+    from cnpro_core.weight_profile import evaluate_weight_profile
+    failures = []
+    drawn = "0@0.2;0.5@1;1@0.7"
+    plain = "0@0.4;1@0.4"
+    for token, _, _ in FAMILIES:
+        for count in COUNTS:
+            case = f"0@1;1@1#Bcoarse#C{drawn};C2@0.9;{token}#M{plain}"
+            families = external_code.band_profile_phase_families(case)
+            if "coarse" not in families:
+                failures.append(f"python: '{token}' on the coarse band is not "
+                                f"read as multi-phase at all (families={families})")
+                continue
+            if "mid" in families:
+                failures.append(f"python: the unmarked mid band was reported as "
+                                f"multi-phase alongside '{token}'")
+            variants = [external_code.parse_band_profiles(case, phase_index=k,
+                                                          phase_count=count)
+                        for k in range(count)]
+            envelope = external_code.parse_weight_profile(drawn)
+            worst = 0.0
+            for i in range(SAMPLES):
+                x = i / (SAMPLES - 1)
+                total = sum(evaluate_weight_profile(v["coarse"], x) for v in variants)
+                worst = max(worst, abs(total - evaluate_weight_profile(envelope, x)))
+            if worst > 1e-6:
+                failures.append(
+                    f"python: the {count} parsed '{token}' coarse-band variants "
+                    f"sum to {worst:.3g} away from the curve drawn for that band "
+                    f"- the band does not pull what its plot shows")
+            # the unmarked neighbour is identical for every Input
+            mids = [evaluate_weight_profile(v["mid"], 0.37) for v in variants]
+            if max(mids) - min(mids) > TOL:
+                failures.append(
+                    f"python: the unmarked mid band differs per Input "
+                    f"({min(mids):.6f}..{max(mids):.6f}) next to '{token}' - it "
+                    f"was dragged into the fan-out and will be counted twice")
+    return failures
+
+
 def plateau_failures(external_code):
     """Past the convergence position every Input sits on EXACTLY the flat share.
 
@@ -286,6 +342,7 @@ def main():
     failures = python_failures(external_code)
     failures += degenerate_failures(external_code)
     failures += parsed_sum_failures(external_code)
+    failures += band_sum_failures(external_code)
     failures += plateau_failures(external_code)
     checked = len(FAMILIES) * len(WAVES) * len(CONVERGENCES) * len(COUNTS)
     print(f"{checked} python configurations x {SAMPLES} samples "

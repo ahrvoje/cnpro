@@ -124,11 +124,19 @@ CASES = [
     ("0@1;1@0.5|2#C0@0.75;1@0.75|2#M0@0.25;1@0.25|2", 1e-9),
     ("0@1;1@1#C0@0.5;1@0.9;C1@0#BC", 5e-3),
     # ...including a band the ladder put on a family rung or gave a
-    # convergence: ONLY the main profile fans out, so python parses these with
-    # a count of 1 and the editor has to preview the same single kernel
+    # convergence. A band fans out over the Inputs exactly as the main curve
+    # does, so these are parsed at the case's own phase index/count on BOTH
+    # sides; at the default count of 1 they are the family's single kernel.
     ("0@1;1@1#C0@1;1@1;C2@0;PV5", 5e-3),
     ("0@1;1@1#M0@1;1@1;C2@0;PF;A0.5@1", 5e-3),
     ("0@1;1@1;C1@0;PF;A0.5@2#F0@1;1@1;C2@0;P;A0.3@0.5", 5e-3, 1, 3),
+    # the band fan-out at every Input of a 3-input unit, and a band WITHOUT a
+    # marker riding alongside one that has it (the unmarked band must stay put
+    # while the marked one is phase-shifted)
+    ("0@1;1@1#C0@1;1@1;C2@0;P#M0@0.4;1@0.4", 5e-3, 0, 3),
+    ("0@1;1@1#C0@1;1@1;C2@0;P#M0@0.4;1@0.4", 5e-3, 1, 3),
+    ("0@1;1@1#C0@1;1@1;C2@0;P#M0@0.4;1@0.4", 5e-3, 2, 3),
+    ("0@1;1@1#C0@1;1@0.6;C3@1.1;PF;A0.4@2#F0@1;1@1;C2@0;PV4", 5e-3, 2, 4),
     # depth segment: same grammar, and equally invisible to the main parse
     ("0@1;1@0.5|2#D0@0.25;1@0.75|2", 1e-9),
     ("0@1;1@1#D0@0;M0.5@0.9;1@1", 5e-3),
@@ -246,7 +254,14 @@ def main():
             continue
         compare("main profile", case, sampled(external_code, py_main), js["main"], tol, failures)
 
-        py_bands = external_code.parse_band_profiles(case) or {}
+        # the SAME phase index/count as the main profile: a band segment can
+        # carry its own family marker, and the editor divides a band's wave
+        # between the Inputs exactly as it divides the main one
+        # (weight_profile.js waveCountOf). Calling this without the phase
+        # arguments compared input 1's band curve against input k's editor
+        # curve, which agreed only while the fan-out did nothing.
+        py_bands = external_code.parse_band_profiles(
+            case, phase_index=index, phase_count=count) or {}
         js_bands = js.get("bands") or {}
         for band in set(py_bands) | set(js_bands):
             compare(f"band {band}", case, sampled(external_code, py_bands.get(band)),
