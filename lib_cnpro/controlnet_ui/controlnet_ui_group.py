@@ -959,18 +959,22 @@ class ControlNetUiGroup(object):
                 # scale range as two selects instead of the old two-handle
                 # gutter slider: top one is the range maximum, bottom one the
                 # minimum. Options are filled in by weight_profile.js so the
-                # -1..2 / 0.25 grid lives in exactly one place. The pair is the
-                # PLOT's Y axis, not the selected curve's - and the editor has
-                # two plots: the step axis (main + the three bands, drawn
-                # together) and the depth axis (the depth curve alone, a
-                # per-layer multiplier). The selects show whichever is on
-                # screen; they never reach across.
+                # grids live in exactly one place - and there are two of them,
+                # because the editor has two kinds of axis. The pair is the
+                # PLOT's Y axis, not the selected curve's: the step axis (main +
+                # the three bands, drawn together) is a WEIGHT and is capped at
+                # [0, 1]; the depth axis (the depth curve alone, a per-layer
+                # multiplier) and the drift axis keep -1..2 in steps of 0.25.
+                # The selects show whichever is on screen; they never reach
+                # across.
                 '<div class="cnet-profile-scale">'
                 '<select class="cnet-profile-scale-hi"'
                 ' title="Range top: the plot value 1 maps to this weight.'
                 ' The range belongs to the plot on screen - in main/band mode it applies'
                 ' to the main profile and all three band profiles at once, in depth mode'
-                ' to the depth multiplier alone."></select>'
+                ' to the depth multiplier alone.'
+                ' A weight is a share of the control, so the main and band axis stops at 1;'
+                ' the depth and drift axes go up to 2."></select>'
                 # response exponent: vertical slider filling the free middle
                 # of the range column. Bends the NORMALIZED profile (y -> y^e)
                 # BEFORE the range mapping, so it is independent of the two
@@ -985,11 +989,12 @@ class ControlNetUiGroup(object):
                 ' step="1" value="0">'
                 '</div>'
                 '<select class="cnet-profile-scale-lo"'
-                ' title="Range bottom: the plot value 0 maps to this weight'
-                ' (below 0 = repulsive control).'
+                ' title="Range bottom: the plot value 0 maps to this weight.'
                 ' The range belongs to the plot on screen - in main/band mode it applies'
                 ' to the main profile and all three band profiles at once, in depth mode'
-                ' to the depth multiplier alone."></select>'
+                ' to the depth multiplier alone.'
+                ' The main and band axis stops at 0; the drift axis goes down to -1,'
+                ' where a negative depth shift is what it is for."></select>'
                 '</div>'
                 '</div>'
                 '</div>'

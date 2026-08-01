@@ -69,6 +69,16 @@ The widget itself, carried over unchanged. It never imports the host; a grep for
 `^from modules_forge|^from backend` across L1 and L3 returns nothing, and that
 is the invariant to preserve.
 
+One shape recurs in the JS half and is worth naming: **anything that predicts
+what a generation will do is computed in the browser, from the live UI, and
+shares its rule with whatever implements that rule** — the profile editor draws
+what `parse_weight_profile` will run, and the coverage panel
+(`javascript/coverage_map.js`) draws where the masks will land, both by
+importing the same parser / codec / input-set rule rather than restating it.
+The reason is not tidiness: the values these predictions are made of (profile
+strings, painted masks, enables) only reach python when Generate is pressed, so
+a server-side preview would necessarily describe the *previous* run.
+
 ---
 
 ## 2. Why CNPro owns its patchers instead of patching the host

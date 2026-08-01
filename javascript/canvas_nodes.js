@@ -561,8 +561,13 @@
         if (!toolbar || toolbar.dataset.cnproWheel === '1') return;
         toolbar.dataset.cnproWheel = '1';
         toolbar.addEventListener('wheel', function (e) {
+            // Number inputs are in scope too - the layer list's opacity
+            // spinners are one per layer, and a wheel that misses them lands on
+            // the container underneath and zooms the picture instead. A browser
+            // does scroll a focused number input natively, but only while it
+            // HAS focus, which is not the affordance the sliders here give.
             const input = e.target && e.target.closest &&
-                          e.target.closest('input[type="range"]');
+                          e.target.closest('input[type="range"], input[type="number"]');
             // Menus only. The host's own scribble sliders in box-b are its
             // business, and it already has key+wheel shortcuts for them.
             if (!input || !input.closest('.forge-toolbar-box-c')) return;

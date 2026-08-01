@@ -14,12 +14,14 @@
 //
 // LAYERS are the very start of the pipeline. The canvas holds a STAGE (its
 // dimensions come from the first upload and outlive it) and an ordered list
-// of layers, each with its own bitmap, position, scale and stroke list.
+// of layers, each with its own bitmap, position, scale, opacity and stroke
+// list.
 // Every layer stays continuously editable: selectable (layer menu or click),
-// movable (drag), scalable (wheel), reorderable and deletable, in any order,
-// at any time. The pen draws INTO the active layer and the eraser removes
-// from it (to transparency, so lower layers show through); both live in
-// layer-local pixels, so paint follows its layer through move/scale.
+// movable (drag), scalable (wheel), reorderable, fadeable (the opacity field
+// in its row, 0..100% applied when the stack is flattened) and deletable, in
+// any order, at any time. The pen draws INTO the active layer and the eraser
+// removes from it (to transparency, so lower layers show through); both live
+// in layer-local pixels, so paint follows its layer through move/scale.
 // The composite of all layers is what every downstream tool consumes:
 // rotation, flip, levels, gamma, grayscale, the EDGES tool, invert and crop
 // all operate on the totality of the composed content - a single image still
@@ -83,6 +85,11 @@
         src: src, img: null, w: 0, h: 0,
         x: 0, y: 0, scale: 1,
         blend: 'normal',
+        // whole-layer opacity, 0 .. 1 (the row's spinner shows it as 0 .. 100).
+        // Applied at COMPOSITE time, not baked into the layer raster: the pen
+        // draws into the raster and must keep working at full strength while
+        // the layer as a whole is faded, and the value stays freely reversible.
+        opacity: 1,
         strokes: [], strokeKey: 0,
         // per-layer adjustments, same names as the global (whole-canvas) state
         // in st so every control can write to either one through target():
@@ -304,8 +311,17 @@
         return st.stageW + 'x' + st.stageH + '||' + st.layers.map(
             (l) => (l.src ? l.src.length : 0) + ',' + l.x.toFixed(1) + ',' + l.y.toFixed(1)
                 + ',' + l.scale.toFixed(4) + ',' + l.strokeKey + ',' + l.blend
+                + ',' + layerAlpha(l).toFixed(3)
                 + ',' + l.flipH + ',' + (+l.rotate).toFixed(2) + ',' + layerAdjKey(l)
         ).join('|');
+    }
+
+    // A layer's composite alpha, defensively: layers restored from an older
+    // session (or built by anything that predates the field) carry no opacity,
+    // and `undefined` on globalAlpha silently draws NOTHING.
+    function layerAlpha(l) {
+        const v = typeof l.opacity === 'number' ? l.opacity : 1;
+        return isFinite(v) ? clamp(v, 0, 1) : 1;
     }
 
     // the flattened stage: every layer drawn at its transform, in z-order.
@@ -318,12 +334,19 @@
         canvas.height = Math.max(1, st.stageH);
         const ctx = canvas.getContext('2d');
         for (const l of st.layers) {
+            const alpha = layerAlpha(l);
+            if (alpha <= 0) continue; // fully transparent: nothing to draw
             const lc = ensureLayerCanvas(l);
             ctx.globalCompositeOperation = l.blend === 'lighten' ? 'lighten' : 'source-over';
             // per-layer flip/rotate about the layer's center - the transform
             // layerLocalToStage/stageToLayerLocal must mirror exactly
             const cw = l.w * l.scale, ch = l.h * l.scale;
             ctx.save();
+            // whole-layer opacity: composed here, once, over the layer's
+            // finished raster - so a semi-transparent layer fades as ONE
+            // picture instead of per stroke, which is what "layer opacity"
+            // means everywhere else it exists
+            ctx.globalAlpha = alpha;
             ctx.translate(l.x + cw / 2, l.y + ch / 2);
             if (l.flipH) ctx.scale(-1, 1);
             ctx.rotate((l.rotate || 0) * Math.PI / 180);
@@ -331,6 +354,7 @@
             ctx.restore();
         }
         ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
         st.compositeCanvas = canvas;
         st.compositeKey = key;
         return canvas;
@@ -1436,7 +1460,12 @@
             setModified(cropBtn, cropApplied(st));
             setModified(rotateBtn, T.rotate !== 0);
             setModified(penBtn, st.layers.some((l) => l.strokes.length > 0));
-            setModified(layersBtn, st.layers.length > 1);
+            // a faded single layer is a layer edit too, and it is the one that
+            // is invisible from outside the menu (a stack of two announces
+            // itself in the picture; 60% opacity on one just looks like the
+            // image)
+            setModified(layersBtn, st.layers.length > 1
+                || st.layers.some((l) => layerAlpha(l) < 1));
         }
 
         // ---- pen color selector (photoshop layout: S/V square + hue strip)
@@ -2632,6 +2661,19 @@
 
         function rebuildLayerList() {
             if (!layerList) return;
+            // The whole list is rebuilt on every syncUI, and syncUI runs on
+            // nearly every interaction - which is fine for buttons and fatal
+            // for a field being TYPED INTO: the focused node is discarded
+            // mid-edit, so the caret jumps away between two digits of "100".
+            // Remember which layer's spinner had focus and where its caret was,
+            // and put it back on the row that replaces it.
+            const focused = document.activeElement;
+            const keepFocus = focused && focused.classList
+                && focused.classList.contains('forge-layer-opacity')
+                && layerList.contains(focused)
+                ? {layer: focused.dataset.layerIndex,
+                   start: focused.selectionStart, end: focused.selectionEnd}
+                : null;
             layerList.textContent = '';
             // rows run topmost-first: the visual stacking order, top of the
             // pile at the top of the list
@@ -2643,9 +2685,16 @@
                 row.title = 'Active layer: click to select. The pen and eraser draw into the active layer; drag moves it, wheel scales it.';
                 const label = document.createElement('span');
                 label.className = 'forge-layer-label';
+                const scale = Math.round(L.scale * 100);
                 label.textContent = 'L' + (idx + 1)
                     + (L.src ? (L.w ? ' ' + L.w + '×' + L.h : '') : ' empty')
-                    + ' @' + Math.round(L.scale * 100) + '%'
+                    // scale only when it is NOT 100%: it said nothing at the
+                    // default, and the ~40px it took is what the opacity field
+                    // now occupies - so the row did not have to get wider for
+                    // it. Everything else in this label already works that way
+                    // (blend, strokes and the adjustment marker all appear only
+                    // when they apply).
+                    + (scale === 100 ? '' : ' @' + scale + '%')
                     + (L.blend === 'lighten' ? ' max' : '')
                     + (L.strokes.length ? ' ✎' + L.strokes.length : '')
                     // the layer carries its own adjustments (flip/rotation/color)
@@ -2704,12 +2753,93 @@
                     syncUI();
                     scheduleRender(st, false);
                 });
+                // OPACITY, last in the row: `Opacity ◂ nnn ▸`, 0..100 whole
+                // percent, 100 = fully opaque.
+                //
+                // The arrows are BESIDE the number, not the browser's own
+                // up/down spinners: those stack two 6px glyphs inside the
+                // field, which on a field narrow enough for a layer row eats
+                // the third digit - "100" rendered as "10" with an arrow over
+                // it. Sideways, they cost width the row can give (the label
+                // above already dropped its "@100%" scale for it) instead of
+                // height the digits cannot. A click steps 10; the wheel over
+                // the field steps 1 (canvas_nodes.js wireWheel covers number
+                // inputs too, and it must - an unhandled wheel here zooms the
+                // canvas behind the menu); typing works as well.
+                const group = document.createElement('span');
+                group.className = 'forge-layer-opacity-group';
+                const opLabel = document.createElement('span');
+                opLabel.className = 'forge-layer-opacity-label';
+                opLabel.textContent = 'Opacity';
+                group.appendChild(opLabel);
+
+                const opacity = document.createElement('input');
+                opacity.type = 'number';
+                opacity.className = 'forge-layer-opacity';
+                opacity.dataset.layerIndex = String(idx);
+                opacity.min = '0';
+                opacity.max = '100';
+                opacity.step = '1';
+                opacity.value = String(Math.round(layerAlpha(L) * 100));
+                const opTitle = 'Layer opacity in percent: 100 = fully opaque, 0 = invisible. '
+                    + 'Applies to the whole layer as one picture (strokes included) and is '
+                    + 'freely reversible. Arrows step 10, the wheel over the number steps 1.';
+                opacity.title = opTitle;
+                opLabel.title = opTitle;
+                opacity.classList.toggle('forge-layer-opacity-faded', layerAlpha(L) < 1);
+                const applyOpacity = () => {
+                    const v = parseFloat(opacity.value);
+                    if (!isFinite(v)) return;   // mid-edit empty field: wait
+                    const next = clamp(Math.round(v), 0, 100);
+                    if (String(next) !== opacity.value) opacity.value = String(next);
+                    opacity.classList.toggle('forge-layer-opacity-faded', next < 100);
+                    if (Math.abs(L.opacity - next / 100) < 1e-6) return;
+                    L.opacity = next / 100;
+                    // the LABEL is rebuilt by syncUI, and rebuilding the list
+                    // mid-edit would drop the focused input under the pointer -
+                    // so only the picture is refreshed here
+                    scheduleRender(st, false);
+                };
+                opacity.addEventListener('input', applyOpacity);
+                opacity.addEventListener('change', applyOpacity);
+                // clicking the field must not also select the layer under it
+                // (harmless, but it moves the pen target on a stray click)
+                opacity.addEventListener('click', (e) => e.stopPropagation());
+
+                const step = (glyph, delta, title) => {
+                    const b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'forge-btn forge-no-select forge-layer-opacity-step';
+                    b.textContent = glyph;
+                    b.title = title;
+                    b.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        opacity.value = String(clamp(
+                            Math.round(parseFloat(opacity.value) || 0) + delta, 0, 100));
+                        applyOpacity();
+                    });
+                    return b;
+                };
+                group.appendChild(step('◂', -10, 'Less opaque (-10)'));
+                group.appendChild(opacity);
+                group.appendChild(step('▸', 10, 'More opaque (+10)'));
+                row.appendChild(group);
                 row.addEventListener('click', () => {
                     st.activeLayer = idx;
                     syncUI();
                     updateLayersOverlay();
                 });
                 layerList.appendChild(row);
+            }
+            if (keepFocus) {
+                const again = layerList.querySelector(
+                    '.forge-layer-opacity[data-layer-index="' + keepFocus.layer + '"]');
+                if (again) {
+                    again.focus();
+                    try {
+                        again.setSelectionRange(keepFocus.start, keepFocus.end);
+                    } catch (e) {}   // number inputs refuse this in some browsers
+                }
             }
         }
 
@@ -3239,6 +3369,7 @@
                         x: Math.round(l.x), y: Math.round(l.y),
                         scale: +l.scale.toFixed(3),
                         blend: l.blend,
+                        opacity: +layerAlpha(l).toFixed(3),
                         strokes: l.strokes.length,
                         erases: l.strokes.filter((s) => s.erase).length,
                         flip: l.flipH, rotate: +(+l.rotate).toFixed(2),

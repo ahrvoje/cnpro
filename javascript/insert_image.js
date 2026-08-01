@@ -75,6 +75,16 @@
         });
     }
 
+    // The three source helpers, for anything else that offers "insert the
+    // input / output raster". The coverage panel does, for its backdrop, and a
+    // second copy of "which img is the current output" would be a second answer
+    // the day gradio changes its gallery markup.
+    window.cnetInsertSources = {
+        img2imgSourceImg: img2imgSourceImg,
+        outputImg: outputImg,
+        toPngDataUrl: toPngDataUrl,
+    };
+
     // one delegated listener instead of per-button wiring: gradio re-renders
     // survive for free (the buttons carry no server-side click handler)
     document.addEventListener('click', function (e) {

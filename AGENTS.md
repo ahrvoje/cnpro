@@ -254,6 +254,8 @@ that, rather than throwing ENOENT from inside the harness as they used to.
 | `test_profile_parity.py` | node | editor JS ≡ python profile evaluation |
 | `test_partition_of_unity.py` | node (half) | the n Inputs' shares sum to exactly 1 — every family, count, wave and convergence, on both sides |
 | `test_mask_profile_coupling.py` | node (half) | the mask slots follow the profile selector — toolbar and backend compared against each other |
+| `test_profile_scale_grid.py` | node | the range selects offer what the AXIS means: weights [0, 1], depth/drift -1..2, balance quarters — and an off-grid range in a saved string is still read as written |
+| `test_coverage_map.py` | node (+ cv2 for half) | the coverage panel predicts the run: its fit geometry and letterbox colour against the real `crop_and_resize_mask`, its mean/peak aggregation, and the orange 1 / red >1 contract |
 | `test_residual_layout.py` | torch | UNet weighting unchanged; token-layout mask invariants |
 | `test_zimage_config.py` | — | Z-Image config sniff; v2.x and merged files refused |
 | `test_zimage_module_tree.py` | torch + host | all 136 checkpoint tensors match |

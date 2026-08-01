@@ -311,8 +311,8 @@ what the control model sees.
 
 - **Layers** — stack images on one stage. Drop, paste or push an image in as a
   new layer, click to select, drag to move, wheel to scale around the pointer,
-  reorder and delete in any order. Every tool below operates on the flattened
-  composite.
+  fade with its own opacity field, reorder and delete in any order. Every tool
+  below operates on the flattened composite.
 - **Pen** — draw straight into the active layer with a full colour picker,
   eyedropper, brush size, opacity and feathering, plus an eraser that cuts to
   transparency so lower layers show through. Per-stroke undo.
@@ -342,6 +342,14 @@ costs you screen space while you are not using it.
 
 ## Everything else in the box
 
+- **Output weight coverage** — a collapsed panel at the top of CNPro that draws
+  every enabled unit's weight, added together, in the resolution the image will
+  come out at. Violet is nothing, red is one unit at full strength, and the
+  contours mark 0.25 / 0.5 / 0.75, an orange line at 1 and red lines above it,
+  where several units are pulling at the same pixel at once. It answers the two
+  questions no single unit's canvas can: what is steering *nothing*, and what is
+  being steered *twice*. Drop an image on it for context, or take one from the
+  input or the last output, and the map lays over it at half strength.
 - **Balance profile** — a per-step curve for how much of the control lands on the
   conditional side versus the prompt side. Replaces the three-way Control Mode
   radio with something you can actually shape.

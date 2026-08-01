@@ -14,6 +14,7 @@ from lib_cnpro.external_code import ControlNetUnit
 from lib_cnpro.utils import align_dim_latent, set_numpy_seed, crop_and_resize_image, \
     crop_and_resize_mask, prepare_mask, judge_image_type, predict_hires_dimensions
 from lib_cnpro.controlnet_ui.controlnet_ui_group import ControlNetUiGroup
+from lib_cnpro.controlnet_ui.coverage import render_coverage_panel
 from lib_cnpro.controlnet_ui.photopea import Photopea
 from lib_cnpro.logging import logger
 from modules.processing import StableDiffusionProcessingImg2Img, StableDiffusionProcessingTxt2Img, \
@@ -198,6 +199,21 @@ class ControlNetForForgeOfficial(scripts.Script):
                     if not shared.opts.data.get("controlnet_disable_photopea_edit", False)
                     else None
                 )
+                # Output weight coverage: the units' spatial halves aggregated
+                # into ONE picture, in output geometry. It sits above the units
+                # because it is about all of them at once, it is shaped like a
+                # unit because it is read like one (settings left, picture
+                # right, actions under the canvas), and it is COLLAPSED because
+                # it costs a full-frame computation to draw and most sessions
+                # never need it. Chrome only - see coverage.py; the map is
+                # computed in the browser from the live UI state, which is the
+                # only place that state exists before Generate.
+                with gr.Accordion(
+                    "Output weight coverage", open=False,
+                    elem_id=elem_id_tabname + "_coverage_accordion",
+                    elem_classes=["cnet-coverage-accordion"],
+                ):
+                    render_coverage_panel(elem_id_tabname, gen_type)
                 with gr.Row(elem_id=elem_id_tabname + "_accordions", elem_classes="accordions"):
                     for i in range(max_models):
                         with InputAccordion(

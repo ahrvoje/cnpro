@@ -144,11 +144,11 @@
             id: 'layers',
             button: {
                 id: 'layersButton', icon: '⧉', control: 'adjust',
-                title: 'Layers menu: compose multiple images on one stage - add an image as a layer, click to select, drag to move, wheel to scale, reorder and delete in any order; every tool below (edges included) operates on the flattened composite',
+                title: 'Layers menu: compose multiple images on one stage - add an image as a layer, click to select, drag to move, wheel to scale, reorder and delete in any order, and fade one with the opacity field at the right of its row; every tool below (edges included) operates on the flattened composite',
             },
             menu: {
                 id: 'layersBox', cls: 'forge-layers-box',
-                note: 'layers menu: the stack is armed while this menu is open - click selects the topmost layer under the pointer, drag moves the active layer, wheel scales it around the pointer. Rows run topmost-first; the pen/eraser draw into the active layer.',
+                note: 'layers menu: the stack is armed while this menu is open - click selects the topmost layer under the pointer, drag moves the active layer, wheel scales it around the pointer. Rows run topmost-first; the pen/eraser draw into the active layer. The rightmost field of a row is that layer\'s opacity in percent (100 = opaque), applied when the stack is flattened.',
                 rows: [
                     raw('<div class="forge-cc-row">\n' +
                         '    <button id="layerAddButton_forge_mixin" class="forge-btn forge-no-select" title="Add an empty layer on top and make it active - fill it any way an image ever gets in: drag &amp; drop, paste, the open button, the ControlNet insert buttons, or just paint on it">＋</button>\n' +

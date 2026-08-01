@@ -105,6 +105,7 @@ const CASES = [
     'layer-rotated',
     'layer-flipped',
     'layer-blend-lighten',
+    'layer-opacity',
     'layer-partly-offstage',
     'per-layer-gamma',
     'per-layer-invert',
@@ -277,6 +278,9 @@ async function runCase(UUID, kase) {
         case 'layer-rotated':        top.rotate = 27; await nudge(102); break;
         case 'layer-flipped':        top.flipH = true; await nudge(102); break;
         case 'layer-blend-lighten':  top.blend = 'lighten'; await nudge(102); break;
+        // whole-layer opacity is composed at flatten time, so it is exactly the
+        // kind of edit that can show on the canvas and never reach the control
+        case 'layer-opacity':        top.opacity = 0.4; await nudge(102); break;
         case 'layer-partly-offstage': top.x = -90; top.y = 230; await nudge(102); break;
         case 'per-layer-gamma':      top.gamma = 1.9; top.canvas = null; top.canvasKey = null;
                                      await nudge(102); break;

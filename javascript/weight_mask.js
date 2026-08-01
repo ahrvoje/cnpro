@@ -1131,6 +1131,20 @@
             colorToWeight: colorToWeight,
         };
     }
+    // The same four in the browser, for coverage_map.js: it decodes the very
+    // masks this file exports (wire gray, legacy chromatic) and paints its map
+    // in the same hue ramp. Sharing the codec is what makes the coverage map
+    // read the same values the generation will - and the hue ramp shared is
+    // what makes "red here" mean the same thing in both places.
+    if (typeof window !== 'undefined') {
+        window.cnproWeightMask = {
+            liveSlotKeys: liveSlotKeys,
+            selectedProfileBand: selectedProfileBand,
+            weightToRgb: weightToRgb,
+            colorToWeight: colorToWeight,
+            HUE_SPAN: HUE_SPAN,
+        };
+    }
     if (typeof onUiUpdate !== 'function') {
         // In node that is the point. In a BROWSER it means the painter is about
         // to do nothing at all, for every canvas, with no other symptom - which

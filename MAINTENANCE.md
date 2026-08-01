@@ -31,8 +31,24 @@ pieces would move.
   appears on the pad while step holds focus (`cnet-profile-pad-split`),
   because crossing it is the gesture that replaced the button. The
   scale range is two selects right of the plot labelled "range" (top =
-  maximum, bottom = minimum, -1..2 in steps of 0.25), replacing the old
-  two-handle gutter slider. The range is the PLOT's, not the selected
+  maximum, bottom = minimum), replacing the old
+  two-handle gutter slider. **The stops follow what the axis MEANS**
+  (2026-08-01, `scaleGrid` in weight_profile.js): a WEIGHT axis — the main
+  profile and the three band profiles, which share the step plot — offers
+  `1, 0.8, 0.7, 0.6, 0.5, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0` and cannot
+  express anything outside [0, 1] at all, denser at the low end where the
+  difference between 0.05 and 0.1 is a doubling. A weight is a share of the
+  control, so above 1 is a unit pulling harder than the whole of itself, and
+  stacking that across units is exactly what the coverage panel draws as
+  oversaturation. The MULTIPLIER and SHIFT axes (depth, drift) keep -1..2 in
+  steps of 0.25, because a multiplier's neutral is 1 and a [0, 1] cap would put
+  "leave these layers alone" at the very top of the plot. Balance keeps its own
+  [0, 1] quarters. A string carrying an off-grid weight range (the `|0~2` band
+  ranges of `docs/example_1.html`, say) is still PARSED and DISPLAYED as
+  written — `ensureScaleOption` adds the value to the select — because
+  clamping on load would silently halve every weight in a saved profile; it is
+  only unreachable from the picker. `tests/test_profile_scale_grid.py` pins
+  both halves. The range is the PLOT's, not the selected
   curve's (2026-07-25) — where a "plot" is one COORDINATE SYSTEM, and the
   editor has THREE of them (2026-07-25, second pass; a third added
   2026-07-27): the STEP plot (X = relative step, Y = weight) carries the main
@@ -426,6 +442,91 @@ pieces would move.
   attention-level ones via the `mask` argument of
   `process_before_every_sampling` (IP-Adapter `attn_mask`); patchers with
   neither declare `supports_output_mask = False` and get a warning.
+- **Output weight coverage** (2026-08-01) — a collapsed accordion directly
+  under the CNPro title holding one STATIC canvas: every enabled unit's
+  spatial half, aggregated in OUTPUT geometry, in the mask hue ramp (violet 0
+  … red 1, `weightToRgb`). Contours at 0 / 0.25 / 0.5 / 0.75, ORANGE at 1 and
+  RED at every 0.25 above it, and past 1 the red darkens as well — the ramp
+  itself has nowhere left to go there. Two metrics, because they answer
+  different questions and neither derives from the other (max of a sum ≠ sum of
+  maxima): **mean** over the sampling schedule (total influence — two units
+  taking turns read as 1) and **peak** (the largest simultaneous sum — the same
+  two read as 2). A backdrop can be dropped on it, or taken from the img2img
+  input / the current output, and the map then draws over it at the opacity the
+  slider says.
+  **LAYOUT: it is built like a unit, because it is read like one** — settings in
+  a column on the LEFT (the unit's own `controlnet_main_options_column`, so the
+  two line up and share every width rule), the picture on the RIGHT, and the
+  action buttons bottom-RIGHT under the canvas in a `controlnet_image_controls`
+  row, the same `cnet-toolbutton` group with the same ⤵I / ⤵O glyphs the unit's
+  insert buttons use, where every other below-canvas button group in CNPro
+  sits. The status line lives under the CONTROLS instead, at the foot of the
+  settings column: it is what the panel says, the eye is already in that column,
+  and under the canvas it competed with the buttons for one line. It is pinned
+  to the bottom (`margin-top: auto`) under a hairline, so it sits level with the
+  legend line beside it and the column reads as a block and a footer rather than
+  as controls followed by a gap. The settings column also drops the unit's
+  `min-height: var(--cnet-unit-body-h)`: that floor stops a unit from becoming
+  shorter than its canvas, and here it made the column TALLER than the map
+  beside it, leaving a band of dead space across the bottom of the panel
+  (measured: a 312px column against a ~277px canvas column).
+  THE LINE UNDER THE CANVAS CARRIES ALL THREE: contour key left, weight ramp
+  centred, buttons right — a `1fr auto 1fr` GRID, because that puts the ramp on
+  the ROW's centre, which is the canvas's centre (the canvas is centred in the
+  same column); flex `space-between` would only centre it between its
+  neighbours. The key wraps rather than overflows when the panel is too narrow
+  for all three (it used to run under the ramp: key 358..521 against a ramp
+  starting at 471). The buttons are wrapped in a row of their OWN so the grid
+  has exactly three cells: gradio's automatic `.form` grouping of consecutive
+  form components — which a unit's button row relies on — did not apply with
+  two HTML blocks ahead of them, and three loose children made the 3-column
+  grid wrap onto two rows. Contour key before ramp: the contours are the lines
+  drawn ON the picture, the ramp is the background the eye already knows from
+  the masks. The legend and the status line are 12px, not the 10px they started
+  at — the status is the panel's only quantitative answer, and two pixels off
+  the one thing that has to be read is not a saving.
+  The settings are ordinary gradio components (Radio `Coverage metric`, Slider
+  `Map opacity over backdrop`) rather than hand-rolled HTML, read straight off
+  the DOM by coverage_map.js — they are VIEW state, and a round trip to python
+  is exactly what would make the panel lag behind the control driving it.
+  Contours are NOT optional: the hue ramp has nowhere to go past red, so they
+  are the only thing that can distinguish full strength from oversaturation,
+  which is half of what the panel is for.
+  Labels are deliberately distinctive because ui-config.json keys defaults by
+  LABEL per tab (invariant 1b). ONE unit rule must not be inherited: the canvas
+  column's fixed `--cnet-unit-body-h` height, which in a column-direction
+  flexbox WRAPS whatever does not fit into a second column — measured as the
+  action row appearing beside the map, 10px past the panel's right edge, at the
+  top instead of the bottom. `height: auto !important` on
+  `.cnet-coverage-canvas-column` is that fix and only that.
+  The panel root's `elem_id` is `<tab prefix>_coverage`, which is where the
+  script recovers the units row (`<tab prefix>_accordions`) and the tab from -
+  no hidden data-* carrier element, because an element that exists only to hold
+  two strings is the dead chrome the audit hunts for.
+  Chrome in `lib_cnpro/controlnet_ui/coverage.py`; all arithmetic in
+  `javascript/coverage_map.js`, in the BROWSER — the values it needs (enables,
+  profile strings, painted mask channels, resize modes, width/height) reach the
+  server only on Generate, so a server-side preview would show the last run
+  rather than the pending one. It re-uses, never re-derives: `cnetLiveInputs`
+  for which Inputs run, `cnproWeightProfile` for the grammar, `cnproWeightMask`
+  for the mask codec and ramp, `cnetInsertSources` for the two insert buttons.
+  MODELLED: enabled units, every live Input (so the multi-phase split lands on
+  the same count the generation fans out over), the profile with waves / mids /
+  response exponent / range, band mode (main × band, each band's own mask,
+  absent bands zero, the three averaged since they drive different layers), the
+  depth curve as its mean multiplier, the G and C/M/F masks, the output mask,
+  the resize-mode geometry. NOT modelled, and said so in the panel's tooltip:
+  the unit Use-Mask, the balance profile, the drift, and the preprocessor —
+  coverage is about WEIGHT, not content. The status line reports contributions,
+  output size, metric, max, % uncovered, % above 1, any compute-grid cap, and
+  names every enabled unit that contributes nothing (no input image, no
+  profile, weight 0) rather than letting an empty map read as "nothing wrong".
+  Geometry and pad colour are pinned against the real `crop_and_resize_mask` by
+  `tests/test_coverage_map.py` — the pad is `np.median` of the source border,
+  which on the always-even border count AVERAGES the two middle samples: taking
+  the middle element instead filled a half-painted mask's letterbox with 255
+  where the run fills it with 127, measured in a browser as 62% of the frame
+  covered by paint that covers 37%.
 - **Batch modes removed** — the Batch Folder / Batch Upload tabs, the
   `InputMode` enum and the `batch_*` unit fields are gone. They mapped N
   inputs onto the *generation batch* axis (image k conditions output k) and
@@ -749,17 +850,40 @@ Extension-side (this directory):
 - `scripts/controlnet.py` — mask decode (`decode_weight_mask`), knowledge
   gate, per-band mask routing, profile parsing into `params.model`,
   balance-unsupported warning.
+- `lib_cnpro/controlnet_ui/coverage.py` — the coverage panel's LAYOUT and
+  chrome, and nothing else (the map is computed in the browser): a unit-shaped
+  Row of a settings Column and a canvas Column, three ordinary gradio controls,
+  four `ToolButton`s and the canvas markup. The hue ramp of its legend is
+  emitted as `hsl()` stops because hsl IS the formula weight_mask.js paints
+  with, so the legend cannot drift from the picture.
 - `javascript/active_canvas.js` — `window.cnetVisible` /
   `window.cnetActiveCanvasContainer`: the ONE implementation of the
   "offsetParent null = hidden tab" rule (invariant 14); consumed by
   insert_image.js, image_info.js and the inline `_js` of the button row.
+  Also `window.cnetLiveInputs(unit)` — the ONE implementation of "which Input
+  slots will actually run" (image decoded + mute checkbox on), read by
+  weight_profile.js `multiPhaseCount` and by coverage_map.js, which needs the
+  slot numbers too. And the shared 500 ms tick, whose gate counts a visible
+  coverage panel as well as a visible unit body — the panel sits above the
+  units and is readable with every one of them collapsed.
   Loads first by filename order.
-- `javascript/weight_profile.js` — the curve editor (both profiles).
+- `javascript/coverage_map.js` — the coverage map: fit geometry (`fitRect`,
+  `borderMedian` — the twins of `crop_and_resize_image`), mask decode into
+  output geometry, `aggregate` (mean and peak), marching-squares contours and
+  the ramp. The pure half is DOM-free and exported for
+  `tests/coverage_map_js.js`; the DOM half registers nothing when the webui
+  globals are absent.
+- `javascript/weight_profile.js` — the curve editor (both profiles). Exports
+  the class on `window.cnproWeightProfile` in the browser as well as through
+  `module.exports`, so the coverage panel evaluates profiles with the editor's
+  own parser instead of a second one.
 - `javascript/weight_mask.js` — the painter as canvas toolbar tools;
   `CANVAS_DEFS` binds it to two canvases per unit (input image: four slots;
   Output mask tab: one slot). Injects the eraser button and feather slider
   into the toolbar at attach time; exports masks as grayscale (exportMask)
   and recolors grayscale masks to display hues on import (importState).
+  Publishes the codec and the hue ramp on `window.cnproWeightMask` for
+  coverage_map.js — the map decodes the very masks this file writes.
 - `javascript/image_info.js` — raster-info line (consumes
   `forge-image-info` events from canvas_extra.js).
 - `javascript/insert_image.js` — ⤵I/⤵O insert buttons: delegated click
@@ -767,7 +891,8 @@ Extension-side (this directory):
   `window.forgeCanvasPush(uuid, dataUrl)` from canvas_extra.js) plus the
   disabled-state sync (onUiUpdate + `forge-image-info`; buttons render
   `interactive=False` and are enabled only while their source exists —
-  ⤵I never enables on txt2img units).
+  ⤵I never enables on txt2img units). The three source helpers are published
+  as `window.cnetInsertSources` for the coverage panel's backdrop buttons.
 - `javascript/active_units.js` — dropdown-based Control Type tracking (diff
   vs upstream radio version).
 - `javascript/tab_marks.js` — strip-injected tab chrome: filled/muted marks,
@@ -830,7 +955,20 @@ Core-side (would need monkey-patching or shipping-with the addon):
   pipeline with a LAYER STACK (stage = first upload's dims, layers each with
   own bitmap/transform/stroke list, continuously editable: click-select,
   drag-move, wheel-scale, reorder, delete, per-layer normal/lighten blend —
-  lighten is the union mode for bright-on-black control maps), a per-layer
+  lighten is the union mode for bright-on-black control maps — and per-layer
+  OPACITY, `Opacity ◂ nnn ▸` at the right of each layer row, composed at
+  flatten time via `globalAlpha` so the layer fades as ONE picture and the
+  value stays freely reversible. The steppers are BESIDE the number, not the
+  browser's own up/down spin buttons: those stack two 6px glyphs inside the
+  field, and in a field narrow enough for a layer row they overlap the third
+  digit, so "100" read as "10". Sideways they cost width the row can give —
+  the label prints the layer SCALE only when it is not 100%, which is what paid
+  for them — instead of height the digits cannot. A stepper click is 10, the
+  wheel over the number is 1 (canvas_nodes.js `wireWheel` covers number inputs
+  as well as sliders, and it must: an unhandled wheel there zooms the canvas
+  behind the menu). `layerAlpha()` is the one reader of the field and defaults
+  a missing one to 1 — `undefined` on `globalAlpha` draws nothing at all), a
+  per-layer
   pen + ERASER (destination-out strokes in layer-local px), and only then
   rotation/levels/edges/invert/crop on the flattened composite — so the
   edges tool always operates on the totality of composed content. Layer

@@ -33,6 +33,44 @@
         return null;
     };
 
+    // The Input slots of a unit that a generation would actually USE, in slot
+    // order: an Input tab holding a decoded image whose mute checkbox is on.
+    //
+    // ONE RULE, THREE READERS. The generation fans a unit out over
+    // len(get_input_data(...)) inputs; weight_profile.js draws one wave per
+    // Input from the same count (a preview counting something else is a preview
+    // of a different run), and coverage_map.js needs the same set PLUS which
+    // slot each one is, to find that input's weight-mask channels
+    // (cnet-wmask-<slot>-<band>-state). Written out three times it would drift
+    // the first time muting or a fourth Input changed anything.
+    //
+    // The mute state is the hidden gradio checkbox `_input_enabled_<n>` that
+    // belongs to tab panel `_input_tab_<n>` (the same id mapping tab_marks.js
+    // uses) - NOT the tab being open: a closed tab's image still runs.
+    window.cnetLiveInputs = function (unit) {
+        const out = [];
+        if (!unit) return out;
+        unit.querySelectorAll("[id*='_input_image'] img.forge-image").forEach((img) => {
+            if (!img.src || img.naturalWidth <= 0) return;
+            const panel = img.closest("[id*='_input_tab_']");
+            let slot = 0;
+            if (panel) {
+                const state = document.getElementById(
+                    panel.id.replace('_input_tab_', '_input_enabled_'));
+                const check = state && state.querySelector("input[type='checkbox']");
+                if (check && !check.checked) return;
+                const match = /_input_tab_(\d+)$/.exec(panel.id);
+                if (match) slot = parseInt(match[1], 10);
+            }
+            out.push({
+                slot: slot,
+                img: img,
+                group: img.closest('.cnet-input-image-group'),
+            });
+        });
+        return out;
+    };
+
     // Click a toolbar button of whichever canvas is the OPEN tab. The
     // below-canvas button row (clear / load) is wired to this from python
     // (controlnet_ui_group.forward_to_active_canvas), which passes only the
@@ -65,9 +103,13 @@
         ticks.push(fn);
     };
 
+    // The coverage panel counts as well as the unit bodies: it lives ABOVE the
+    // units and is readable with every unit collapsed, which is the state
+    // `.cnet-image-tabs` alone reports as "nothing on screen, skip the tick".
+    // Its own poller would be a second timer for the same 500 ms.
     function anyUnitVisible() {
-        for (const tabs of document.querySelectorAll('.cnet-image-tabs')) {
-            if (window.cnetVisible(tabs)) return true;
+        for (const node of document.querySelectorAll('.cnet-image-tabs, .cnet-coverage-panel')) {
+            if (window.cnetVisible(node)) return true;
         }
         return false;
     }

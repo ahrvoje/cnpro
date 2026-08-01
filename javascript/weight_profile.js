@@ -51,9 +51,22 @@
  *
  * Two range selects sit right of the plot - the upper one is the range top,
  * the lower one the range bottom - mapping the normalized profile [0, 1] onto
- * [lo, hi] within [-1, 2] in steps of 0.25. The profile shape stays as drawn;
- * only the weights used for calculation are remapped (lo < 0 means repulsive
- * control).
+ * [lo, hi]. The profile shape stays as drawn; only the weights used for
+ * calculation are remapped.
+ *
+ * THE GRID DEPENDS ON WHAT THE AXIS MEANS, and the two cases are not the same
+ * quantity. A WEIGHT axis (the main profile and the three band profiles) is a
+ * share of the control and lives in [0, 1]: its selects offer
+ * WEIGHT_SCALE_GRID and cannot express a value below 0 or above 1 at all. A
+ * MULTIPLIER axis (depth) or a SHIFT axis (drift) keeps the old -1 .. 2 grid in
+ * steps of 0.25, because a multiplier's neutral is 1 - a [0, 1] cap there would
+ * make "leave these layers alone" the top of the plot and everything else a
+ * reduction. A legacy string that carries an out-of-grid weight range (the
+ * '|0~2' band ranges of docs/example_1.html, say) is still PARSED and still
+ * DISPLAYED - ensureScaleOption adds the value to the select - because
+ * rewriting a saved profile's range silently halves every weight in it. It is
+ * only unreachable from the picker: once such a range is changed it cannot come
+ * back above 1.
  *
  * The range belongs to the PLOT, not to a curve - and a "plot" is one
  * COORDINATE SYSTEM, of which this editor has three. The step plot (X = relative
@@ -90,6 +103,13 @@
     const SCALE_MIN = -1;
     const SCALE_MAX = 2;
     const SCALE_STEP = 0.25;
+    // The WEIGHT axis grid (main + the three band profiles), high -> low, which
+    // is the order the selects list. Not a regular step series on purpose: a
+    // weight is a share of the control, so the low end - where the difference
+    // between 0.05 and 0.1 is a doubling - is worth more stops than the high
+    // end, where 0.7 and 0.8 are barely apart. 0 and 1 are the hard limits of
+    // the axis and both are on the grid.
+    const WEIGHT_SCALE_GRID = [1, 0.8, 0.7, 0.6, 0.5, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0];
     const MARGIN = { left: 16, right: 16, top: 22, bottom: 24 };
     // step separators disappear below this cell width - denser dotted lines
     // read as haze, not as cells
@@ -1468,16 +1488,17 @@
         /**
          * Scale range as two selects right of the plot (top = range maximum,
          * bottom = range minimum), replacing the old two-handle gutter slider.
-         * Both offer the same -1 .. 2 grid in steps of 0.25; picking a bottom
-         * above the current top (or vice versa) pushes the other one along, so
-         * the range can never invert.
+         * Picking a bottom above the current top (or vice versa) pushes the
+         * other one along, so the range can never invert.
          *
          * The pair is the PLOT's Y axis, not a property of the selected curve -
          * but this editor has two plots, so it is the axis CURRENTLY ON SCREEN
          * (see the header): in main / band mode it moves the main profile and
          * all three band lines together, in depth mode it moves the depth
          * curve alone. It never reaches across that boundary, which is the
-         * point of the split - a weight range is not a multiplier range.
+         * point of the split - a weight range is not a multiplier range. That
+         * split is also why the GRID follows the axis (scaleGrid): weights are
+         * [0, 1], multipliers and shifts keep -1 .. 2 in steps of 0.25.
          * Drawn curves keep their shape and are remapped (that is what the
          * range is for); a curve still sitting on its untouched flat default
          * rides along instead, so "this one does nothing" survives a change of
@@ -1487,25 +1508,7 @@
             this.scaleHiSelect = this.container.querySelector(".cnet-profile-scale-hi");
             this.scaleLoSelect = this.container.querySelector(".cnet-profile-scale-lo");
             if (!this.scaleHiSelect || !this.scaleLoSelect) return;
-
-            // the balance value is clamped to [0, 1] by balance_factors -
-            // offering the weight editor's -1..2 grid there would present 3x
-            // dead range as meaningful
-            const gridMax = this.isBalance ? 1 : SCALE_MAX;
-            const gridMin = this.isBalance ? 0 : SCALE_MIN;
-            const options = [];
-            for (let v = gridMax; v >= gridMin - 1e-9; v -= SCALE_STEP) {
-                options.push(Math.round(v / SCALE_STEP) * SCALE_STEP);
-            }
-            for (const select of [this.scaleHiSelect, this.scaleLoSelect]) {
-                select.innerHTML = "";
-                for (const v of options) {
-                    const option = document.createElement("option");
-                    option.value = String(v);
-                    option.textContent = fmt(v);
-                    select.appendChild(option);
-                }
-            }
+            this.fillScaleOptions();
 
             const onChange = (which) => {
                 const value = parseFloat(
@@ -1553,6 +1556,57 @@
             this.scaleHiSelect.addEventListener("change", () => onChange("hi"));
             this.scaleLoSelect.addEventListener("change", () => onChange("lo"));
             this.updateScaleSelects();
+        }
+
+        /**
+         * The stops the two selects offer for the axis CURRENTLY ON SCREEN.
+         *
+         * A weight and a multiplier are different quantities and get different
+         * grids. Main and the three bands are WEIGHTS - a share of the control -
+         * and are capped at [0, 1]: nothing above 1 (a unit cannot pull harder
+         * than the whole of itself, and stacking that across units is what the
+         * coverage panel calls oversaturation) and nothing below 0. Depth and
+         * drift keep the -1 .. 2 / 0.25 grid: depth is a per-layer MULTIPLIER
+         * whose neutral is 1, so a [0, 1] cap would put "leave these layers
+         * alone" at the top of the plot, and drift is a SHIFT whose useful half
+         * is negative. Balance is clamped to [0, 1] by balance_factors.
+         */
+        scaleGrid() {
+            if (this.isBalance || !(this.band === DEPTH_KEY || this.band === DRIFT_KEY)) {
+                if (this.isBalance) {
+                    const out = [];
+                    for (let v = 1; v >= -1e-9; v -= SCALE_STEP) {
+                        out.push(Math.round(v / SCALE_STEP) * SCALE_STEP);
+                    }
+                    return out;
+                }
+                return WEIGHT_SCALE_GRID.slice();
+            }
+            const out = [];
+            for (let v = SCALE_MAX; v >= SCALE_MIN - 1e-9; v -= SCALE_STEP) {
+                out.push(Math.round(v / SCALE_STEP) * SCALE_STEP);
+            }
+            return out;
+        }
+
+        /** (Re)fill both selects from the grid of the axis on screen. A no-op
+         *  when the grid has not changed, so switching between main and the
+         *  bands - which share one axis - does not rebuild anything. */
+        fillScaleOptions() {
+            if (!this.scaleHiSelect || !this.scaleLoSelect) return;
+            const grid = this.scaleGrid();
+            const key = grid.join(",");
+            if (this.scaleGridKey === key) return;
+            this.scaleGridKey = key;
+            for (const select of [this.scaleHiSelect, this.scaleLoSelect]) {
+                select.innerHTML = "";
+                for (const v of grid) {
+                    const option = document.createElement("option");
+                    option.value = String(v);
+                    option.textContent = fmt(v);
+                    select.appendChild(option);
+                }
+            }
         }
 
         /**
@@ -1636,9 +1690,12 @@
         }
 
         /** Show the range of the axis on screen (loadBand calls this, so the
-         *  pair follows the selector into and out of depth mode). */
+         *  pair follows the selector into and out of depth mode - grid
+         *  included, since the weight axis and the multiplier axis do not
+         *  offer the same stops). */
         updateScaleSelects() {
             if (!this.scaleHiSelect || !this.scaleLoSelect) return;
+            this.fillScaleOptions();
             const range = this.activeRange();
             this.ensureScaleOption(this.scaleHiSelect, range.hi);
             this.ensureScaleOption(this.scaleLoSelect, range.lo);
@@ -1830,26 +1887,12 @@
          *  re-checks this count and redraws when it moves, so the preview
          *  follows uploads / clears / mutes without any edit to the curve. */
         multiPhaseCount() {
-            let count = 0;
-            if (this.unitRoot) {
-                this.unitRoot
-                    .querySelectorAll("[id*='_input_image'] img.forge-image")
-                    .forEach((img) => {
-                        if (!img.src || img.naturalWidth <= 0) return;
-                        // same id mapping as tab_marks.js: the hidden gradio
-                        // checkbox _input_enabled_<n> is the authoritative
-                        // mute state of tab panel _input_tab_<n>
-                        const panel = img.closest("[id*='_input_tab_']");
-                        if (panel) {
-                            const state = document.getElementById(
-                                panel.id.replace("_input_tab_", "_input_enabled_"));
-                            const check = state && state.querySelector("input[type='checkbox']");
-                            if (check && !check.checked) return;
-                        }
-                        count += 1;
-                    });
-            }
-            return Math.max(count, 1);
+            // the rule itself lives in active_canvas.js (cnetLiveInputs), so
+            // the preview, the coverage panel and anything else that has to
+            // know "which Inputs run" cannot answer it differently
+            const live = typeof window !== "undefined" && window.cnetLiveInputs
+                ? window.cnetLiveInputs(this.unitRoot) : [];
+            return Math.max(live.length, 1);
         }
 
         /**
@@ -2780,6 +2823,19 @@
     // that recomputed the shift itself would agree with whatever it recomputed.
     if (typeof module !== "undefined" && module.exports) {
         module.exports = {
+            WeightProfileEditor: WeightProfileEditor,
+            driftedDepth: driftedDepth,
+            SELECTOR_ORDER: SELECTOR_ORDER,
+        };
+    }
+    // ...and the same three in the BROWSER, for the coverage panel: it has to
+    // turn a profile string into per-step weights, and the one thing it must
+    // not do is parse the grammar a second time. A second parser would agree
+    // with this one right up to the first wave, mid control or convergence
+    // token - and then quietly draw a coverage map of a profile nobody is
+    // running. Read-only use: the panel never constructs an editor.
+    if (typeof window !== "undefined") {
+        window.cnproWeightProfile = {
             WeightProfileEditor: WeightProfileEditor,
             driftedDepth: driftedDepth,
             SELECTOR_ORDER: SELECTOR_ORDER,

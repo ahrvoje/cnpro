@@ -2288,7 +2288,10 @@
     align-items: stretch;
     gap: 2px;
     flex: 0 1 auto;
-    min-width: 190px;
+    /* room for the label + the four buttons + `Opacity ◂ nnn ▸`; the layer
+       name is the flexible part and ellipsises first when the canvas is
+       narrower than this */
+    min-width: 250px;
     max-height: 132px;
     overflow-y: auto;
 }
@@ -2337,4 +2340,332 @@
 .forge-layer-btn:disabled {
     opacity: 0.35;
     cursor: default;
+}
+
+/* PER-LAYER OPACITY: `Opacity ◂ nnn ▸` at the right of each layer row.
+   The arrows are SIDEWAYS, and the native spin buttons are gone entirely: two
+   stacked 6px glyphs inside a field this narrow overlap the third digit, so
+   "100" read as "10". Sideways they take width - which the row can give, since
+   the layer label dropped its "@100%" scale for exactly this - instead of the
+   height the digits need. The field is wide enough for three digits at a
+   readable size; the wheel (canvas_nodes.js wireWheel) still steps it by 1. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-opacity-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+}
+
+.forge-layer-opacity-label {
+    font-size: var(--cnpro-label-fs, 12px);
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-opacity {
+    flex: 0 0 auto;
+    width: 30px;
+    min-width: 30px;
+    height: 18px;
+    box-sizing: border-box;
+    padding: 0 1px;
+    font-size: var(--cnpro-label-fs, 12px);
+    line-height: 16px;
+    text-align: center;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(0, 0, 0, 0.25);
+    color: inherit;
+    /* no spin box at all - the ◂ ▸ buttons ARE the stepper */
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.forge-layer-opacity::-webkit-outer-spin-button,
+.forge-layer-opacity::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+}
+
+/* the two steppers: narrower than a layer button (they are half a control, not
+   a control), same height so the group sits on one baseline */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-opacity-step {
+    width: 14px;
+    min-width: 14px;
+    height: 18px;
+    padding: 0;
+    font-size: 10px;
+    line-height: 1;
+}
+
+/* a faded layer says so at a glance, without reading the number. A CLASS, not
+   `:not([value="100"])`: `input.value = x` writes the property and leaves the
+   attribute alone, so the attribute selector would match every row forever. */
+.forge-layer-opacity.forge-layer-opacity-faded {
+    border-color: rgba(58, 160, 255, 0.55);
+    background: rgba(58, 160, 255, 0.14);
+}
+
+/* ------------------------------------------------------- output weight coverage
+
+   The collapsed panel under the CNPro title (lib_cnpro/controlnet_ui/coverage.py,
+   painted by javascript/coverage_map.js).
+
+   IT IS SHAPED LIKE A UNIT and gets there mostly by REUSE, not by restatement:
+   the root row carries .controlnet_image_and_options, the settings column
+   .controlnet_main_options_column and the button row
+   .controlnet_image_controls, so the widths, the tool-button geometry and the
+   shrink behaviour are the unit's own rules, already tuned. What is left here
+   is the picture itself and the two places this panel differs: its canvas is
+   height-capped (a unit's canvas gets the fixed unit body height, which this
+   must not claim above the units) and its action buttons sit at the LEFT of
+   their row with the status line filling the rest, where a unit puts its hint
+   first and its buttons right.
+
+   Every colour in the MAP comes from the canvas, which paints the same hue ramp
+   the masks are painted in; the three contour swatches in the legend MUST keep
+   the values coverage_map.js strokes with - a legend that names a different
+   orange than the line it explains is worse than no legend. */
+.cnet-coverage-panel.controlnet_image_and_options {
+    /* the unit rule sets height from --cnet-unit-body-h on the canvas column;
+       this panel is content-sized instead */
+    align-items: flex-start;
+    gap: 8px;
+}
+
+/* THE SETTINGS COLUMN keeps the unit's look but neither of its two sizes.
+   Not its 370px width: two short controls do not need a unit's worth of it,
+   and every pixel given back goes to the map. And NOT its `min-height:
+   var(--cnet-unit-body-h)` - that floor exists so a unit with fewer selectors
+   does not become shorter than its canvas, and here it made the column TALLER
+   than the map beside it, leaving a band of dead space across the bottom of
+   the panel (measured: column 312px against a canvas column of ~277).
+
+   With the floor gone the row is exactly as tall as the map plus its legend
+   line, and the column has that height to compose into: the two controls at
+   the top, the numbers pinned to the bottom, level with the legend under the
+   picture. `space-between` rather than a stack with a gap, because the space
+   is there either way and the alternative is a ragged half-empty column. */
+.cnet-coverage-panel .cnet-coverage-options.controlnet_main_options_column {
+    flex: 0 1 260px !important;
+    min-width: 170px !important;
+    min-height: 0 !important;
+    height: auto;
+    justify-content: space-between !important;
+    align-self: stretch;
+}
+
+/* THE ONE UNIT RULE THIS PANEL MUST NOT INHERIT.
+   `.controlnet_image_and_options > .gradio-column:not(.controlnet_main_options_column)`
+   pins a unit's canvas column to the fixed unit body height. Here the content
+   is a height-capped map plus a button row, and a column-direction flexbox with
+   a fixed height WRAPS whatever does not fit into a SECOND COLUMN - which put
+   the action row beside the map, 10px past the panel's own right edge, at the
+   top instead of the bottom (measured: row at x=784 in a panel ending at 774).
+   `height: auto` and no wrapping; !important because that rule is (0,3,0) and
+   scoping alone does not beat it. */
+.cnet-coverage-panel .cnet-coverage-canvas-column {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap !important;
+    height: auto !important;
+    gap: 2px;
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* ONE LINE, THREE THINGS: contour key left, weight ramp centred under the
+   picture, action buttons right against the canvas's bottom border. A second
+   row for the buttons bought nothing but height.
+
+   A grid, not a flexbox: `1fr auto 1fr` puts the middle cell on the ROW's
+   centre - which is the canvas's centre, since the canvas is centred in the
+   same column - and that is what "the ramp belongs under the picture it
+   explains" means. Flex `space-between` would centre it between its
+   neighbours instead, i.e. wherever the key and the buttons happen to leave
+   it. The side cells carry min-width: 0 so a narrow panel shrinks them rather
+   than pushing the middle off centre. */
+.cnet-coverage-actions.controlnet_image_controls {
+    display: grid !important;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center !important;
+    gap: 8px !important;
+    margin-top: 0 !important;
+}
+
+/* the three cells; gradio's own block padding would make the row twice as tall
+   as the tallest thing in it */
+.cnet-coverage-actions > * {
+    min-width: 0;
+    padding: 0 !important;
+    border: none !important;
+    background: none !important;
+}
+
+.cnet-coverage-actions .cnet-coverage-key-host {
+    justify-self: start;
+}
+
+.cnet-coverage-actions .cnet-coverage-scale-host {
+    justify-self: center;
+}
+
+.cnet-coverage-actions .cnet-coverage-buttons {
+    justify-self: end;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 0.25em !important;
+    align-items: center !important;
+    width: auto !important;
+    min-width: 0 !important;
+}
+
+.cnet-coverage-actions .cnet-toolbutton {
+    align-self: center !important;
+    margin-top: 0 !important;
+}
+
+/* the numbers live under the CONTROLS, at the bottom of the settings column.
+   12px, not the 10px this started at: the status line is the panel's ONLY
+   quantitative answer (max, % uncovered, % over 1, and which units were
+   skipped), and a saving of two pixels on the one thing that has to be read is
+   not a saving. Same for the legend below. */
+/* Last in the column, pinned to the bottom whatever the controls above it do,
+   so the numbers sit level with the legend line under the map - and separated
+   by a hairline, which is what turns "controls, then a gap, then some text"
+   into a block and a footer. */
+.cnet-coverage-status-host {
+    margin-top: auto;
+    padding-top: 6px !important;
+    border-top: 1px solid rgba(128, 128, 128, 0.28) !important;
+}
+
+.cnet-coverage-status {
+    font-size: 12px;
+    opacity: 0.8;
+    line-height: 1.35;
+}
+
+/* THE STAGE IS A DROP TARGET AND A FRAME, not a viewport: the canvas keeps the
+   output's aspect ratio and simply scales into the available width, so what is
+   on screen is the output rectangle and nothing is cropped away from it. The
+   height cap keeps a 9:16 portrait output from pushing the units off screen. */
+.cnet-coverage-stage {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    flex: 0 1 auto;
+    border: 1px dashed rgba(128, 128, 128, 0.45);
+    border-radius: 4px;
+    padding: 2px;
+    min-height: 48px;
+}
+
+.cnet-coverage-stage.cnet-coverage-drop {
+    border-color: #3aa0ff;
+    background: rgba(58, 160, 255, 0.12);
+}
+
+/* the height cap IS the panel's height budget - the map is a qualitative
+   picture and reads perfectly at this size, while the units below it are what
+   the page is actually for */
+.cnet-coverage-canvas {
+    max-width: 100%;
+    max-height: 240px;
+    object-fit: contain;
+    image-rendering: auto;
+}
+
+/* the drop hint sits ON the map, so it appears on hover only: a permanent
+   caption across the middle of the picture obscures the very region the map is
+   read for, and the map is what the panel is for */
+.cnet-coverage-hint {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #ffffff;
+    font-size: 11px;
+    opacity: 0;
+    transition: opacity 0.12s ease-out;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.cnet-coverage-stage:hover .cnet-coverage-hint,
+.cnet-coverage-stage.cnet-coverage-drop .cnet-coverage-hint {
+    opacity: 0.9;
+}
+
+/* the two legend halves: 12px like the status line, and the ramp thick enough
+   not to read as a hairline beside text that size */
+.cnet-coverage-key,
+.cnet-coverage-scale {
+    font-size: 12px;
+    opacity: 0.85;
+}
+
+.cnet-coverage-scale {
+    display: inline-flex;
+    flex-direction: column;
+    width: 190px;
+    max-width: 100%;
+    gap: 1px;
+}
+
+.cnet-coverage-ramp {
+    height: 10px;
+    border-radius: 2px;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+}
+
+.cnet-coverage-ticks {
+    display: flex;
+    justify-content: space-between;
+    line-height: 1.2;
+}
+
+/* WRAPS rather than overflows. `1fr auto 1fr` centres the ramp on the row -
+   which is the point - but it also means each side cell is only half of what
+   the ramp leaves, and on a narrow panel that is less than this key needs. It
+   used to be `nowrap`, and it then ran straight under the ramp (measured: key
+   358..521 against a ramp starting at 471). Wrapping costs one short line in
+   the narrow case and nothing at all in the wide one, where the whole
+   arrangement is centred as intended. */
+.cnet-coverage-key {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+}
+
+.cnet-coverage-swatch {
+    display: inline-block;
+    width: 14px;
+    height: 0;
+    margin-left: 6px;
+    border-top-width: 2px;
+    border-top-style: solid;
+}
+
+/* The quarter contours are near-black, which is correct ON THE MAP (they are
+   drawn over a saturated violet-to-red field) and invisible HERE, on a dark
+   panel. Same colour as the line plus a light hairline around it: the swatch
+   keeps saying what the line is instead of naming a colour the map does not
+   draw, and it is legible on either theme's panel. */
+.cnet-coverage-swatch-quarter {
+    border-top-color: rgba(20, 20, 20, 0.85);
+    box-shadow: 0 0 0 1px rgba(160, 160, 160, 0.7);
+}
+
+.cnet-coverage-swatch-one {
+    border-top-color: #ff9800;   /* coverage_map.js levelsFor: the level-1 line */
+}
+
+.cnet-coverage-swatch-over {
+    border-top-color: #ff1744;   /* ...and every 0.25 above it */
 }
