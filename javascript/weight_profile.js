@@ -606,7 +606,10 @@
                         : BAND_ORDER.find((b) => BAND_PREFIX[b] === segment[0]));
                 if (!key) continue;
                 const p = this.parse(segment.slice(1));
-                if (p) raw[key] = p;
+                // FIRST segment wins on a duplicate key - the same rule as
+                // python's parse_depth_profile (next(...)), so a hand-edited
+                // string with two '#D' segments draws the one that runs.
+                if (p && !(key in raw)) raw[key] = p;
             }
             const main = this.parse(segments[0]);
             if (!main) {
@@ -854,6 +857,17 @@
             }
         }
 
+        /** Whole-token number, python-strict. parseFloat prefix-parses
+         *  ("1,5" -> 1, "0.5x" -> 0.5) what python's float() refuses, so the
+         *  editor adopted and drew curves the generation side replaces with
+         *  the constant-weight fallback - the plot showing a profile that
+         *  will not run. Invalid on both sides beats valid on one. */
+        strictFloat(s) {
+            const t = String(s).trim();
+            if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(t)) return NaN;
+            return parseFloat(t);
+        }
+
         parse(text) {
             if (!text || !text.trim()) return null;
             const parts = text.split("|");
@@ -864,10 +878,10 @@
                 const clampScale = (v) => Math.min(Math.max(v, SCALE_MIN), SCALE_MAX);
                 const bounds = parts[1].split("~");
                 if (bounds.length > 1) {
-                    scaleLo = parseFloat(bounds[0]);
-                    scaleHi = parseFloat(bounds[1]);
+                    scaleLo = this.strictFloat(bounds[0]);
+                    scaleHi = this.strictFloat(bounds[1]);
                 } else {
-                    scaleHi = parseFloat(bounds[0]);
+                    scaleHi = this.strictFloat(bounds[0]);
                 }
                 if (!isFinite(scaleLo) || !isFinite(scaleHi)) return null;
                 scaleLo = clampScale(scaleLo);
@@ -921,8 +935,8 @@
                 if (token[0] === "C") {
                     const co = token.slice(1).split("@");
                     if (co.length !== 2) return null;
-                    const n = parseFloat(co[0]);
-                    const ph = parseFloat(co[1]);
+                    const n = this.strictFloat(co[0]);
+                    const ph = this.strictFloat(co[1]);
                     if (!isFinite(n) || !isFinite(ph)) return null;
                     cosOn = true;
                     cosN = Math.min(Math.max(n, 0), COS_MAX_OSC);
@@ -935,8 +949,8 @@
                 if (token[0] === "A") {
                     const cv = token.slice(1).split("@");
                     if (cv.length !== 2) return null;
-                    const at = parseFloat(cv[0]);
-                    const exp = parseFloat(cv[1]);
+                    const at = this.strictFloat(cv[0]);
+                    const exp = this.strictFloat(cv[1]);
                     if (!isFinite(at) || !isFinite(exp)) return null;
                     converge = {
                         at: clamp01(at),
@@ -947,7 +961,7 @@
                 // 'G<exponent>' = response exponent: the normalized profile is
                 // bent with y -> y^e BEFORE the scale mapping (see gammaAt)
                 if (token[0] === "G") {
-                    const g = parseFloat(token.slice(1));
+                    const g = this.strictFloat(token.slice(1));
                     if (!isFinite(g)) return null;
                     gamma = Math.min(Math.max(g, 1 / GAMMA_MAX), GAMMA_MAX);
                     continue;
@@ -957,8 +971,8 @@
                 if (isMid) token = token.slice(1);
                 const xy = token.split("@");
                 if (xy.length !== 2) return null;
-                const x = parseFloat(xy[0]);
-                const y = parseFloat(xy[1]);
+                const x = this.strictFloat(xy[0]);
+                const y = this.strictFloat(xy[1]);
                 if (!isFinite(x) || !isFinite(y)) return null;
                 (isMid ? mids : points).push({ x: clamp01(x), y: clamp01(y) });
             }
@@ -1036,7 +1050,20 @@
         bandNeutral(P, range, neutral) {
             const n = neutral === undefined ? 1 : neutral;
             const value = (y) => range.lo + y * (range.hi - range.lo);
+            // The response exponent is part of what the plot draws (evaluate()
+            // bends the normalized value through gammaAt), so a flat curve is
+            // only a no-op when the bend cannot move it: gamma ~ 1, or every
+            // point sitting at a fixed point of v^g (normalized 0 or 1).
+            // Without this term a depth curve left flat at neutral (normalized
+            // 0.5 on its [0, 2] axis) with a bent response DREW a global x0.5
+            // attenuation while serializing nothing - the plot showed one
+            // curve, python ran another. Epsilons: 1e-4 matches gammaAt's own
+            // identity test, 5e-4 the value test below.
+            const g = P.gamma || 1;
+            const gammaInert = Math.abs(g - 1) <= 1e-4
+                || P.points.every((p) => p.y <= 1e-4 || p.y >= 1 - 1e-4);
             return !P.cosOn
+                && gammaInert
                 && P.points.every((p) => Math.abs(value(p.y) - n) <= 5e-4 && !p.mid);
         }
 
@@ -1134,6 +1161,12 @@
          * Input draws and runs ONE wave, the family's kernel.
          */
         waveCountOf(P, name) {
+            // The balance editor's working slot is also called "main", but
+            // python always evaluates a balance profile with a count of 1
+            // (only the weight profile fans out over Inputs) - so a
+            // hand-written 'P' in a balance string must not make the preview
+            // divide the wave by the Input count. Preview what runs.
+            if (this.isBalance) return 1;
             return (name === "main" && P.cosOn && P.phaseFamily)
                 ? this.phaseCount() : 1;
         }
@@ -1291,8 +1324,29 @@
                 // it is not any more, because the marker also chooses which
                 // weight-mask slots are live (publishMode), so a stale band
                 // selection would silently switch off a painted G mask.
-                if (!this.isBalance) this.selectBand("main");
-                this.loadBand(this.band);
+                // ADOPTION, not an edit - two rules, both load-bearing:
+                // 1. loadBand runs FIRST. selectBand starts with snapshot(),
+                //    which writes the WORKING COPY back into its store slot;
+                //    called before loadBand refreshed it, that resurrected the
+                //    pre-reset curve into the freshly reset slot, and sync()
+                //    then pushed it to the server - a "cleared" depth curve
+                //    silently multiplying every following generation.
+                // 2. No sync()/selectBand at all: this value came FROM the
+                //    server, and adopting a server-authored value must not
+                //    write anything back (writing an explicit-neutral string
+                //    would turn the unit's empty field non-empty). The band
+                //    buttons and the published mode are updated by hand
+                //    instead.
+                this.selPoint = null;
+                this.loadBand(this.isBalance ? this.band : "main");
+                if (!this.isBalance && this.bandButtons) {
+                    for (const key in this.bandButtons) {
+                        const pressed = key === "main";
+                        this.bandButtons[key].classList.toggle("cnet-profile-band-active", pressed);
+                        this.bandButtons[key].setAttribute("aria-pressed", String(pressed));
+                    }
+                }
+                this.publishMode();
                 this.draw();            } else if (this._warnedInvalid !== value) {
                 // invalid non-empty: keep drawing the old profile, but say so
                 // once - the generation side will warn about it too
@@ -1467,6 +1521,14 @@
                         && this.bandNeutral(this.store[b], range, neutralValueOf(b)));
                 const lo = which === "lo" ? value : Math.min(range.lo, value);
                 const hi = which === "hi" ? value : Math.max(range.hi, value);
+                if (hi <= lo) {
+                    // a zero-span axis would keep drawing SHAPE that python
+                    // maps to the constant lo (every y lands on the same
+                    // value) - the plot and the run disagreeing by design.
+                    // Refuse, and re-sync the select to the value in force.
+                    this.updateScaleSelects();
+                    return;
+                }
                 if (this.band === DEPTH_KEY) {
                     this.depthLo = lo;
                     this.depthHi = hi;
@@ -2093,9 +2155,11 @@
                     this.dragPoint.y = target.y;
                     (this.dragPts || this.points).sort((a, b) => a.x - b.x);
                     this.draw();
-                } else if (this.inScaleGutter(pos)) {
-                    this.canvas.style.cursor = "pointer";
                 } else {
+                    // (the scale-gutter hover test lived here until the gutter
+                    // slider was replaced by the range selects; the call
+                    // outlived the method and threw on every hover, killing
+                    // this cursor logic below it)
                     this.canvas.style.cursor = this.findPoint(pos) || this.findMid(pos) ? "grab" : "crosshair";
                 }
             });

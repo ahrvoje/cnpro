@@ -42,9 +42,23 @@ def evaluate_weight_profile(points, x):
 def build_weight_profile_lookup(weight_profile, percent_to_timestep_function, n=256):
     """Sample the profile on a dense percent grid and pair each sample with its
     timestep (sigma, descending), so per-step strength can be looked up from
-    the current timestep during sampling."""
+    the current timestep during sampling.
+
+    Discrete predictors answer percent 0 with a SENTINEL (~1e9), not the
+    schedule's real maximum sigma. Left in the table, cell 0 spanned
+    (sigma(1/n), 1e9) and every real first-step sigma interpolated to
+    ~strengths[1]: the first step read profile(1/n) instead of profile(0), and
+    the retention ramp's "first step is bit-identical to retention off" claim
+    was false by one grid cell of slope. A sentinel-shaped first sigma (three
+    orders of magnitude above its neighbour) is collapsed onto that neighbour,
+    so any sigma at or above sigma(1/n) reads exactly profile(0) - the right
+    answer for the only sigma that can live up there, the schedule's own
+    maximum. Predictors that answer with the true maximum (flow matching: 1.0)
+    are untouched, bit-exact."""
     sigmas = [float(percent_to_timestep_function(i / n)) for i in range(n + 1)]
     strengths = [evaluate_weight_profile(weight_profile, i / n) for i in range(n + 1)]
+    if len(sigmas) > 1 and sigmas[1] > 0 and sigmas[0] > sigmas[1] * 1e3:
+        sigmas[0] = sigmas[1]
     return sigmas, strengths
 
 

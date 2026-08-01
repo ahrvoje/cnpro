@@ -40,16 +40,27 @@
                     new URLSearchParams({ theme: 'dark' }).toString() :
                     '';
 
-                window.addEventListener('message', (event) => {
-                    const message = event.data;
-                    if (message['ready']) resolve();
-                }, { once: true });
-
                 if ((editorURL.startsWith("http") ? iframe.src : getPathname(iframe.src)) !== editorURL) {
+                    // Not {once: true}: that let the FIRST message of any kind
+                    // (photopea, a stray postMessage) consume the listener, and
+                    // readiness then always waited out the 5 s fallback. Check
+                    // inside, remove on match, and remove on the timeout too so
+                    // no listener outlives its navigation.
+                    const onReady = (event) => {
+                        const message = event.data;
+                        if (message && message['ready']) {
+                            window.removeEventListener('message', onReady);
+                            resolve();
+                        }
+                    };
+                    window.addEventListener('message', onReady);
                     iframe.src = `${editorURL}?${darkThemeParam}`;
                     // By default assume 5 second is enough for the openpose editor
                     // to load.
-                    setTimeout(resolve, 5000);
+                    setTimeout(() => {
+                        window.removeEventListener('message', onReady);
+                        resolve();
+                    }, 5000);
                 } else {
                     // If no navigation is required, immediately return.
                     resolve();
@@ -75,6 +86,10 @@
                     editorURL = await checkEditorAvailable();
                     if (!editorURL) {
                         alert("No openpose editor available.")
+                        // without this return the null URL fell through into
+                        // navigateIframe -> editorURL.startsWith -> TypeError,
+                        // with the modal already open onto a blank iframe
+                        return;
                     }
                 }
 

@@ -224,20 +224,37 @@ def apply_controlnet_advanced(
     cnet.unit_uncond_delta_scale = unit_uncond_delta_scale
     cnet.unit_retention = unit_retention
 
+    # Raises, not asserts: under `python -O` an assert vanishes, and a caller's
+    # 'Coarse' (wrong case) would then make resolve_band_mask return None for
+    # every real band - compute_controlnet_weighting zeroes every layer and the
+    # unit runs while injecting nothing. This is the documented external
+    # surface (`apply_controlnet_advanced`), so the check must survive -O.
+    # Same conversion the profile engine already made (weighting.py).
     if band_weight_profiles is not None:
-        assert all(band in ('coarse', 'mid', 'fine') for band in band_weight_profiles)
+        bad = [band for band in band_weight_profiles if band not in ('coarse', 'mid', 'fine')]
+        if bad:
+            raise ValueError(f"CNPro: unknown band name(s) {bad} in band_weight_profiles "
+                             f"(expected 'coarse', 'mid', 'fine')")
         cnet.band_weight_profiles = band_weight_profiles
 
     if region_masks is not None:
         if isinstance(region_masks, dict):
-            assert all(band in ('coarse', 'mid', 'fine') for band in region_masks)
+            bad = [band for band in region_masks if band not in ('coarse', 'mid', 'fine')]
+            if bad:
+                raise ValueError(f"CNPro: unknown band name(s) {bad} in region_masks "
+                                 f"(expected 'coarse', 'mid', 'fine')")
             masks = list(region_masks.values())
         else:
             masks = [region_masks]
         for m in masks:
-            assert isinstance(m, torch.Tensor)
+            if not isinstance(m, torch.Tensor):
+                raise TypeError(f"CNPro: region mask must be a torch.Tensor, got {type(m).__name__}")
+            if m.ndim != 4:
+                raise ValueError(f"CNPro: region mask must be [B,1,H,W], got shape {tuple(m.shape)}")
             B, C, H, W = m.shape
-            assert B > 0 and C == 1 and H > 0 and W > 0
+            if not (B > 0 and C == 1 and H > 0 and W > 0):
+                raise ValueError(f"CNPro: region mask must be [B,1,H,W] with one channel, "
+                                 f"got shape {tuple(m.shape)}")
 
     cnet.region_masks = region_masks
 

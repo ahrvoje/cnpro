@@ -57,7 +57,12 @@ function fakeNode(key) {
         id: key,
         style: {display: 'none'},
         dataset: {},
-        closest: () => null,
+        // The stub models a canvas inside CNPro's INPUT group - the home
+        // container of the registry's `scope`d buttons (the weight-mask
+        // slots), so the reveal/audit contract is exercised where those
+        // buttons belong. Scenario `outOfScope` flips this to null to model
+        // the host's own canvases.
+        closest: (sel) => (sel === '.cnet-input-image-group' ? {className: 'cnet-input-image-group'} : null),
         // audit() asks getComputedStyle via ownerDocument.defaultView; leaving
         // that undefined makes isHidden() fall back to the inline style, which
         // is exactly what this harness controls.
@@ -204,12 +209,26 @@ scenarios.menuNodeMissing = {
 buildDom(UUID, []);
 scenarios.nothingInjected = {shown: api.revealToolbar(UUID), audit: api.audit(UUID)};
 
+// 6. the same toolbar on a canvas OUTSIDE CNPro's input group (the host's own
+//    img2img/inpaint canvases): the registry's `scope`d buttons must stay
+//    hidden - revealing them there produced visible-but-inert chrome, rule
+//    8c's exact shape - and the audit must NOT call that a failure (a check
+//    that cries wolf trains everyone to ignore the real one).
+buildDom(UUID, ownedIds);
+Object.keys(NODES).forEach((key) => { NODES[key].closest = () => null; });
+scenarios.outOfScope = {
+    shown: api.revealToolbar(UUID),
+    hidden: toolbarIds.filter((id) => !isVisible(id)),
+    audit: api.audit(UUID),
+};
+
 process.stdout.write(JSON.stringify({
     toolbarIds: toolbarIds,
     ownedIds: ownedIds,
     renderedIds: renderedIds,
     renderedClasses: renderedClasses,
     deferred: deferred,
+    scoped: Object.keys(registry.scopes ? registry.scopes() : {}),
     inject: {returned: injected, error: injectError},
     selfCheck: api.selfCheck(),
     selfCheckErrors: selfCheckErrors,

@@ -101,7 +101,20 @@ class UNetResidualLayout:
                 k = int(signal.shape[0] // m.shape[0])
                 if signal.shape[0] == k * m.shape[0]:
                     m = m.repeat(k, 1, 1, 1)
-            return torch.nn.functional.interpolate(m.to(signal), size=(H, W), mode='bilinear')
+            # antialias: at the deep sites this is an 8..64x downscale, and
+            # plain bilinear samples a 2x2 neighbourhood per output pixel - a
+            # stroke a few pixels wide could contribute NOTHING to the 8x8
+            # coarse-band masks, so restrict-to-painted silently under-delivered
+            # exactly where composition is decided. With antialias each output
+            # pixel is the stroke's true coverage fraction. Both engine
+            # invariants survive exactly (all-ones stays all-ones, all-zeros
+            # stays all-zeros); test_residual_layout.py's pins moved with this,
+            # deliberately. Projected in float32 because the antialiased kernel
+            # is not implemented for every half dtype/device pair, then cast to
+            # the signal's dtype - one cast, same as before.
+            return torch.nn.functional.interpolate(
+                m.to(device=signal.device, dtype=torch.float32), size=(H, W),
+                mode='bilinear', antialias=True).to(signal.dtype)
 
         return _cached(cache, key, build)
 
@@ -181,8 +194,15 @@ class TokenResidualLayout:
                 k = int(signal.shape[0] // m.shape[0])
                 if signal.shape[0] == k * m.shape[0]:
                     m = m.repeat(k, 1, 1, 1)
-            m = m.to(signal)
-            grid = torch.nn.functional.interpolate(m, size=(h, w), mode='bilinear')
+            # antialias for the same reason as UNetResidualLayout.project_mask:
+            # a token grid is a 16x+ downscale of the painted mask, and without
+            # it a thin stroke can vanish entirely. Everything in float32 (the
+            # antialiased kernel is not implemented for every half dtype, and
+            # the spatial mean is more exact there), one cast at the end -
+            # invariants (all-ones/all-zeros) survive exactly either way.
+            m = m.to(device=signal.device, dtype=torch.float32)
+            grid = torch.nn.functional.interpolate(
+                m, size=(h, w), mode='bilinear', antialias=True)
             flat = grid.flatten(2).movedim(1, 2)                     # [B, h*w, 1]
             outside = m.mean(dim=(1, 2, 3)).reshape(-1, 1, 1)        # [B, 1, 1]
             out = outside.expand(flat.shape[0], seq, 1).clone()
@@ -190,7 +210,7 @@ class TokenResidualLayout:
             end = min(start + flat.shape[1], seq)
             if end > start:
                 out[:, start:end, :] = flat[:, : end - start, :]
-            return out
+            return out.to(signal.dtype)
 
         return _cached(cache, key, build)
 

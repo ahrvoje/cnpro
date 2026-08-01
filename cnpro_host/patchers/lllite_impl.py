@@ -108,7 +108,11 @@ def lllite_module_depths(module_names):
 def load_control_net_lllite_patch(ctrl_sd, cond_image, multiplier, num_steps, start_percent, end_percent, model_dtype, weight_profile=None, band_profiles=None, depth_profile=None, drift_profile=None):
     # calculate start and end step
     start_step = math.floor(num_steps * start_percent) if start_percent > 0 else 0
-    end_step = math.floor(num_steps * end_percent) if end_percent > 0 else num_steps
+    # end_percent == 0 must mean "off immediately", not "never end": the old
+    # `if end_percent > 0 else num_steps` read the one value an API caller
+    # sends to DISABLE the control as "run to the last step". None still means
+    # "no end set".
+    end_step = math.floor(num_steps * end_percent) if end_percent is not None else num_steps
 
     # split each weights for each module
     module_weights = {}

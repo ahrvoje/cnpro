@@ -1,5 +1,7 @@
 (function () {
-    const cnetModalRegisteredElements = new Set();
+    // WeakSet: membership is all this needs, and a plain Set pinned every
+    // re-rendered (detached) button and span for the life of the page.
+    const cnetModalRegisteredElements = new WeakSet();
     onUiUpdate(() => {
         // Get all the buttons that open a modal
         const btns = gradioApp().querySelectorAll(".cnet-modal-open");

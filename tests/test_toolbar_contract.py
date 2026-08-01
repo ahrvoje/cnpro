@@ -28,6 +28,10 @@ WHAT IS PINNED HERE
    generic rule is ever weakened this still fails.
 5. The renderer emits exactly the ids the registry claims, with the classes the
    reveal and the stylesheet key off.
+6. The reverse of 4, on the host's own canvases: the weight-mask buttons carry
+   a registry `scope` and stay hidden outside `.cnet-input-image-group`, where
+   nothing wires them -- revealed there they are visible-but-inert chrome --
+   and the audit does not cry wolf about it.
 
 Run:  <webui python> extensions/forge-neo-cnpro/tests/test_toolbar_contract.py
 Needs node for the half that matters; without it the source checks still run and
@@ -186,6 +190,28 @@ def test_runtime_behaviour(data):
         fail("with nothing injected, reveal claimed %r shown and audit said %r - "
              "a completely empty toolbar must be reported, not passed"
              % (none_at_all["shown"], none_at_all["audit"]))
+
+    # 7. the same toolbar OUTSIDE CNPro's input group (the host's own
+    #    img2img/inpaint canvases): registry-`scope`d buttons stay hidden -
+    #    revealed there they are visible-but-inert chrome, rule 8c's exact
+    #    shape - and the audit stays QUIET about them (a check that cries wolf
+    #    trains everyone to ignore the one real failure).
+    scoped = set(data.get("scoped", []))
+    if not scoped:
+        fail("the registry declares no scoped buttons - the weight-mask slots "
+             "lost their `scope` and are revealed on the host's own canvases "
+             "where nothing wires them")
+    out = data["scenarios"].get("outOfScope")
+    if out is None:
+        fail("the harness has no outOfScope scenario - the scoped-reveal rule "
+             "is honoured nowhere it can be seen failing")
+    else:
+        if sorted(out["hidden"]) != sorted(deferred | scoped):
+            fail("out of scope, hidden = %r but expected deferred + scoped = %r"
+                 % (sorted(out["hidden"]), sorted(deferred | scoped)))
+        if out["audit"]:
+            fail("audit() cries wolf about scoped buttons hidden off their home "
+                 "container: %r" % out["audit"])
 
 
 def main():

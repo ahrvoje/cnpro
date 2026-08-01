@@ -1593,13 +1593,22 @@ class ControlNetUiGroup(object):
         ]
 
     def active_canvas_index(self, active):
-        """Index into canvas_backgrounds() for an active_canvas key."""
+        """Index into canvas_backgrounds() for an active_canvas key.
+
+        -1 for any key that addresses NO canvas ("prompt", or a future key):
+        every consumer range-checks, so -1 makes each of them a no-op. The old
+        `except ValueError: return 0` silently resolved "prompt" to Input slot
+        1 - the exact "default that means absent" ARCHITECTURE.md 8 bans - and
+        clicking the new-canvas button while a P/N tab was open replaced
+        Input 1's image with a blank at generation size, with zero visible
+        feedback and a black hint on the next run.
+        """
         if active == "output_mask":
             return len(self.image_canvases)
         try:
             return int(str(active)[len("input_"):])
         except ValueError:
-            return 0
+            return -1
 
     def register_send_dimensions(self):
         """Register event handler for send dimension button.
@@ -1928,6 +1937,9 @@ class ControlNetUiGroup(object):
             # output mask wants (it is registered with the generated image) and
             # what a from-scratch control drawing wants too.
             blank = np.zeros(shape=(h, w, 3), dtype=np.uint8)
+            # -1 (prompt tab open, no canvas addressed) matches no i: every
+            # output stays gr.update() and the click is a no-op instead of
+            # blanking Input 1 behind the user's back.
             target = self.active_canvas_index(active)
             return [blank if i == target else gr.update()
                     for i in range(len(canvas_backgrounds))]

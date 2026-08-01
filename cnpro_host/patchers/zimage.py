@@ -153,7 +153,13 @@ class ZImageControlNetPatcher(CNProModelPatcher):
         control.depth_profile = self.depth_profile
         control.drift_profile = self.drift_profile
         if self.band_weight_profiles is not None:
-            assert all(b in ('coarse', 'mid', 'fine') for b in self.band_weight_profiles)
+            # A raise, not an assert: under `python -O` an assert vanishes, and
+            # an unknown band name would then sail through to resolve as None
+            # per band - the unit runs and injects nothing, silently.
+            bad = [b for b in self.band_weight_profiles if b not in ('coarse', 'mid', 'fine')]
+            if bad:
+                raise ValueError(f"CNPro: unknown band name(s) {bad} in band_weight_profiles "
+                                 f"(expected 'coarse', 'mid', 'fine')")
             control.band_weight_profiles = self.band_weight_profiles
 
         if self.balance_profile:
@@ -175,6 +181,12 @@ class ZImageControlNetPatcher(CNProModelPatcher):
         refiner_places = (impl.refiner_places_for(cfg['n_refiner_layers'],
                                                   len(getattr(model, 'noise_refiner', [])))
                           if cfg.get('variant') == 'v2' else [])
+        # The unit's OWN tables ride the control object: with two units on
+        # different Z-Image variants the injector hooks the UNION of their
+        # tables, and run_inside_forward must zip this unit's hints against
+        # THESE, never the union (see Injector.install).
+        control.places = list(places)
+        control.refiner_places = list(refiner_places)
         impl.Injector.install(model, places, refiner_places)
 
         unet = process.sd_model.forge_objects.unet.clone()

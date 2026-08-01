@@ -440,6 +440,7 @@
         {
             id: 'wmaskGlobal',
             button: {id: 'wmaskButton', icon: 'G', control: 'wmask', gap: true,
+                     scope: '.cnet-input-image-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-global',
                      title: 'Global weight mask (G): paint hue-coded control strength over the image (red = 1 ... violet = 0); restricts ALL control to the painted region. Belongs to the MAIN weight profile - it is applied while the main (or depth) selector is pressed in the profile editor, and the C/M/F masks are applied instead while a band is selected. Pick weight and brush size below, click outside the image to exit'},
             menu: {
@@ -461,18 +462,21 @@
         {
             id: 'wmaskCoarse',
             button: {id: 'wmaskCoarseButton', icon: 'C', control: 'wmask',
+                     scope: '.cnet-input-image-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-coarse',
                      title: 'Coarse-band weight mask (C): composition layers (deepest injections + middle block). Belongs to the COARSE band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
         },
         {
             id: 'wmaskMid',
             button: {id: 'wmaskMidButton', icon: 'M', control: 'wmask',
+                     scope: '.cnet-input-image-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-mid',
                      title: 'Mid-band weight mask (M): form layers. Belongs to the MID band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
         },
         {
             id: 'wmaskFine',
             button: {id: 'wmaskFineButton', icon: 'F', control: 'wmask',
+                     scope: '.cnet-input-image-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-fine',
                      title: 'Fine-band weight mask (F): texture layers (shallowest injections). Belongs to the FINE band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
         },
@@ -534,11 +538,27 @@
         return out;
     }
 
+    /** {buttonId: ancestor selector it is scoped to}. A scoped button is only
+     *  revealed on a canvas inside a matching container - the weight-mask
+     *  slots are wired by weight_mask.js on CNPro's input canvases alone, and
+     *  revealing them on the host's own img2img/inpaint canvases produced
+     *  injected, styled, permanently INERT chrome there (the exact
+     *  visible-but-dead shape rule 8c names). Registry data, not a check in a
+     *  second file, so reveal and audit cannot disagree about the scope. */
+    function scopes() {
+        const out = {};
+        for (const tool of TOOLS) {
+            if (tool.button && tool.button.scope) out[tool.button.id] = tool.button.scope;
+        }
+        return out;
+    }
+
     window.cnproCanvasTools = {
         TOOLS: TOOLS,
         allIds: allIds,
         buttonIds: buttonIds,
         deferred: deferred,
+        scopes: scopes,
         flatRows: flatRows,
     };
 })();

@@ -716,6 +716,12 @@
     // it is dragged, not when the tool is closed. Everywhere else, display and
     // committed value are the same canvas object.
     //
+    // TIMING is part of the contract: edits render through a 120 ms debounce,
+    // and a Generate click flushes any pending render in the CAPTURE phase
+    // (flushPendingRenders), so the channel write is queued ahead of the
+    // generation job - an edit made a moment before Ctrl+Enter is in that run,
+    // not the next one.
+    //
     // tests/test_canvas_parity.py asserts this in a real browser, decoding both
     // sides and comparing every pixel, across layers, blends, per-layer and
     // global adjustments, strokes, crop and drops. Keep it passing; it is the
@@ -842,6 +848,49 @@
         clearTimeout(st.renderTimer);
         st.renderTimer = setTimeout(() => renderAdjusted(st), 120);
     }
+
+    // Every attached adjustment state, so a Generate click can flush pending
+    // renders (see below). Entries whose container left the DOM (a gradio
+    // re-render replaces it and attach() builds a fresh state) are swept at
+    // each use rather than on an event nobody fires.
+    const adjustStates = [];
+
+    // The debounce above opens a 120 ms window in which the DISPLAY is ahead
+    // of the gradio channel - and a Generate queued inside it generated from
+    // the pre-edit raster, the exact parity violation the contract below
+    // forbids, at the worst possible moment. Same cure as weight_mask.js's
+    // export flush, and load-bearing for the same reason: gradio serializes
+    // its queue in click order, so STARTING the render synchronously in a
+    // capture-phase listener puts the channel write ahead of the Generate
+    // call. toDataURL and the host's re-encode are synchronous; only gradio's
+    // own round trip is queued, in order, before the click's job.
+    function flushPendingRenders() {
+        for (let i = adjustStates.length - 1; i >= 0; i--) {
+            const st = adjustStates[i];
+            if (!document.getElementById('imageContainer_' + st.uuid)) {
+                adjustStates.splice(i, 1); // container re-rendered away: dead state
+                continue;
+            }
+            if (st.renderTimer) {
+                clearTimeout(st.renderTimer);
+                st.renderTimer = null;
+                renderAdjusted(st);
+            }
+        }
+    }
+
+    document.addEventListener('click', function (e) {
+        const target = e.target;
+        if (!target || !target.closest) return;
+        // same trigger set as weight_mask.js's flush, deliberately: the two
+        // debounces cover the two halves of what a unit sends
+        if (!target.closest('#txt2img_generate, #img2img_generate, .cnet-toolbutton')) return;
+        flushPendingRenders();
+    }, true);
+
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') flushPendingRenders();
+    });
 
     // ---- Topaz upscale availability: asked once per page load, shared by all
     // widgets; the toolbar button only appears when the server found tpai.exe
@@ -1022,12 +1071,23 @@
             return replaceAll(this, st, b64); // empty canvas: nothing an echo could destroy
         }
         // an EMPTY active layer is armed to be filled: the user just created
-        // it, so an arriving raster is their fill - even one byte-identical
-        // to existing content (duplicating a layer is legitimate). Intent
-        // beats the echo gate here.
+        // it, so an arriving raster is their fill. Intent beats the echo gate
+        // here - EXCEPT for an inflow equal to the value gradio already
+        // holds. The bind only calls us when its value CHANGED, so a
+        // held-equal inflow is gradio's own content coming back (a finished
+        // generation re-emits the composite, re-encoded); filling the armed
+        // layer with it baked a JPEG copy of the whole stack into itself,
+        // which then re-rendered and re-uploaded. The one thing this costs is
+        // deliberately re-dropping a file byte-identical to the CURRENT
+        // committed composite to duplicate it - that now echo-tests and is
+        // swallowed - and that trade is accepted: the echo fires on its own
+        // after every generation, the duplicate-drop needs a user to export
+        // and re-drop an unmodified composite.
+        const heldForArm = gradioHeldValue(st);
         const active = st.layers[Math.min(Math.max(st.activeLayer, 0), st.layers.length - 1)];
         if ((st.showLayers || st.layers.length > 1) && active && !active.src
-            && b64.startsWith('data:image') && st.setActiveLayerRaster) {
+            && b64.startsWith('data:image') && st.setActiveLayerRaster
+            && (heldForArm === null || b64 !== heldForArm)) {
             st.setActiveLayerRaster(b64);
             return;
         }
@@ -1348,6 +1408,7 @@
             displayCropped: false,
             renderTimer: null,
         };
+        adjustStates.push(st); // Generate-click flush walks these (flushPendingRenders)
 
         function setActive(btn, on) {
             btn.classList.toggle('forge-btn-active', !!on);
@@ -2153,7 +2214,16 @@
         // !important }` still wins, which is deliberate: the output-mask canvas
         // is meant to have no tool chrome.
         try {
-            container.querySelectorAll('.forge-adjust-control, .forge-wmask-control')
+            // .forge-wmask-control only on CNPro's own input canvases: the
+            // slots are wired by weight_mask.js there and nowhere else, so on
+            // the host's img2img/inpaint canvases revealing them produced
+            // visible-but-inert chrome (rule 8c's exact shape). Same scope the
+            // registry declares (canvas_tools.js `scope`), so the contract
+            // reveal below agrees.
+            const sweep = container.closest('.cnet-input-image-group')
+                ? '.forge-adjust-control, .forge-wmask-control'
+                : '.forge-adjust-control';
+            container.querySelectorAll(sweep)
                 .forEach((n) => { n.style.display = ''; });
         } catch (e) {
             console.error('[cnpro] class-based toolbar reveal failed', e);

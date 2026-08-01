@@ -17,8 +17,12 @@
     };
 
     // The canvas container of the tab currently open in a ControlNet unit
-    // (Input tabs and the Output mask tab); falls back to the first container
-    // when the unit is collapsed and nothing is laid out.
+    // (Input tabs and the Output mask tab), or null when NO canvas is laid
+    // out. No first-container fallback: it was justified as "the unit is
+    // collapsed", but these buttons are unreachable in a collapsed unit - the
+    // only reachable nothing-visible state is a P/N prompt tab, where the
+    // fallback silently pushed images into Input 1's HIDDEN canvas. Every
+    // consumer already treats null as "no target".
     window.cnetActiveCanvasContainer = function (unit) {
         if (!unit) return null;
         const containers = unit.querySelectorAll(
@@ -26,7 +30,7 @@
         for (const container of containers) {
             if (window.cnetVisible(container)) return container;
         }
-        return containers[0] || null;
+        return null;
     };
 
     // Click a toolbar button of whichever canvas is the OPEN tab. The

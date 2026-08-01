@@ -40,8 +40,20 @@ def serialize_unit(unit: external_code.ControlNetUnit) -> str:
                 external_code.parse_weight_profile(value))
         return True
 
+    def serializable(value):
+        # from_dict converts list-form profiles at the door, but a unit built
+        # directly against the dataclass can still carry one; its str() has
+        # commas and would trip the token guard below, dropping the WHOLE
+        # unit's infotext. Convert here too - same function, same string.
+        if isinstance(value, (list, tuple)):
+            try:
+                return external_code.weight_profile_to_string(value)
+            except Exception:
+                return value
+        return value
+
     log_value = {
-        field_to_displaytext(field): getattr(unit, field)
+        field_to_displaytext(field): serializable(getattr(unit, field))
         for field in external_code.ControlNetUnit.infotext_fields()
         if include(field, getattr(unit, field))
     }

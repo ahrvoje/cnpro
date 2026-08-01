@@ -7,6 +7,7 @@ from PIL import Image
 import gradio as gr
 
 from modules.api import api
+from . import external_code
 from .global_state import (
     get_all_preprocessor_names,
     get_all_controlnet_names,
@@ -104,7 +105,10 @@ def controlnet_api(_: gr.Blocks, app: FastAPI):
         poses = []
 
         for input_image in controlnet_input_images:
-            img = np.array(api.decode_base64_to_image(input_image)).astype('uint8')
+            # decode_base64_image_array, not a raw np.array cast: palette PNGs
+            # decode to palette indices and 16-bit depth maps wrap mod 256
+            # otherwise (see external_code.decode_base64_image_array).
+            img = external_code.decode_base64_image_array(input_image)
 
             class JsonAcceptor:
                 def __init__(self) -> None:

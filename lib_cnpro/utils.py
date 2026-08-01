@@ -47,6 +47,50 @@ def align_dim_latent(x: int) -> int:
     1 latent unit == 8 pixel unit."""
     return (x // 8) * 8
 
+def predict_hires_dimensions(width, height, hr_scale, hr_resize_x, hr_resize_y,
+                             res_step):
+    """The hires-fix target size the HOST will sample at, computed pre-init.
+
+    Replicates StableDiffusionProcessingTxt2Img.calculate_target_resolution
+    (modules/processing.py) exactly, because the real thing cannot be read:
+    scripts run BEFORE p.init(), so p.hr_upscale_to_x/y do not exist yet and
+    the formula has to be reproduced. It has drifted once already - the host
+    moved from int-truncation to sRound (round-half-up to opts.res_step,
+    default 64), so 832x1216 at scale 1.5 samples at 1280x1856 while the old
+    prediction said 1248x1824, and every hires hint was prepared at the wrong
+    size and silently nearest-resized + center-cropped onto the real latent
+    at sampling time. No error anywhere; the hires pass just came out softer
+    and a sliver off its masks. tests/test_hires_dims.py holds this function
+    equal to the host's own calculate_target_resolution, case by case, so the
+    NEXT drift raises there instead of shipping.
+
+    The one-sided hr_resize case (exactly one of x/y set, the other 0) is the
+    host's aspect-preserving branch and must be reproduced too: the old
+    prediction passed the 0 through, and a zero-height resize is an assertion
+    inside cv2 at Generate time.
+
+    Returns (hr_h, hr_w), unaligned - the caller aligns to the latent grid,
+    which is also what the host's hires pass effectively samples at
+    (hires latent = target // 8).
+    """
+    step = max(int(res_step), 1)
+
+    def s_round(value):
+        # modules.ui.sRound: round-half-up to the resolution step. int() is
+        # floor for the positive values a resolution can be, matching the
+        # host's math.floor without costing this module an import.
+        return int(value / step + 0.5) * step
+
+    if hr_resize_x == 0 and hr_resize_y == 0:
+        return s_round(height * hr_scale), s_round(width * hr_scale)
+    if hr_resize_y == 0:
+        hr_x, hr_y = hr_resize_x, hr_resize_x * (height / width)
+    elif hr_resize_x == 0:
+        hr_x, hr_y = hr_resize_y * (width / height), hr_resize_y
+    else:
+        hr_x, hr_y = hr_resize_x, hr_resize_y
+    return s_round(hr_y), s_round(hr_x)
+
 def prepare_mask(
     mask: Image.Image, p: processing.StableDiffusionProcessing
 ) -> Image.Image:
@@ -172,9 +216,34 @@ def high_quality_resize(x, size):
 
     return y
 
-def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=False):
+def mask_resize(x, size):
+    """Resampler for VALUE masks (painted weights, feathered ramps).
+
+    high_quality_resize is written for DETECTED MAPS and reads a mask's
+    statistics as if it were one: a uniform paint at weight >= ~0.945 has two
+    gray levels (0 and >= 241) and was OTSU-snapped to exactly 1.0 after the
+    resize, and a light feather ramp (3..199 unique levels) was resized with
+    INTER_NEAREST, stair-stepping the very edge the feather exists to smooth.
+    A mask's gray IS the value: plain AREA on downscale (each output pixel is
+    its true coverage average), LINEAR on upscale, nothing thresholded.
+    tests/test_mask_resize.py pins both properties.
+    """
+    if x.shape[0] == size[1] and x.shape[1] == size[0]:
+        return x
+    smaller = (size[0] * size[1]) < (x.shape[0] * x.shape[1])
+    return cv2.resize(x, size, interpolation=cv2.INTER_AREA if smaller else cv2.INTER_LINEAR)
+
+def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=False,
+                          resample=None):
+    # `resample` swaps the RESAMPLER only; every geometric decision (fit, crop,
+    # pad, border fill) below is shared by all callers, which is what keeps a
+    # weight mask aligned with the hint it was painted over under every resize
+    # mode. Pass mask_resize for value masks; the default is the detected-map
+    # resampler.
+    if resample is None:
+        resample = high_quality_resize
     if resize_mode == external_code.ResizeMode.RESIZE:
-        detected_map = high_quality_resize(detected_map, (w, h))
+        detected_map = resample(detected_map, (w, h))
         detected_map = safe_numpy(detected_map)
         return detected_map
 
@@ -193,7 +262,7 @@ def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=
         if fill_border_with_255:
             high_quality_border_color = np.zeros_like(high_quality_border_color) + 255
         high_quality_background = np.tile(high_quality_border_color[None, None], [h, w, 1])
-        detected_map = high_quality_resize(detected_map, (safeint(old_w * k), safeint(old_h * k)))
+        detected_map = resample(detected_map, (safeint(old_w * k), safeint(old_h * k)))
         new_h, new_w, _ = detected_map.shape
         pad_h = max(0, (h - new_h) // 2)
         pad_w = max(0, (w - new_w) // 2)
@@ -203,13 +272,17 @@ def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=
         return detected_map
     else:
         k = max(k0, k1)
-        detected_map = high_quality_resize(detected_map, (safeint(old_w * k), safeint(old_h * k)))
+        detected_map = resample(detected_map, (safeint(old_w * k), safeint(old_h * k)))
         new_h, new_w, _ = detected_map.shape
         pad_h = max(0, (new_h - h) // 2)
         pad_w = max(0, (new_w - w) // 2)
         detected_map = detected_map[pad_h:pad_h+h, pad_w:pad_w+w]
         detected_map = safe_numpy(detected_map)
         return detected_map
+
+def crop_and_resize_mask(mask_map, resize_mode, h, w):
+    """crop_and_resize_image with the mask resampler - IDENTICAL geometry."""
+    return crop_and_resize_image(mask_map, resize_mode, h, w, resample=mask_resize)
 
 def judge_image_type(img):
     return isinstance(img, np.ndarray) and img.ndim == 3 and int(img.shape[2]) in [3, 4]

@@ -50,9 +50,23 @@ resize_mode_aliases = {
 
 def resize_mode_from_value(value: Union[str, int, ResizeMode]) -> ResizeMode:
     if isinstance(value, str):
+        if value.startswith("ResizeMode."):
+            # the enum's repr - what an API-typed unit serialized as before
+            # from_dict normalized the field. Same branch
+            # HiResFixOption.from_value has always had; without it this raised
+            # ValueError on a string this module itself had written.
+            member = getattr(ResizeMode, value.split(".", 1)[1], None)
+            if member is not None:
+                return member
+            logger.warning(f'Unrecognized ResizeMode value {value!r}. Fall back to RESIZE.')
+            return ResizeMode.RESIZE
         return ResizeMode(resize_mode_aliases.get(value, value))
     elif isinstance(value, int):
-        assert value >= 0
+        # warn-and-fall-back, not assert: an assert vanishes under `python -O`
+        # and a negative value then indexed the enum from the wrong end.
+        if value < 0:
+            logger.warning(f'Unrecognized ResizeMode int value {value}. Fall back to RESIZE.')
+            return ResizeMode.RESIZE
         if value == 3:  # 'Just Resize (Latent upscale)'
             return ResizeMode.RESIZE
 
@@ -544,6 +558,35 @@ def parse_weight_profile(profile, phase_offset=0.0, phase_index=0,
     return points
 
 
+def weight_profile_to_string(points) -> str:
+    """The grammar-string equivalent of a list-of-pairs profile.
+
+    The list shape is a documented API affordance ("express weight > 1 without
+    learning the string grammar") - but infotext carries STRINGS, and a raw
+    list's str() contains commas, so serialize_unit's token guard dropped the
+    WHOLE unit from the image's infotext while the generation itself worked.
+    from_dict converts lists through this at the door, so there is exactly one
+    in-memory shape and the round-trip is exact. The y values in the list are
+    ABSOLUTE weights; the grammar carries them normalized against a |lo~hi
+    range, computed here to cover them. 4-decimal rounding matches the
+    editor's own serialization (fmt / '%g').
+    """
+    pts = [(float(x), float(y)) for x, y in points]
+    lo = min(0.0, min(y for _, y in pts))
+    hi = max(1.0, max(y for _, y in pts))
+    span = hi - lo  # >= 1 by construction, never zero
+
+    def num(v):
+        return f"{round(v, 4):g}"
+
+    body = ";".join(f"{num(x)}@{num((y - lo) / span)}" for x, y in pts)
+    if lo == 0.0 and hi == 1.0:
+        return body
+    if lo == 0.0:
+        return f"{body}|{num(hi)}"
+    return f"{body}|{num(lo)}~{num(hi)}"
+
+
 def weight_profile_phase_family(profile) -> Optional[Tuple[str, float]]:
     """(family, kappa) of the MAIN weight profile's multi-phase marker, or None.
 
@@ -555,15 +598,21 @@ def weight_profile_phase_family(profile) -> Optional[Tuple[str, float]]:
     Mises (kappa is 0.0 for the other two, which take no parameter).
 
     Only the main profile can be multi-phase; band segments are not inspected.
-    Only meaningful alongside a cosine token ('C...'), which the editor
-    guarantees; without one there is no wave to divide and every variant would
-    come out identical.
+    Only meaningful alongside a cosine token ('C...'): the phase kernels
+    partition the WAVE, and the fan-out path deliberately skips the 1/N input
+    share because those kernels sum to 1 at every step. Without a 'C' there is
+    no wave to partition - each input would get the full un-shared envelope
+    and the unit would pull N TIMES the drawn curve. The editor always writes
+    the pair; this guard is for hand-edited infotext and raw API strings,
+    which now degrade to the ordinary shared path instead of multiplying.
     """
     if not isinstance(profile, str):
         return None
     main = profile.split('#', 1)[0].split('|', 1)[0]
-    for token in main.split(';'):
-        token = token.strip()
+    tokens = [token.strip() for token in main.split(';')]
+    if not any(token.startswith('C') for token in tokens):
+        return None
+    for token in tokens:
         if token.startswith('P'):
             return _parse_phase_family(token)
     return None
@@ -826,6 +875,34 @@ class GradioImageMaskPair(TypedDict):
     mask: np.ndarray
 
 
+def decode_base64_image_array(value: str) -> np.ndarray:
+    """base64 -> uint8 HWC ndarray, correcting the modes np.array() misreads.
+
+    The host's decode (Image.open + exif_transpose + fix_png_transparency)
+    normalizes nothing, and two real-world PNG shapes decoded to garbage that
+    still generated plausible images - the failure that reads as "bad unit
+    configuration":
+
+    * palette mode without transparency (optipng/pngcrush output for binary
+      edge maps): np.array() yields the palette INDICES, so a black/white
+      canny map with palette {0: black, 1: white} became an image of 0s and
+      1s - near-black, the control near-inert;
+    * 16-bit grayscale (MiDaS depth exports): uint16 0..65535, and
+      .astype('uint8') WRAPS mod 256 into banded noise.
+
+    Palette converts through PIL (RGBA when the file carries transparency, so
+    a mask's alpha survives), 16-bit rescales by 255/65535. Every other mode
+    keeps the exact previous behavior.
+    """
+    img = api.decode_base64_to_image(value)
+    if getattr(img, 'mode', '') == 'P':
+        img = img.convert('RGBA' if 'transparency' in getattr(img, 'info', {}) else 'RGB')
+    arr = np.array(img)
+    if arr.dtype != np.uint8 and getattr(img, 'mode', '') in ('I', 'I;16', 'I;16B', 'I;16L', 'I;16N'):
+        arr = np.round(arr.astype(np.float64) * (255.0 / 65535.0)).clip(0, 255)
+    return arr.astype('uint8')
+
+
 # Input slots a single unit can hold. Gradio cannot create components after the
 # page is built, so every slot is pre-rendered (hidden until the "+" tab opens
 # it) and every slot needs its own dataclass field - which is why this is a
@@ -893,14 +970,19 @@ class ControlNetUnit:
     # (range clamped to [-1, 2]). When set, it overrides
     # weight / guidance_start / guidance_end.
     weight_profile: str = ""
-    # Rainbow-hue weight mask painted over the source image (RGBA, HWC uint8).
-    # Hue encodes local control strength; decoded in scripts/controlnet.py.
-    # The global mask takes priority over the per-band layer masks below.
+    # Weight mask painted over the source image (RGBA, HWC uint8; grayscale
+    # value = weight, feather in alpha - legacy rainbow hues still decode).
+    # WHICH masks run is the profile SELECTOR's decision, not a precedence
+    # rule: the '#B<band>' marker in weight_profile selects EITHER this global
+    # mask (no marker: main/depth modes) OR the per-band masks below - the
+    # non-selected set is DROPPED with a log line, never fallen back to. See
+    # masks_in_force.
     weight_mask: Optional[np.ndarray] = None
-    # Per-band layer masks (same rainbow encoding): coarse = composition band
-    # (deepest injection layers + middle), mid = form band, fine = texture band.
-    # Used only when no global weight_mask is painted; an absent band means
-    # full weight everywhere for that band.
+    # Per-band layer masks (same encoding): coarse = composition band
+    # (deepest injection layers + middle), mid = form band, fine = texture
+    # band. Live only while a band selector is pressed ('#B<band>' in
+    # weight_profile); an absent band means full weight everywhere for that
+    # band.
     weight_mask_coarse: Optional[np.ndarray] = None
     weight_mask_mid: Optional[np.ndarray] = None
     weight_mask_fine: Optional[np.ndarray] = None
@@ -1079,12 +1161,27 @@ class ControlNetUnit:
         )
         for image_field in ['image'] + [f"image_{i}" for i in range(2, MAX_INPUT_IMAGES + 1)]:
             value = getattr(unit, image_field)
+            if isinstance(value, dict):
+                # The field's DECLARED type (GradioImageMaskPair) and the
+                # upstream API's payload shape: {"image": b64, "mask": b64}.
+                # It used to fall through undecoded and die later as
+                # "controlnet is enabled but no input image is given" - loud,
+                # but claiming the opposite of what happened. The mask half is
+                # the unit-level effect mask, so it lands on mask_image when
+                # none was given separately; extra slots contribute their
+                # image half only (there is one mask_image per unit).
+                mask_half = value.get('mask')
+                if (image_field == 'image' and isinstance(mask_half, str)
+                        and unit.mask_image is None):
+                    unit.mask_image = mask_half  # decoded just below
+                value = value.get('image')
+                setattr(unit, image_field, value)
             if isinstance(value, str):
-                setattr(unit, image_field, np.array(api.decode_base64_to_image(value)).astype('uint8'))
+                setattr(unit, image_field, decode_base64_image_array(value))
         if isinstance(unit.mask_image, str):
-            unit.mask_image = np.array(api.decode_base64_to_image(unit.mask_image)).astype('uint8')
+            unit.mask_image = decode_base64_image_array(unit.mask_image)
         if isinstance(unit.weight_mask, str):
-            unit.weight_mask = np.array(api.decode_base64_to_image(unit.weight_mask)).astype('uint8')
+            unit.weight_mask = decode_base64_image_array(unit.weight_mask)
         mask_fields = ['output_mask']
         for slot in range(MAX_INPUT_IMAGES):
             for band in (None, 'coarse', 'mid', 'fine'):
@@ -1094,7 +1191,26 @@ class ControlNetUnit:
         for band_field in mask_fields:
             band_value = getattr(unit, band_field)
             if isinstance(band_value, str):
-                setattr(unit, band_field, np.array(api.decode_base64_to_image(band_value)).astype('uint8'))
+                setattr(unit, band_field, decode_base64_image_array(band_value))
+        # Profile fields may arrive as lists of (x, y) pairs (documented
+        # affordance). One canonical in-memory shape - the grammar string - so
+        # generation, infotext and a paste of that infotext all see the same
+        # thing (a raw list tripped serialize_unit's token guard and dropped
+        # the whole unit from the image's parameters).
+        for profile_field in ('weight_profile', 'balance_profile'):
+            profile_value = getattr(unit, profile_field)
+            if isinstance(profile_value, (list, tuple)) and len(profile_value):
+                setattr(unit, profile_field, weight_profile_to_string(profile_value))
+        # Enum/int-typed fields normalize to their canonical DISPLAY strings:
+        # serialized raw, 'ResizeMode.OUTER_FIT' / '2' reached the infotext
+        # paste path's Radio, whose choices are the display strings, and the
+        # field silently failed to restore on a regenerate-from-image.
+        unit.resize_mode = resize_mode_from_value(unit.resize_mode).value
+        unit.hr_option = HiResFixOption.from_value(unit.hr_option).value
+        try:
+            unit.control_mode = control_mode_from_value(unit.control_mode).value
+        except Exception:
+            pass  # legacy strings keep their meaning in the conversion below
         # Legacy control_mode from API callers: the generation path only reads
         # balance_profile now, so convert here exactly like infotext paste does
         # - otherwise a caller's Balanced/Prompt/Control choice would be

@@ -232,8 +232,13 @@
           // Stop waiting after 10s.
           setTimeout(resolve, 10000);
 
-          // Testing whether photopea is able to accept message.
-          while (true) {
+          // Testing whether photopea is able to accept message. BOUNDED:
+          // offline (or with the iframe blocked) the old `while (true)`
+          // retried a rejected 1-second probe forever, one console line per
+          // second per click, for the life of the page. Ten failed probes ~
+          // the 10 s resolve above; past that the caller proceeds and its own
+          // messaging surfaces the real failure.
+          for (let attempt = 0; attempt < 10; attempt++) {
             try {
               await this.invoke(hasActiveDocument);
               break;
@@ -281,7 +286,14 @@
         };
 
         window.addEventListener("message", photopeaMessageHandle);
-        setTimeout(() => reject("Photopea message timeout"), this.timeout);
+        // The timeout must detach the handler too: rejected-but-listening
+        // handlers accumulated one per failed invoke (navigateIframe alone
+        // can produce ten), each keeping its responseDataPieces closure alive
+        // and swallowing pieces of every later exchange.
+        setTimeout(() => {
+          window.removeEventListener("message", photopeaMessageHandle);
+          reject("Photopea message timeout");
+        }, this.timeout);
         this.photopeaIframe.contentWindow.postMessage(message, "*");
       });
     }

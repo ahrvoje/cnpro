@@ -77,6 +77,11 @@ from backend.misc import image_resize
 from backend.attention import attention_function
 from backend.operations import using_forge_operations
 from backend.patcher.base import ModelPatcher
+# The SAME padding the host applies to its own latent before patchify
+# (backend/nn/lumina.py::NextDiT.forward). Imported rather than re-derived so the
+# control grid cannot disagree with the base grid about what an odd dimension
+# rounds to -- see _hint_for.
+from backend.utils import pad_to_patch_size
 
 from ..adapter import computation_dtype as host_computation_dtype
 from .controlnet_impl import ControlBase, broadcast_image_to
@@ -400,6 +405,15 @@ class ZImageControlNetModel(nn.Module):
         it and never to the base model's (see refine_inside_forward). Defaulting
         to `sequence` keeps v1 exactly as it was.
         """
+        if int(stream.shape[0]) != int(sequence.shape[0]):
+            # get_control aligns the hint to the sampling batch; if that ever
+            # regresses, fail with the actual numbers rather than letting
+            # torch.cat raise its anonymous size error from inside a forward
+            # hook on the first sampling step.
+            raise RuntimeError(
+                f"CNPro Z-Image: control stream batch {int(stream.shape[0])} does "
+                f"not match the model sequence batch {int(sequence.shape[0])}; "
+                f"the hint was not broadcast to the sampling batch.")
         control = torch.cat((sequence[:, :prefix_len], stream), dim=1)
         seed = sequence if unified is None else unified
         hints = []
@@ -540,12 +554,16 @@ class ZImageControlNet(ControlBase):
         self.pending = None
         self.cond_hint_latent = None
         self.encode_hint = None
-        self.hole_mask = None
-        self.known_pixels = None
-        #: inpaint context for v2's hole channels, set per run by the patcher.
-        #: hole_mask: [1,1,H,W] with 1 = REGENERATE (UI convention);
-        #: known_pixels: [1,3,H,W] in [0,1], the image outside the hole.
-        #: Both None -> channels 16..32 are zeros (plain structural control).
+        # v2's stage-one products are full [B, image_len, dim] activations in
+        # the compute dtype (~30 MB apiece at 1024x1024) and were the one
+        # per-run tensor pair this method missed: they sat in VRAM between
+        # generations for as long as the run's control copy stayed referenced.
+        self._stream = None
+        self._unified_x = None
+        # inpaint context for v2's hole channels, set per run by the patcher.
+        # hole_mask: [1,1,H,W] with 1 = REGENERATE (UI convention);
+        # known_pixels: [1,3,H,W] in [0,1], the image outside the hole.
+        # Both None -> channels 16..32 are zeros (plain structural control).
         self.hole_mask = None
         self.known_pixels = None
         self.residual_layout = None
@@ -592,6 +610,14 @@ class ZImageControlNet(ControlBase):
             return self
         if x_noisy.shape[0] != hint.shape[0]:
             hint = broadcast_image_to(hint, x_noisy.shape[0], batched_number)
+            if hint.shape[0] == 1 and x_noisy.shape[0] > 1:
+                # broadcast_image_to returns batch-1 tensors unchanged, which is
+                # right for the UNet path - the residual ADD broadcasts
+                # implicitly - and wrong here: this path CONCATENATES the control
+                # stream onto the batched sequence (emit), and torch.cat cannot
+                # broadcast a batch. Left alone, Batch size >= 2 died on step 1
+                # inside the forward hook. emit() guards the invariant loudly.
+                hint = hint.repeat(x_noisy.shape[0], 1, 1, 1)
 
         self.pending = (hint, float(strength))
         return self
@@ -614,8 +640,20 @@ class ZImageControlNet(ControlBase):
             return None
 
         want = (int(x_noisy.shape[-2]), int(x_noisy.shape[-1]))
+        # The host pads its latent to a patch multiple before patchify
+        # (NextDiT.forward: pad_to_patch_size), so on an odd latent dimension
+        # the base image grid is CEIL(dim/patch). The hint must land on that
+        # padded grid: floored, every control-token row came up one token short
+        # and the stream drifted one column per row against the RoPE positions
+        # it is rotated with - a silent smear that read as "the ControlNet is
+        # weak at this resolution". The hint is encoded at the UNPADDED size
+        # (content rows align 1:1 with the base image) and then padded with the
+        # host's own function, so the pad rows carry the same circular
+        # semantics as the base model's.
+        patch = int(self.config.get('patch_size', 2)) or 2
+        want_pad = (want[0] + (-want[0]) % patch, want[1] + (-want[1]) % patch)
         cached = self.cond_hint_latent
-        if cached is not None and tuple(cached.shape[-2:]) == want:
+        if cached is not None and tuple(cached.shape[-2:]) == want_pad:
             return cached.to(device=x_noisy.device)
 
         encode = getattr(self, 'encode_hint', None)
@@ -628,7 +666,7 @@ class ZImageControlNet(ControlBase):
             logger.warning("CNPro Z-Image: no VAE encoder bound; falling back to "
                            "latent-space resize, which softens hint edges.")
             return torch.nn.functional.interpolate(
-                cached.float().to(x_noisy.device), size=want,
+                cached.float().to(x_noisy.device), size=want_pad,
                 mode='bilinear', align_corners=False).to(cached.dtype)
 
         pixels = self.cond_hint_original
@@ -666,7 +704,10 @@ class ZImageControlNet(ControlBase):
         # immune because padding 16 -> 16 is a no-op, which is exactly why the bug
         # looked like "2.1 is weak" rather than "2.1 is broken".
         # `_pad_channels` is idempotent, so caching the padded form is safe.
-        self.cond_hint_latent = self._pad_channels(latent)
+        # Spatial padding comes LAST, on the channel-complete tensor, so v2's
+        # hole channels get the same circular pad rows as the control latent.
+        self.cond_hint_latent = pad_to_patch_size(
+            self._pad_channels(latent), (patch, patch))
         return self.cond_hint_latent.to(device=x_noisy.device)
 
     def _hole_channels(self, want_hw, dtype, device):
@@ -822,7 +863,10 @@ class ZImageControlNet(ControlBase):
         # meaning the model does not have. The step curve still applies, because
         # `strength` already carries it (see get_control).
         by_place = {}
-        for place, hint in zip(refiner_places, hints):
+        # Same rule as run_inside_forward: zip against THIS unit's refiner
+        # table, not the injector's union (see own_places there).
+        own_refiner = list(getattr(self, 'refiner_places', None) or refiner_places)
+        for place, hint in zip(own_refiner, hints):
             if hint is not None:
                 by_place[place] = hint.to(x_unrefined.dtype) * strength
 
@@ -859,18 +903,29 @@ class ZImageControlNet(ControlBase):
         h_t = hint_latent.shape[-2] // self.config['patch_size']
         w_t = hint_latent.shape[-1] // self.config['patch_size']
 
+        # This unit's OWN site table, stamped by the patcher at patch time. The
+        # `places` argument is the injector's table - the UNION across every
+        # chained unit, because its hooks must cover them all. Zipping THIS
+        # unit's hints against that union sent a v1 unit's six hints to blocks
+        # [0,2,4,...] whenever a unit with a different table installed after
+        # it: no shape error, no warning, control simply steered from the wrong
+        # depths (and the depth/band axis moved with it). The argument remains
+        # as a fallback so a single-unit chain built without the stamp still
+        # works.
+        own_places = list(getattr(self, 'places', None) or places)
+
         # Rebuild the layout only when the geometry actually changes (a hires-fix
         # pass, or a prompt whose padded length moved). Rebuilding it every step
         # would be correct but quietly quadratic: `layer_mask_for` keys its cache
         # on the layout's identity, so a fresh object each forward means the mask
         # resize re-runs for every injection site on every step of every pass,
         # AND the cache grows without bound for the length of the run.
-        key = ((h_t, w_t), prefix_len, tuple(places), block_count)
+        key = ((h_t, w_t), prefix_len, tuple(own_places), block_count)
         if getattr(self, '_layout_key', None) != key:
             self._layout_key = key
             self.residual_layout = TokenResidualLayout(
                 token_grid=(h_t, w_t), prefix_len=prefix_len,
-                places=places, block_count=block_count)
+                places=own_places, block_count=block_count)
             self._layer_mask_cache = None
 
         if self.control_model.variant == 'v2':
@@ -903,7 +958,7 @@ class ZImageControlNet(ControlBase):
         control = {self.GROUP: [h.to(sequence.dtype) * strength for h in hints]}
         control = compute_controlnet_weighting(control, self)
 
-        for place, hint in zip(places, control[self.GROUP]):
+        for place, hint in zip(own_places, control[self.GROUP]):
             if hint is None:
                 continue
             out[place] = hint if place not in out else out[place] + hint
@@ -945,24 +1000,37 @@ class Injector:
         #: before RecursionError). A flag rather than calling .forward() directly,
         #: so any hook the HOST put on those blocks still runs.
         self._in_refine = False
+        #: consecutive forwards seen with no CNPro chain - the self-heal
+        #: counter (see _on_model).
+        self._orphan_forwards = 0
 
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
     def install(cls, model, places, refiner_places=()):
-        """Attach to `model`, or return the injector already attached to it.
+        """Attach to `model`, or extend the injector already attached to it.
 
         The compatibility check is deliberately strict and deliberately EARLY: a
         host refactor that renames `layers` or changes the block signature must
         stop CNPro here, with a message naming the file, rather than let sampling
-        proceed against assumptions that no longer hold.
+        proceed against assumptions that no longer hold. It also runs BEFORE the
+        previous injector is removed, so a refused second install cannot leave
+        the first unit's hooks torn down.
         """
+        places = sorted(set(places))
+        refiner_places = sorted(set(refiner_places))
         existing = getattr(model, cls.ATTR, None)
         if existing is not None:
-            if (existing.places != list(places)
-                    or existing.refiner_places != list(refiner_places)):
-                existing.remove()
-            else:
+            # Chained units may use DIFFERENT site tables (v1 Union + v2.1 Tile
+            # in two units). The injector hooks the UNION of every table - a
+            # hooked block no unit feeds is a no-op - and each unit zips its
+            # hints against its OWN table inside run_inside_forward. Blindly
+            # replacing on mismatch (the previous behaviour) left whichever
+            # unit installed LAST deciding the table for the whole chain, and
+            # the other unit's hints landed on the wrong blocks with no error.
+            places = sorted(set(places) | set(existing.places))
+            refiner_places = sorted(set(refiner_places) | set(existing.refiner_places))
+            if places == existing.places and refiner_places == existing.refiner_places:
                 return existing
 
         for attr in ("layers", "context_refiner", "x_pad_token"):
@@ -996,6 +1064,11 @@ class Injector:
                     f"ControlNet injects at noise_refiner[{max(refiner_places)}] "
                     f"but the model has {len(model.noise_refiner)} refiner blocks.")
 
+        # Only now that the union table validated does the old injector come
+        # off: a refused install must leave the previously installed units
+        # working, not silently uninjected.
+        if existing is not None:
+            existing.remove()
         inj = cls(model, places, refiner_places)
         inj._attach()
         setattr(model, cls.ATTR, inj)
@@ -1058,13 +1131,39 @@ class Injector:
         """
         control = kwargs.get("control")
         self.refiner_hints = None
-        # Duck-typed on the protocol, not on ZImageControlNet, on purpose. The
-        # injector's contract is "give me something with run_inside_forward and I
-        # will place what it returns" - which is the whole of what a Flux, Qwen or
-        # Krea 2 control chain would need from it too, and what lets this be
-        # tested without constructing a 3.1 GB model. A UNet ControlNet's plain
-        # dict does not have the attribute, so it is ignored rather than misread.
-        self.chain = control if hasattr(control, "run_inside_forward") else None
+        if not hasattr(control, "run_inside_forward"):
+            # Self-heal. A forward with no CNPro chain is a generation CNPro is
+            # not steering, so the hooks have no business staying installed.
+            # The normal removal path is process_after_every_sampling; this one
+            # exists for the run that DIED mid-sampling (OOM, a raise inside a
+            # hook) and never reached it - without it, the leaked hooks held
+            # the dead run's chain, hints and towers for the rest of the
+            # session. Two consecutive chainless forwards, not one, so a stray
+            # auxiliary forward inside a controlled run cannot trip it (the
+            # hooks are inert either way - this is hygiene, not behaviour).
+            # torch materialises the hook list before iterating, so removing
+            # from inside the hook is safe; the guard is for versions where
+            # that changes.
+            self._orphan_forwards += 1
+            if self._orphan_forwards >= 2:
+                try:
+                    self.remove()
+                except Exception:
+                    logger.exception(
+                        "CNPro Z-Image: failed to self-remove leaked hooks")
+            self.chain = None
+            self.hints = None
+            self.prefix_len = None
+            return None
+        self._orphan_forwards = 0
+        # Duck-typed on the protocol, not on ZImageControlNet, on purpose (the
+        # hasattr above). The injector's contract is "give me something with
+        # run_inside_forward and I will place what it returns" - which is the
+        # whole of what a Flux, Qwen or Krea 2 control chain would need from it
+        # too, and what lets this be tested without constructing a 3.1 GB
+        # model. A UNet ControlNet's plain dict does not have the attribute, so
+        # it is ignored rather than misread.
+        self.chain = control
         self.hints = None
         self.prefix_len = None
         return None

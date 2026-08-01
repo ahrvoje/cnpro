@@ -12,7 +12,7 @@ import gradio as gr
 from lib_cnpro import global_state, external_code
 from lib_cnpro.external_code import ControlNetUnit
 from lib_cnpro.utils import align_dim_latent, set_numpy_seed, crop_and_resize_image, \
-    prepare_mask, judge_image_type
+    crop_and_resize_mask, prepare_mask, judge_image_type, predict_hires_dimensions
 from lib_cnpro.controlnet_ui.controlnet_ui_group import ControlNetUiGroup
 from lib_cnpro.controlnet_ui.photopea import Photopea
 from lib_cnpro.logging import logger
@@ -403,11 +403,20 @@ class ControlNetForForgeOfficial(scripts.Script):
                 and getattr(p, 'enable_hr', False)
         )
         if high_res_fix:
-            if p.hr_resize_x == 0 and p.hr_resize_y == 0:
-                hr_y = int(p.height * p.hr_scale)
-                hr_x = int(p.width * p.hr_scale)
-            else:
-                hr_y, hr_x = p.hr_resize_y, p.hr_resize_x
+            # The host's CURRENT formula (sRound to opts.res_step, plus the
+            # aspect-preserving one-sided hr_resize branch), replicated in
+            # utils.predict_hires_dimensions because scripts run before
+            # p.init() and cannot read hr_upscale_to_x/y. The old int()+
+            # align-to-8 copy had drifted from the host: every fractional
+            # hr_scale prepared the hires conds at the wrong size, and
+            # get_control then silently nearest-resized + center-cropped them
+            # onto the real latent. A one-sided hr_resize additionally crashed
+            # in cv2 (dsize 0). tests/test_hires_dims.py pins this against the
+            # host's own calculate_target_resolution.
+            res_step = getattr(shared.opts, 'res_step', 64) or 64
+            hr_y, hr_x = predict_hires_dimensions(
+                p.width, p.height, p.hr_scale, p.hr_resize_x, p.hr_resize_y,
+                res_step)
             hr_y = align_dim_latent(hr_y)
             hr_x = align_dim_latent(hr_x)
         else:
@@ -648,13 +657,17 @@ class ControlNetForForgeOfficial(scripts.Script):
             # Same geometric mapping as the control image, so the paint stays
             # aligned with the source under every resize mode; values travel as
             # grayscale, hue decoding already happened at source resolution.
+            # crop_and_resize_MASK: identical geometry, but a value-preserving
+            # resampler - the detected-map heuristics OTSU-snapped near-1.0
+            # paint to exactly 1.0 and stair-stepped feathered ramps (see
+            # utils.mask_resize).
             gray = HWC3((values * 255.0).round().astype(np.uint8))
-            resized = crop_and_resize_image(gray, resize_mode, h, w)
+            resized = crop_and_resize_mask(gray, resize_mode, h, w)
             if mask_previews:
                 attach_extra_result_image(resized)
             tensor = numpy_to_pytorch(resized).movedim(-1, 1)[:, :1]
             if has_high_res_fix:
-                resized_hr = crop_and_resize_image(gray, resize_mode, hr_y, hr_x)
+                resized_hr = crop_and_resize_mask(gray, resize_mode, hr_y, hr_x)
                 tensor_hr = numpy_to_pytorch(resized_hr).movedim(-1, 1)[:, :1]
             else:
                 tensor_hr = tensor
@@ -696,12 +709,12 @@ class ControlNetForForgeOfficial(scripts.Script):
         output_mask_values = decode_weight_mask(unit.output_mask)
         if output_mask_values is not None:
             gray = HWC3((output_mask_values * 255.0).round().astype(np.uint8))
-            resized = crop_and_resize_image(gray, external_code.ResizeMode.RESIZE, h, w)
+            resized = crop_and_resize_mask(gray, external_code.ResizeMode.RESIZE, h, w)
             if mask_previews:
                 attach_extra_result_image(resized)
             params.output_mask = numpy_to_pytorch(resized).movedim(-1, 1)[:, :1]
             if has_high_res_fix:
-                resized_hr = crop_and_resize_image(gray, external_code.ResizeMode.RESIZE, hr_y, hr_x)
+                resized_hr = crop_and_resize_mask(gray, external_code.ResizeMode.RESIZE, hr_y, hr_x)
                 if mask_previews:
                     attach_extra_result_image(resized_hr, is_high_res=True)
                 params.output_mask_for_hr_fix = numpy_to_pytorch(resized_hr).movedim(-1, 1)[:, :1]
@@ -1290,11 +1303,16 @@ class ControlNetForForgeOfficial(scripts.Script):
             # range by global_state.default_processor_res.
             unit.processor_res = global_state.default_processor_res(preprocessor)
 
+        # float(), not int(): several preprocessors declare FRACTIONAL defaults
+        # (MLSD's value/distance thresholds are 0.1 with a minimum of 0.01,
+        # normal_midas' background threshold is 0.4) and int() drove them to 0,
+        # below the slider's own minimum - every API call using the -1 sentinel
+        # ran those preprocessors visibly worse than the UI, with no error.
         if unit.threshold_a < 0:
-            unit.threshold_a = int(preprocessor.slider_1.gradio_update_kwargs.get('value', 1.0))
+            unit.threshold_a = float(preprocessor.slider_1.gradio_update_kwargs.get('value', 1.0))
 
         if unit.threshold_b < 0:
-            unit.threshold_b = int(preprocessor.slider_2.gradio_update_kwargs.get('value', 1.0))
+            unit.threshold_b = float(preprocessor.slider_2.gradio_update_kwargs.get('value', 1.0))
 
         return
 

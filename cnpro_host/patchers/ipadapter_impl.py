@@ -185,17 +185,31 @@ def set_model_patch_replace(model, patch_kwargs, key):
 
 def image_add_noise(image, noise):
     image = image.permute([0, 3, 1, 2])
-    torch.manual_seed(0)  # use a fixed random for reproducible results
-    transforms = TT.Compose([
-        TT.CenterCrop(min(image.shape[2], image.shape[3])),
-        TT.Resize((224, 224), interpolation=TT.InterpolationMode.BICUBIC, antialias=True),
-        TT.ElasticTransform(alpha=75.0, sigma=noise * 3.5),  # shuffle the image
-        TT.RandomVerticalFlip(p=1.0),  # flip the image to change the geometry even more
-        TT.RandomHorizontalFlip(p=1.0),
-    ])
-    image = transforms(image.cpu())
-    image = image.permute([0, 2, 3, 1])
-    image = image + ((0.25 * (1 - noise) + 0.05) * torch.randn_like(image))  # add further random noise
+    # The fixed seed keeps the elastic shuffle reproducible, but manual_seed
+    # RESEEDS THE GLOBAL STREAM (all devices): this runs at patch time, after
+    # the initial latent noise is drawn and before sampling, so every
+    # ancestral/SDE sampler step afterwards drew from a fixed seed-0 sequence
+    # whenever an IP-Adapter unit used noise > 0 - identical sampler noise
+    # across different seeds. Same failure shape and same treatment as the
+    # unit-prompt RNG fix: snapshot, use, restore.
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        torch.manual_seed(0)  # use a fixed random for reproducible results
+        transforms = TT.Compose([
+            TT.CenterCrop(min(image.shape[2], image.shape[3])),
+            TT.Resize((224, 224), interpolation=TT.InterpolationMode.BICUBIC, antialias=True),
+            TT.ElasticTransform(alpha=75.0, sigma=noise * 3.5),  # shuffle the image
+            TT.RandomVerticalFlip(p=1.0),  # flip the image to change the geometry even more
+            TT.RandomHorizontalFlip(p=1.0),
+        ])
+        image = transforms(image.cpu())
+        image = image.permute([0, 2, 3, 1])
+        image = image + ((0.25 * (1 - noise) + 0.05) * torch.randn_like(image))  # add further random noise
+    finally:
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state_all(cuda_rng)
     return image
 
 
@@ -798,7 +812,14 @@ class IPAdapterApply:
 
         clip_embeddings_dim = clip_embed.shape[-1]
 
-        self.ipadapter = IPAdapter(
+        # A LOCAL, deliberately not an attribute: this object is called through
+        # a module-level singleton (ipadapter.py), so anything stored on self
+        # outlives the run - the built IPAdapter (projection head + every
+        # to_k/to_v layer, already moved to the GPU) stayed VRAM-resident until
+        # the NEXT IP-Adapter run replaced it. The attention patches below keep
+        # their own reference for exactly as long as the run's cloned model
+        # lives, which is the correct lifetime.
+        ip_model = IPAdapter(
             ipadapter,
             cross_attention_dim=cross_attention_dim,
             output_cross_attention_dim=output_cross_attention_dim,
@@ -811,15 +832,15 @@ class IPAdapterApply:
             is_instant_id=self.is_instant_id
         )
 
-        self.ipadapter.to(self.device, dtype=self.dtype)
+        ip_model.to(self.device, dtype=self.dtype)
 
         if self.is_instant_id:
-            image_prompt_embeds, uncond_image_prompt_embeds = self.ipadapter.get_image_embeds_instantid(face_embed.to(self.device, dtype=self.dtype))
+            image_prompt_embeds, uncond_image_prompt_embeds = ip_model.get_image_embeds_instantid(face_embed.to(self.device, dtype=self.dtype))
         elif self.is_faceid and self.is_plus:
-            image_prompt_embeds = self.ipadapter.get_image_embeds_faceid_plus(face_embed.to(self.device, dtype=self.dtype), clip_embed.to(self.device, dtype=self.dtype), weight_v2, faceid_v2)
-            uncond_image_prompt_embeds = self.ipadapter.get_image_embeds_faceid_plus(face_embed_zeroed.to(self.device, dtype=self.dtype), clip_embed_zeroed.to(self.device, dtype=self.dtype), weight_v2, faceid_v2)
+            image_prompt_embeds = ip_model.get_image_embeds_faceid_plus(face_embed.to(self.device, dtype=self.dtype), clip_embed.to(self.device, dtype=self.dtype), weight_v2, faceid_v2)
+            uncond_image_prompt_embeds = ip_model.get_image_embeds_faceid_plus(face_embed_zeroed.to(self.device, dtype=self.dtype), clip_embed_zeroed.to(self.device, dtype=self.dtype), weight_v2, faceid_v2)
         else:
-            image_prompt_embeds, uncond_image_prompt_embeds = self.ipadapter.get_image_embeds(clip_embed.to(self.device, dtype=self.dtype), clip_embed_zeroed.to(self.device, dtype=self.dtype))
+            image_prompt_embeds, uncond_image_prompt_embeds = ip_model.get_image_embeds(clip_embed.to(self.device, dtype=self.dtype), clip_embed_zeroed.to(self.device, dtype=self.dtype))
 
         image_prompt_embeds = image_prompt_embeds.to(self.device, dtype=self.dtype)
         uncond_image_prompt_embeds = uncond_image_prompt_embeds.to(self.device, dtype=self.dtype)
@@ -909,7 +930,7 @@ class IPAdapterApply:
         patch_kwargs = {
             "number": 0,
             "weight": self.weight,
-            "ipadapter": self.ipadapter,
+            "ipadapter": ip_model,
             "cond": image_prompt_embeds,
             "uncond": uncond_image_prompt_embeds,
             "weight_type": weight_type,

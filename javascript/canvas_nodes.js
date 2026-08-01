@@ -269,6 +269,20 @@
         return reg ? reg.deferred() : {};
     }
 
+    function scopeMap() {
+        const reg = tools();
+        return (reg && reg.scopes) ? reg.scopes() : {};
+    }
+
+    // A scoped button (registry `scope`) belongs only to canvases inside a
+    // matching container; everywhere else it legitimately stays hidden - the
+    // same standing as DEFERRED, and read off the same registry so the reveal
+    // and the audit cannot disagree about it.
+    function outOfScope(node, base, scopes) {
+        const scope = scopes[base];
+        return !!(scope && node && node.closest && !node.closest(scope));
+    }
+
     // ---------------------------------------------------------------- inject
 
     function inject(uuid) {
@@ -591,11 +605,16 @@
     // Idempotent; safe to call more than once per container.
     function revealToolbar(uuid) {
         const deferred = deferredMap();
+        const scopes = scopeMap();
         let shown = 0;
         toolbarIds().forEach((base) => {
             if (Object.prototype.hasOwnProperty.call(deferred, base)) return;
             const node = document.getElementById(base + '_' + uuid);
             if (node) {
+                // scoped buttons stay hidden off their home containers (the
+                // weight-mask slots on the host's own img2img/inpaint
+                // canvases: injected there, but wired by nothing)
+                if (outOfScope(node, base, scopes)) return;
                 node.style.display = '';
                 shown++;
             }
@@ -674,11 +693,17 @@
             }
         });
 
-        // 2. every non-deferred BUTTON must be visible.
+        // 2. every non-deferred BUTTON must be visible. Scoped buttons
+        //    (registry `scope`) are exempt off their home container for the
+        //    same reason the output-mask chrome is: there, hidden is the
+        //    correct answer, and auditing it produced false alarms on every
+        //    host canvas. Presence was still checked above.
         if (!chromeSuppressed) {
+            const scopes = scopeMap();
             buttons.forEach((base) => {
                 if (Object.prototype.hasOwnProperty.call(deferred, base)) return;
                 const node = document.getElementById(base + '_' + uuid);
+                if (node && outOfScope(node, base, scopes)) return;
                 if (node && isHidden(node)) {
                     problems.push(base + ': injected and wired but not visible in the toolbar');
                 }

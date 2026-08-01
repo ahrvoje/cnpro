@@ -301,7 +301,15 @@
                 // adjustments (crop, levels) can never re-enable a unit the
                 // user deliberately disabled with an image loaded.
                 this._hadAnyImage = this.anyInputImageLoaded();
-                document.addEventListener('forge-image-info', (e) => {
+                // document-level, one per tab INSTANCE - and a gradio
+                // re-render creates a fresh instance, so the listener detaches
+                // itself once its tab leaves the DOM instead of accumulating
+                // (each held the whole detached subtree via `this`).
+                const onImageInfo = (e) => {
+                    if (!this.tab.isConnected) {
+                        document.removeEventListener('forge-image-info', onImageInfo);
+                        return;
+                    }
                     if (!e.target || !this.tab.contains(e.target)) return;
                     this.updateRunButton();
                     const now = this.anyInputImageLoaded();
@@ -309,7 +317,8 @@
                         this.enabledCheckbox.click();
                     }
                     this._hadAnyImage = now;
-                });
+                };
+                document.addEventListener('forge-image-info', onImageInfo);
             }
 
             attachImageStateChangeObserver() {
@@ -344,7 +353,14 @@
                 );
 
                 for (const button of [...pasteButtons, ...pngButtons]) {
-                    button.addEventListener('click', () => {
+                    // self-removing for the same reason as onImageInfo above:
+                    // the paste/send buttons are global and outlive every
+                    // re-rendered tab instance that registered on them
+                    const onClick = () => {
+                        if (!this.tab.isConnected) {
+                            button.removeEventListener('click', onClick);
+                            return;
+                        }
                         // The paste/send img generation info feature goes
                         // though gradio, which is pretty slow. Ideally we should
                         // observe the event when gradio has done the job, but
@@ -354,7 +370,8 @@
                             this.updateActiveState();
                             this.updateActiveUnitCount();
                         }, 2000);
-                    });
+                    };
+                    button.addEventListener('click', onClick);
                 }
             }
 

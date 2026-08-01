@@ -67,7 +67,32 @@ def gates_input_by_mask(preprocessor) -> bool:
 
 
 def sampling_steps(process) -> int | None:
-    return getattr(process, "steps", None)
+    """Model forwards the CURRENT pass will run - the LLLite step axis.
+
+    NOT the UI step count: an img2img pass at denoising strength d runs only
+    the tail of the schedule, and the hires pass runs its own count. LLLite
+    counts forwards (its modules never see a sigma), so handing it p.steps made
+    the counter traverse only the first fraction of every drawn curve on
+    partial passes - an end-weighted profile silently never engaged on img2img.
+    The steps->forwards mapping is the HOST'S OWN (setup_img2img_steps, with
+    the same `steps` argument the host's sampler call passes), never
+    replicated, so it cannot drift.
+    """
+    steps = getattr(process, "steps", None)
+    if not steps:
+        return steps
+    denoise = getattr(process, "denoising_strength", None)
+    is_hr = bool(getattr(process, "is_hr_pass", False))
+    has_init = bool(getattr(process, "init_images", None))
+    if denoise is None or not (is_hr or has_init):
+        return steps
+    explicit = (getattr(process, "hr_second_pass_steps", 0) or steps) if is_hr else None
+    try:
+        from modules.sd_samplers_common import setup_img2img_steps
+        _, t_enc = setup_img2img_steps(process, explicit)
+        return t_enc + 1
+    except Exception:
+        return int(explicit or steps)
 
 
 # --- model family ----------------------------------------------------------

@@ -336,6 +336,7 @@
             slot.last = null;
             slot.preInvert = null;
             slot.bounds = null;
+            slot._wireImg = null; // a cleared import must not be re-fitted
             slot.stroke++;
             if (slot._syncTimer) {
                 clearTimeout(slot._syncTimer);
@@ -638,9 +639,21 @@
             for (const slot of slots) flushSlot(slot);
         }
 
-        painterFlushes.push(flushSlots);
+        registerWhileConnected(painterFlushes, container, flushSlots);
 
         // Session restore / gradio push: show a mask that arrived from python.
+        //
+        // The wire mask can be SMALLER than the image (syncState downscales
+        // oversized exports to fit the transport limit), so the import FITS
+        // the gray data to the image's own dimensions before recoloring -
+        // gray interpolates as valid weights, the same rationale the
+        // downscale gives on the way out. Stamping slot.dims from the wire
+        // image instead made the 500 ms watchdog read every restored
+        // downscaled mask as "image replaced with different dimensions"
+        // within half a second of it appearing, and clearMask(slot, true)
+        // then destroyed the painter copy AND pushed '' to gradio - wiping
+        // the server value the restore had just delivered. THE INVARIANT:
+        // an import can never write to the server.
         function importState(slot) {
             const value = slot.textarea.value;
             if (!value || !value.startsWith('data:image') || slot.hasPaint) return;
@@ -649,51 +662,74 @@
             slot._lastImportTried = value;
             const img = new Image();
             img.onload = () => {
-                const m = document.createElement('canvas');
-                m.width = img.width;
-                m.height = img.height;
-                const ctx = m.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                // the wire format is grayscale (value = weight) but the
-                // painter works in display hues: recolor painted pixels on
-                // the way in. Legacy rainbow masks (old sessions) are
-                // chromatic and pass through unchanged.
-                try {
-                    const data = ctx.getImageData(0, 0, m.width, m.height);
-                    const px = data.data;
-                    let chromatic = false;
-                    for (let i = 0; i < px.length; i += 4) {
-                        if (px[i + 3] < 128) continue;
-                        const hi = Math.max(px[i], px[i + 1], px[i + 2]);
-                        const lo = Math.min(px[i], px[i + 1], px[i + 2]);
-                        if (hi - lo > 2) {
-                            chromatic = true;
-                            break;
-                        }
-                    }
-                    if (!chromatic) {
-                        for (let i = 0; i < px.length; i += 4) {
-                            if (px[i + 3] === 0) continue;
-                            const c = weightToRgb(px[i] / 255);
-                            px[i] = c[0];
-                            px[i + 1] = c[1];
-                            px[i + 2] = c[2];
-                        }
-                        ctx.putImageData(data, 0, 0);
-                    }
-                } catch (err) {}
-                slot.mask = m;
-                slot.dims = img.width + 'x' + img.height;
-                slot.hasPaint = true;
-                // an imported mask can hold paint anywhere: no stroke history
-                // to bound it, so the eraser rescan starts from the full image
-                slot.bounds = { x0: 0, y0: 0, x1: img.width, y1: img.height };
-                slot.stroke++;
-                // what the server holds IS what the painter now holds
-                setSlotState(slot, 'idle');
+                // superseded while decoding (a newer server push landed, or
+                // a stroke started): let the watch import the NEWER value
+                // instead - last VALUE wins, not last decode. Same guard as
+                // decodeLayerImg in canvas_extra.js.
+                if (slot.textarea.value !== value || slot.hasPaint) return;
+                slot._wireImg = img;
+                installImportedMask(slot);
                 ensureLoop();
             };
             img.src = value;
+        }
+
+        // Build the painter mask from the imported wire image: at the INPUT
+        // image's dimensions when it is loaded (the gray is scaled BEFORE
+        // the recolor - hues do not interpolate, gray does), at wire
+        // dimensions when it is not (the watchdog re-fits once the image
+        // arrives, and without an image the mask is inert anyway). Once
+        // fitted the wire copy is dropped, so a LATER dims change is a real
+        // image replacement and clears normally.
+        function installImportedMask(slot) {
+            const img = slot._wireImg;
+            if (!img) return;
+            const fit = imgEl.naturalWidth > 0;
+            const w = fit ? imgEl.naturalWidth : img.width;
+            const h = fit ? imgEl.naturalHeight : img.height;
+            const m = document.createElement('canvas');
+            m.width = w;
+            m.height = h;
+            const ctx = m.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            // the wire format is grayscale (value = weight) but the
+            // painter works in display hues: recolor painted pixels on
+            // the way in. Legacy rainbow masks (old sessions) are
+            // chromatic and pass through unchanged.
+            try {
+                const data = ctx.getImageData(0, 0, w, h);
+                const px = data.data;
+                let chromatic = false;
+                for (let i = 0; i < px.length; i += 4) {
+                    if (px[i + 3] < 128) continue;
+                    const hi = Math.max(px[i], px[i + 1], px[i + 2]);
+                    const lo = Math.min(px[i], px[i + 1], px[i + 2]);
+                    if (hi - lo > 2) {
+                        chromatic = true;
+                        break;
+                    }
+                }
+                if (!chromatic) {
+                    for (let i = 0; i < px.length; i += 4) {
+                        if (px[i + 3] === 0) continue;
+                        const c = weightToRgb(px[i] / 255);
+                        px[i] = c[0];
+                        px[i + 1] = c[1];
+                        px[i + 2] = c[2];
+                    }
+                    ctx.putImageData(data, 0, 0);
+                }
+            } catch (err) {}
+            slot.mask = m;
+            slot.dims = fit ? currentDims() : (img.width + 'x' + img.height);
+            slot.hasPaint = true;
+            // an imported mask can hold paint anywhere: no stroke history
+            // to bound it, so the eraser rescan starts from the full image
+            slot.bounds = { x0: 0, y0: 0, x1: w, y1: h };
+            slot.stroke++;
+            // what the server holds IS what the painter now holds
+            setSlotState(slot, 'idle');
+            if (fit) slot._wireImg = null;
         }
 
         // The overlays follow the displayed image through pan/zoom/resize; a
@@ -750,7 +786,16 @@
                 // here would wipe the restored state), and without an image
                 // the mask is inert anyway.
                 if (slot.hasPaint && imgEl.naturalWidth && slot.dims !== currentDims()) {
-                    clearMask(slot, true);
+                    if (slot._wireImg) {
+                        // not a replacement: the import installed at wire
+                        // dimensions before the image finished loading. Fit
+                        // it to the image now (drops _wireImg), instead of
+                        // destroying the restored mask AND the server value
+                        // behind it.
+                        installImportedMask(slot);
+                    } else {
+                        clearMask(slot, true);
+                    }
                 }
                 // channel cleared server-side (close tab, unit reset): drop
                 // the local paint too, otherwise the next stroke-end would
@@ -816,7 +861,7 @@
             }
         }
 
-        painterWatches.push(watchSlots);
+        registerWhileConnected(painterWatches, container, watchSlots);
         // ...and once now, so the tooltips describe the right selector on the
         // first frame the toolbar is visible rather than up to 500 ms later.
         // The tick keeps it in step afterwards; the editor and the painter
@@ -1059,7 +1104,7 @@
         // AFTER setup is a value-only textarea write that no observer and no
         // event sees - without this poll it would stay invisible and the next
         // stroke would overwrite it
-        painters.push(function watchLateImports() {
+        registerWhileConnected(painters, container, function watchLateImports() {
             for (const slot of slots) {
                 const value = slot.textarea.value;
                 if (!slot.hasPaint && value && value.startsWith('data:image')
@@ -1105,6 +1150,25 @@
     const painters = [];
     const painterWatches = [];
     const painterFlushes = [];
+
+    // A gradio re-render replaces the container, the node-level __cnetWmaskInit
+    // latch dies with it, and setup() registers a FRESH set of closures - so
+    // the old ones (each holding full-resolution mask canvases and the
+    // detached subtree) used to stay in these arrays forever, running on every
+    // 500 ms tick and every Generate click, unbounded in re-render count.
+    // Every registration is therefore bound to its container: once the
+    // container leaves the DOM, the entry removes itself on its next call.
+    function registerWhileConnected(list, node, fn) {
+        const entry = function () {
+            if (!node.isConnected) {
+                const i = list.indexOf(entry);
+                if (i >= 0) list.splice(i, 1);
+                return;
+            }
+            fn();
+        };
+        list.push(entry);
+    }
 
     // ------------------------------------------------------------------------
     // WHY THIS RETRIES, AND WHY IT USED NOT TO
