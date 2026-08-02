@@ -96,20 +96,33 @@
     // because every input is a separate control: masking input 3 restricts what
     // input 3 contributes and leaves the others alone.
     function slotDefsFor(container) {
+        // THE OUTPUT canvas carries all four: it is the only surface on which
+        // "which part of the frame does the coarse band steer" is a question
+        // with an answer, because the bands are UNet DEPTH and depth is
+        // resolved against the image being generated.
         const group = container.closest('.cnet-output-mask-group');
         if (group) {
-            return [{ key: 'global', button: BAND_BUTTONS.global, state: '.cnet-output-mask-state' }];
+            return Object.keys(BAND_BUTTONS).map((key) => ({
+                key: key,
+                button: BAND_BUTTONS[key],
+                state: `.cnet-omask-${key}-state`,
+            }));
         }
+        // AN INPUT canvas carries G alone. An input mask says which part of
+        // this input is worth reading; it has no per-depth variant, and for an
+        // embedding preprocessor (IP-Adapter) it is not spatially related to
+        // the output at all - its painted VALUE is read as this input's scalar
+        // share of the unit (external_code.input_mask_share).
         const input = container.closest('.cnet-input-image-group');
         if (!input) return null;
         const match = /(?:^|\s)cnet-input-slot-(\d+)(?:\s|$)/.exec(input.className);
         if (!match) return null;
         const slot = match[1];
-        return Object.keys(BAND_BUTTONS).map((key) => ({
-            key: key,
-            button: BAND_BUTTONS[key],
-            state: `.cnet-wmask-${slot}-${key}-state`,
-        }));
+        return [{
+            key: 'global',
+            button: BAND_BUTTONS.global,
+            state: `.cnet-wmask-${slot}-global-state`,
+        }];
     }
 
     function weightToRgb(v) {
@@ -359,10 +372,27 @@
                 const m = document.createElement('canvas');
                 m.width = w;
                 m.height = h;
+                // A NEW PICTURE UNDER THE PAINT IS NOT A REASON TO THROW THE
+                // PAINT AWAY. This used to start blank whenever the natural
+                // dimensions moved, which is exactly what an insert (the ⤵I /
+                // ⤵O buttons) does - so inserting a reference silently wiped a
+                // mask that had just been painted, with no undo and nothing
+                // said. The mask is registered with the FRAME, not with those
+                // pixels: it is rescaled onto the new geometry instead, the
+                // same way python maps it onto the output.
+                const prev = slot.mask;
+                const carried = !!(prev && slot.hasPaint && prev.width && prev.height);
+                if (carried) {
+                    const ctx = m.getContext('2d');
+                    ctx.imageSmoothingEnabled = true;
+                    ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, w, h);
+                }
                 slot.mask = m;
                 slot.dims = dims;
-                slot.hasPaint = false;
+                slot.hasPaint = carried;
                 slot.last = null;
+                // the old bbox is in the OLD pixel grid; null means "unknown",
+                // which the eraser rescan already treats as the whole image
                 slot.bounds = null;
             }
             return slot.mask;
@@ -837,7 +867,12 @@
         // selector's decision alone (liveSlotKeys / masks_in_force), unchanged.
         let lastBand = null;
         function reflectProfileBand() {
-            const band = isOutputMask ? null : selectedProfileBand(unit);
+            // INVERTED from where this coupling used to sit. The four slots
+            // that follow the profile selector are the OUTPUT ones now, since
+            // that is where the profiles' spatial half lives; an input canvas
+            // holds G alone and G is always in force there, so it never needs
+            // the "not in use" note.
+            const band = isOutputMask ? selectedProfileBand(unit) : null;
             if (band === lastBand) return;   // per 500ms tick; usually a no-op
             lastBand = band;
             const live = band === null ? null : liveSlotKeys(band);

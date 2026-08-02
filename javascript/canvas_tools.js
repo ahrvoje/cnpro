@@ -430,19 +430,27 @@
 
         // ---- weight masks: CNPro's own feature, not the fork's canvas.
         //
-        // THE FOUR SLOTS ARE THE FOUR WEIGHT PROFILES' SPATIAL HALF. G belongs
-        // to the MAIN profile, C/M/F to the coarse/mid/fine band profiles, and
-        // the profile editor's band selector decides which of them a generation
-        // uses (weight_mask.js liveSlotKeys, external_code.masks_in_force).
-        // Hence the glyph colours: each slot wears the colour of the plot line
-        // whose profile it belongs to, so the pairing is legible without
-        // reading a tooltip.
+        // TWO SURFACES, TWO QUESTIONS. On an INPUT canvas there is one slot, G,
+        // and it answers "which part of this input is worth reading" - a shape,
+        // plus one number (the painted value, reduced to this input's scalar
+        // share). On the OUTPUT canvas there are four, and they are the four
+        // profiles' spatial half: G for the main profile (with depth/drift,
+        // which shape main), C/M/F for the band profiles, with the editor's
+        // band selector deciding which run (weight_mask.js liveSlotKeys,
+        // external_code.masks_in_force). Hence the glyph colours: each slot
+        // wears the colour of the plot line whose profile it belongs to.
+        //
+        // The bands are UNET DEPTH, which is why they are output-side: depth is
+        // a property of where control is injected, and an input canvas may not
+        // be spatially related to the output at all (an IP-Adapter reference is
+        // not). G is the only slot both surfaces share, so it is the only one
+        // scoped to both.
         {
             id: 'wmaskGlobal',
             button: {id: 'wmaskButton', icon: 'G', control: 'wmask', gap: true,
-                     scope: '.cnet-input-image-group',
+                     scope: '.cnet-input-image-group, .cnet-output-mask-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-global',
-                     title: 'Global weight mask (G): paint hue-coded control strength over the image (red = 1 ... violet = 0); restricts ALL control to the painted region. Belongs to the MAIN weight profile - it is applied while the main (or depth) selector is pressed in the profile editor, and the C/M/F masks are applied instead while a band is selected. Pick weight and brush size below, click outside the image to exit'},
+                     title: 'Global weight mask (G). On an INPUT: which part of this input is read at all - the painted region gates what the control model (or CLIP) is shown of it, and the painted VALUE is averaged into this input\'s share of the unit. On the OUTPUT mask: where the MAIN profile\'s control lands, applied while the main (or depth) selector is pressed in the profile editor. Pick weight and brush size below, click outside the image to exit'},
             menu: {
                 id: 'wmaskBox',
                 rows: [
@@ -462,23 +470,23 @@
         {
             id: 'wmaskCoarse',
             button: {id: 'wmaskCoarseButton', icon: 'C', control: 'wmask',
-                     scope: '.cnet-input-image-group',
+                     scope: '.cnet-output-mask-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-coarse',
-                     title: 'Coarse-band weight mask (C): composition layers (deepest injections + middle block). Belongs to the COARSE band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
+                     title: 'Coarse-band output mask (C): where the composition layers (deepest injections + middle block) steer the OUTPUT. Belongs to the COARSE band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
         },
         {
             id: 'wmaskMid',
             button: {id: 'wmaskMidButton', icon: 'M', control: 'wmask',
-                     scope: '.cnet-input-image-group',
+                     scope: '.cnet-output-mask-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-mid',
-                     title: 'Mid-band weight mask (M): form layers. Belongs to the MID band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
+                     title: 'Mid-band output mask (M): where the form layers steer the OUTPUT. Belongs to the MID band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
         },
         {
             id: 'wmaskFine',
             button: {id: 'wmaskFineButton', icon: 'F', control: 'wmask',
-                     scope: '.cnet-input-image-group',
+                     scope: '.cnet-output-mask-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-fine',
-                     title: 'Fine-band weight mask (F): texture layers (shallowest injections). Belongs to the FINE band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
+                     title: 'Fine-band output mask (F): where the texture layers (shallowest injections) steer the OUTPUT. Belongs to the FINE band profile - the C/M/F masks are applied while a band selector is pressed in the profile editor, and the G mask instead while main/depth is. Among them, a band without its own mask contributes ZERO control'},
         },
     ];
 

@@ -507,6 +507,7 @@ the shape is what recurs — the individual bugs never look alike.
 | `controlnet.py` called `memory_management.get_computation_dtype()` | no such function exists | every SD1.5/SDXL ControlNet reported as "unsupported file" |
 | `base.py` defaults every capability flag to `False` | a patcher forgets to declare one | that feature silently stops working for that patcher |
 | `lllite.py` passes `depth_profile=` to `load_lllite` | `load_lllite` never declared the keyword | `TypeError` on **every** ControlLLLite generation (found 2026-07-27) |
+| `canvas_tools.js` moved the C/M/F `scope` to the output-mask group | `style.css` still hid those ids there with `display: none !important`, and `canvas_extra.js` swept `.forge-wmask-control` on input groups only | the moved buttons appeared on **neither** canvas; nothing raised (found 2026-08-02) |
 
 In the first three, **nothing raised.** An empty `querySelectorAll` is not an
 error, a swallowed `AttributeError` is not an error, and an inherited `False` is
@@ -521,6 +522,16 @@ does the job just as well. The seam that mattered is that `lllite.py` calls
 `load_lllite`, not the `load_control_net_lllite_patch` underneath it, so the
 profile had been added to the function that reads it and not to the one that is
 called. Both new profiles are now named in both.
+
+The fifth is the newest and the most instructive, because the declaration is
+spread across **four** files rather than two: a toolbar slot exists only if the
+registry scopes it here, the stylesheet does not hide it here, the class sweep
+reaches this container kind, and the painter wires it. Moving C/M/F from the
+input canvases to the output-mask tab meant changing all four; one was changed,
+and the buttons vanished from both surfaces with no error, no warning and no
+failing test. The lesson is not "grep harder" — it is that a slot set is a
+declaration with four honourers, so the guard has to be a test that renders both
+container kinds and asserts the visible button set, not four careful edits.
 
 The common cause is not carelessness. It is a **default that means "absent"**,
 combined with **no check that the declaration was made deliberately**. Both parts

@@ -2243,13 +2243,17 @@
         // !important }` still wins, which is deliberate: the output-mask canvas
         // is meant to have no tool chrome.
         try {
-            // .forge-wmask-control only on CNPro's own input canvases: the
-            // slots are wired by weight_mask.js there and nowhere else, so on
-            // the host's img2img/inpaint canvases revealing them produced
-            // visible-but-inert chrome (rule 8c's exact shape). Same scope the
-            // registry declares (canvas_tools.js `scope`), so the contract
-            // reveal below agrees.
-            const sweep = container.closest('.cnet-input-image-group')
+            // .forge-wmask-control only on CNPro's own mask canvases - the
+            // INPUT groups (G) and the OUTPUT-mask group (G/C/M/F). The slots
+            // are wired by weight_mask.js on exactly those and nowhere else, so
+            // on the host's img2img/inpaint canvases revealing them produced
+            // visible-but-inert chrome (rule 8c's exact shape). WHICH slots
+            // each surface shows is style.css's job, by id; this only decides
+            // that the group has a painter at all. Same scope the registry
+            // declares (canvas_tools.js `scope`), so the contract reveal below
+            // agrees.
+            const sweep = (container.closest('.cnet-input-image-group')
+                           || container.closest('.cnet-output-mask-group'))
                 ? '.forge-adjust-control, .forge-wmask-control'
                 : '.forge-adjust-control';
             container.querySelectorAll(sweep)

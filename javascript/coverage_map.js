@@ -26,7 +26,9 @@
 // ---------------------------------
 // Modelled: enabled units; every Input that will run (active_canvas.js
 // cnetLiveInputs - the same set the generation fans out over, so the multi-
-// phase split lands on the same count); the weight profile with its waves,
+// phase split lands on the same count), each carrying the 1/N input share
+// python applies so a unit's pull does not grow with its Input tabs; the
+// weight profile with its waves,
 // mid controls, response exponent and range; band mode (the C/M/F profiles
 // times the main profile, each with its own mask, absent bands zero); the
 // depth curve as its mean multiplier; the G / C/M/F weight masks; the output
@@ -558,9 +560,24 @@
      * unit that is enabled and invisible on the map is exactly the thing this
      * panel must not pass over in silence.
      */
-    function unitContributions(unit, grid, gen, index) {
+    function unitContributions(unit, grid, gen, index, channel) {
         const enabled = unit.querySelector('.cnet-unit-enabled input');
         if (!enabled || !enabled.checked) return Promise.resolve({contributions: []});
+
+        const mechanism = mechanismOf(unit);
+        if (mechanism !== channel) {
+            // Not silence: a unit missing from the map because it injects
+            // somewhere else must say so, or the map reads as "this unit is
+            // doing nothing" - which is the opposite of the truth.
+            const label = 'unit ' + index;
+            if (mechanism === 'lllite') {
+                return Promise.resolve({contributions: [], note:
+                    label + ': ControlLLLite, no mask route at all (full frame, '
+                    + 'shown on neither channel)'});
+            }
+            return Promise.resolve({contributions: [], note:
+                label + ': ' + mechanism + ' channel'});
+        }
 
         // named by POSITION, not by scraping the accordion header: the header
         // text is decorated (active-unit badge, control type) by active_units.js
@@ -598,10 +615,38 @@
         const depth = depthScale(ed, packed);
         const npx = grid.w * grid.h;
 
+        // THE INPUT SHARE. Each Input is a control of its own and the patcher
+        // chain SUMS them, so python gives each a SHARE of the unit and the
+        // shares sum to 1 (scripts/cnpro.py, params.input_shares) - the unit
+        // weight means "how hard this unit pulls" no matter how many Input tabs
+        // are open, and no unit can exceed its own profile's maximum. Without
+        // this factor the map read N times the truth for every multi-input
+        // unit: a 4-input unit at weight 1 was drawn as a solid 4.00 with three
+        // red oversaturation contours, when the run is at 1.00 and perfectly in
+        // range. That is the worst direction for this panel to be wrong in - it
+        // is the oversaturation alarm.
+        //
+        // EVEN shares here, i.e. 1/N. Uneven ones come from the painted VALUES
+        // of the inputs' G masks, which would cost a full decode of every input
+        // mask on every tick to reproduce; the total is 1 either way, so the
+        // only thing this approximates is how that 1 is divided between inputs
+        // that were painted at different weights.
+        //
+        // NOT applied when a phase family fans the MAIN curve out: python then
+        // replaces the shared profile with the per-input multiphase parse
+        // (unshared), because those n lobes already sum to exactly 1 on their
+        // own (external_code._phase_weight, tests/test_partition_of_unity.py).
+        // `waveFactor` below is what models that, so applying the share too
+        // would divide by N twice.
+        const share = count > 1 && !(packed.main && packed.main.phaseFamily)
+            ? 1 / count : 1;
+        // Band mode takes the share through `strength` instead of through the
+        // curve (python zeroes the main profile there and scales strength),
+        // which is why it does not read the main profile's family marker.
+        const bandShare = count > 1 ? 1 / count : 1;
+
         // Per-input, per-slot weights first (pure math, no decoding yet), then
-        // the masks they need. Each Input is a control of its own and their
-        // residuals are SUMMED, so a unit with two Inputs and no wave pulls
-        // twice - which is the first thing this map is for.
+        // the masks they need.
         const specs = [];
         live.forEach((input, phase) => {
             const main = sampleCurve(ed, packed.main, lo, hi, count, phase, 'main');
@@ -610,7 +655,7 @@
                     slot: input.slot,
                     fallback: !!input.fallback,
                     band: 'global',
-                    scale: depth,
+                    scale: depth * share,
                     weights: main,
                 });
                 return;
@@ -632,38 +677,48 @@
                     // the three bands drive DIFFERENT injection layers, so the
                     // unit's overall pull on a pixel is their mean, not their
                     // sum - a coarse-only mask does not make the unit weigh
-                    // three times what it weighs
-                    scale: depth / BANDS.length,
+                    // three times what it weighs. The input share is the same
+                    // 1/N the global branch takes, for the same reason.
+                    scale: (depth / BANDS.length) * bandShare,
                     weights: w,
                 });
             }
         });
 
-        const outputValue = textareaValue(unit, '.cnet-output-mask-state textarea');
-        const jobs = specs.map((spec) => {
-            const value = spec.fallback ? '' : textareaValue(
-                unit, '.cnet-wmask-' + spec.slot + '-' + spec.band + '-state textarea');
+        // THE SPATIAL HALF IS OUTPUT-SIDE NOW. G multiplies the main profile's
+        // contributions and C/M/F their own band's, all in output geometry
+        // ('Just Resize' - the painted rectangle maps onto the output
+        // rectangle; the unit's resize mode maps SOURCE onto output and has no
+        // business here). The INPUT mask is not folded in at all on the
+        // attention channel: it is not registered with the output. On the
+        // residual channel it is, so it rides through the unit's resize mode
+        // exactly as the hint does.
+        const outputSlots = ['global'].concat(BANDS);
+        const outputJobs = outputSlots.map((key) => cachedMask(
+            textareaValue(unit, '.cnet-omask-' + key + '-state textarea'),
+            'Just Resize', grid.w, grid.h).then((mask) => [key, mask]));
+
+        const inputJobs = specs.map((spec) => {
+            const value = (spec.fallback || channel !== 'residual') ? '' : textareaValue(
+                unit, '.cnet-wmask-' + spec.slot + '-global-state textarea');
             return cachedMask(value, mode, grid.w, grid.h)
                 .then((mask) => ({spec: spec, mask: mask}));
         });
 
-        return Promise.all(jobs)
-            .then((resolved) => cachedMask(outputValue, 'Just Resize', grid.w, grid.h)
-                .then((outputMask) => ({resolved: resolved, outputMask: outputMask})))
-            .then((got) => {
+        return Promise.all([Promise.all(inputJobs), Promise.all(outputJobs)])
+            .then(([resolved, outputPairs]) => {
+                const outputMasks = new Map(outputPairs);
                 const contributions = [];
-                // restrict-to-painted, per input: with NOTHING painted in the
-                // live slots the unit acts on the whole frame; with something
-                // painted, an absent band is ZERO (scripts/cnpro.py, "absent
-                // bands zeroed") rather than neutral
-                const paintedBySlot = new Map();
-                for (const item of got.resolved) {
-                    if (item.mask) paintedBySlot.set(item.spec.slot, true);
-                }
-                for (const item of got.resolved) {
-                    const painted = paintedBySlot.get(item.spec.slot);
-                    if (bandMode && painted && !item.mask) continue; // zeroed band
-                    const spatial = foldMask(item.mask, got.outputMask, npx);
+                // restrict-to-painted on the OUTPUT bands: with any of C/M/F
+                // painted, an absent band injects nothing (scripts/cnpro.py,
+                // "absent bands zeroed"); with none painted the bands act on
+                // the whole frame.
+                const anyBandPainted = BANDS.some((b) => outputMasks.get(b));
+                for (const item of resolved) {
+                    const isBand = item.spec.band !== 'global';
+                    const outMask = outputMasks.get(isBand ? item.spec.band : 'global');
+                    if (isBand && anyBandPainted && !outMask) continue; // zeroed band
+                    const spatial = foldMask(item.mask, outMask, npx);
                     const w = new Float32Array(STEPS);
                     let any = false;
                     for (let t = 0; t < STEPS; t++) {
@@ -676,7 +731,7 @@
                 if (!contributions.length) {
                     return {contributions: [], note: label + ': weight 0 everywhere'};
                 }
-                return {contributions: contributions};
+                return {contributions: contributions, unit: label, inputs: count};
             });
     }
 
@@ -715,6 +770,29 @@
     // drives it. Each reader states its own default, because a gradio component
     // that has not rendered yet must not silently mean something else.
 
+    /** Which injection mechanism the map is reading. Cross-attention is the
+     *  default (coverage.py says why). */
+    function channelOf(panel) {
+        const checked = panel.querySelector(
+            '.cnet-coverage-channel input[type="radio"]:checked');
+        return checked && checked.value === 'residual' ? 'residual' : 'attention';
+    }
+
+    /** The mechanism a unit's selected MODEL injects through, from the hidden
+     *  `.cnet-model-type-state` channel (classify_controlnet_type, rewritten on
+     *  model.change). Fails OPEN to the residual channel on unknown/none, the
+     *  same rule BALANCE_SUPPORT_KINDS follows: a model whose type cannot be
+     *  read from the safetensors header must not silently vanish from the map.
+     *  ControlLLLite is neither - it modulates attention PROJECTIONS and has no
+     *  mask route at all - so it is named and excluded rather than folded into
+     *  a channel it does not belong to. */
+    function mechanismOf(unit) {
+        const kind = textareaValue(unit, '.cnet-model-type-state textarea').trim();
+        if (kind === 'ipadapter') return 'attention';
+        if (kind === 'lllite') return 'lllite';
+        return 'residual';
+    }
+
     function metricOf(panel) {
         const checked = panel.querySelector(
             '.cnet-coverage-metric input[type="radio"]:checked');
@@ -738,8 +816,8 @@
         // change listener: the listener is the fast path, this is the one that
         // cannot be missed (a value written by ui-config.json or a paste fires
         // nothing this module hears)
-        const parts = [size.w, size.h, metricOf(panel), mapAlphaOf(panel),
-                       st.backgroundKey];
+        const parts = [size.w, size.h, channelOf(panel), metricOf(panel),
+                       mapAlphaOf(panel), st.backgroundKey];
         const root = tabRoot(panel);
         if (root) {
             root.querySelectorAll('.input-accordion').forEach((unit) => {
@@ -748,14 +826,18 @@
                 if (!enabled || !enabled.checked) return;
                 parts.push(modeOf(unit));
                 parts.push(textareaValue(unit, '[id$="_controlnet_weight_profile"] textarea'));
-                parts.push(channelKey(textareaValue(unit, '.cnet-output-mask-state textarea')));
+                // the model type decides WHICH CHANNEL this unit lands on, so a
+                // model change has to move the map even when nothing else did
+                parts.push(textareaValue(unit, '.cnet-model-type-state textarea'));
+                for (const band of ['global'].concat(BANDS)) {
+                    parts.push(channelKey(textareaValue(
+                        unit, '.cnet-omask-' + band + '-state textarea')));
+                }
                 const live = window.cnetLiveInputs ? window.cnetLiveInputs(unit) : [];
                 for (const input of live) {
                     parts.push('i' + input.slot);
-                    for (const band of ['global'].concat(BANDS)) {
-                        parts.push(channelKey(textareaValue(
-                            unit, '.cnet-wmask-' + input.slot + '-' + band + '-state textarea')));
-                    }
+                    parts.push(channelKey(textareaValue(
+                        unit, '.cnet-wmask-' + input.slot + '-global-state textarea')));
                 }
             });
         }
@@ -794,16 +876,24 @@
         const gen = genOf(panel);
         const root = tabRoot(panel);
         const units = root ? Array.from(root.querySelectorAll('.input-accordion')) : [];
-        Promise.all(units.map((unit, i) => unitContributions(unit, grid, gen, i)))
+        const channel = channelOf(panel);
+        Promise.all(units.map((unit, i) => unitContributions(unit, grid, gen, i, channel)))
             .then((results) => {
                 if (token !== st.token) return; // superseded by a newer run
                 const contributions = [];
                 const notes = [];
+                const budget = [];
                 for (const r of results) {
                     for (const c of r.contributions) contributions.push(c);
                     if (r.note) notes.push(r.note);
+                    // per-unit budget line: WHERE is a picture, HOW MUCH is a
+                    // number, and on the attention channel the number is the
+                    // part nobody can do in their head
+                    if (r.unit && r.contributions.length) {
+                        budget.push(r.unit + (r.inputs > 1 ? ' (' + r.inputs + ' in)' : ''));
+                    }
                 }
-                paint(panel, st, size, grid, contributions, notes);
+                paint(panel, st, size, grid, contributions, notes, channel, budget);
             })
             .catch((err) => {
                 console.error('[cnpro coverage] the map could not be computed', err);
@@ -817,7 +907,7 @@
             });
     }
 
-    function paint(panel, st, size, grid, contributions, notes) {
+    function paint(panel, st, size, grid, contributions, notes, channel, budget) {
         const wm = api('cnproWeightMask', 'the hue ramp');
         const ramp = wm ? wm.weightToRgb : ((v) => [255 * v, 0, 255 * (1 - v)]);
         const canvas = st.canvas;
@@ -932,6 +1022,7 @@
         if (st.status) {
             const pct = (n) => (100 * n / field.length).toFixed(1) + '%';
             const bits = [
+                (channel === 'residual' ? 'residual' : 'cross-attention'),
                 contributions.length + (contributions.length === 1
                     ? ' contribution' : ' contributions'),
                 size.w + '×' + size.h,
@@ -940,6 +1031,13 @@
                 pct(field.length - covered) + ' uncovered',
                 pct(over) + ' above 1',
             ];
+            // Every unit normalizes its own inputs to sum to 1, so nothing on
+            // this channel can pass 1 by itself. Say what a reading above 1
+            // therefore IS, instead of leaving the red contours to be read as
+            // "something is broken".
+            if (over && budget && budget.length > 1) {
+                bits.push('>1 is ' + budget.length + ' units stacking: ' + budget.join(' + '));
+            }
             if (scaled) bits.push('computed at ' + cw + '×' + ch);
             if (notes.length) bits.push(notes.join('; '));
             st.status.textContent = bits.join(' · ');

@@ -31,6 +31,7 @@ The ids/classes are a contract with coverage_map.js:
                               tab name from - no data-* carrier element, because
                               an element that exists only to hold two strings is
                               exactly the dead chrome the audit hunts for
+  .cnet-coverage-channel      cross-attention / residual radio
   .cnet-coverage-metric       mean / peak radio
   .cnet-coverage-alpha        how strongly the map paints over a backdrop
   .cnet-coverage-status       the numbers, under the controls
@@ -142,6 +143,22 @@ def render_coverage_panel(elem_id_tabname: str, gen_type: str) -> None:
             # gradio renders it above the control, where it cost more height
             # than the control itself - the explanation lives in the panel's
             # tooltip and in the status line, which names the metric in force.
+            # WHICH INJECTION MECHANISM. Adding a ControlNet's residual weight
+            # to an IP-Adapter's attention weight is a category error - they
+            # land in different places in the UNet and never sum with each
+            # other - so the channels are read one at a time and never
+            # combined. Cross-attention first and by default: a session
+            # typically holds several IP-Adapters and one canny or depth, and
+            # the IP-Adapter side is where the arithmetic (per-input shares,
+            # bands, several units on the same attention sites) is impossible
+            # to do in your head.
+            gr.Radio(
+                choices=["cross-attention", "residual"],
+                value="cross-attention",
+                label="Coverage channel",
+                elem_id=f"{elem_id_tabname}_coverage_channel",
+                elem_classes=["cnet-coverage-channel"],
+            )
             gr.Radio(
                 choices=["mean", "peak"],
                 value="mean",

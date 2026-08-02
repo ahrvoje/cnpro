@@ -234,12 +234,18 @@ def mask_resize(x, size):
     return cv2.resize(x, size, interpolation=cv2.INTER_AREA if smaller else cv2.INTER_LINEAR)
 
 def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=False,
-                          resample=None):
+                          resample=None, fill_border_color=None):
     # `resample` swaps the RESAMPLER only; every geometric decision (fit, crop,
     # pad, border fill) below is shared by all callers, which is what keeps a
     # weight mask aligned with the hint it was painted over under every resize
     # mode. Pass mask_resize for value masks; the default is the detected-map
     # resampler.
+    #
+    # `fill_border_color` overrides what OUTER_FIT pads with. The default (the
+    # median of the source border) is right for a hint, whose letterbox should
+    # read as "more of the same edge"; it is wrong when the CONSUMER of the
+    # padded image has an opinion about what neutral means, which is the CLIP
+    # vision tower's case - see clip_neutral_fill.
     if resample is None:
         resample = high_quality_resize
     if resize_mode == external_code.ResizeMode.RESIZE:
@@ -261,6 +267,11 @@ def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=
         high_quality_border_color = np.median(borders, axis=0).astype(detected_map.dtype)
         if fill_border_with_255:
             high_quality_border_color = np.zeros_like(high_quality_border_color) + 255
+        if fill_border_color is not None:
+            # broadcast a scalar or a per-channel colour onto the border shape,
+            # so a 1-channel mask and a 3-channel image take the same argument
+            high_quality_border_color = (np.zeros_like(high_quality_border_color)
+                                         + np.asarray(fill_border_color)).astype(detected_map.dtype)
         high_quality_background = np.tile(high_quality_border_color[None, None], [h, w, 1])
         detected_map = resample(detected_map, (safeint(old_w * k), safeint(old_h * k)))
         new_h, new_w, _ = detected_map.shape
@@ -283,6 +294,73 @@ def crop_and_resize_image(detected_map, resize_mode, h, w, fill_border_with_255=
 def crop_and_resize_mask(mask_map, resize_mode, h, w):
     """crop_and_resize_image with the mask resampler - IDENTICAL geometry."""
     return crop_and_resize_image(mask_map, resize_mode, h, w, resample=mask_resize)
+
+
+# The CLIP vision tower's own per-channel mean (the `image_mean` of the openai
+# CLIP image processor, 0.481/0.458/0.408, as bytes). This is the ONLY colour
+# that costs the encoder nothing: preprocessing subtracts this mean and divides
+# by the per-channel std, so a pixel painted in it normalizes to ~0.07 sigma -
+# essentially no signal. White pads to about +1.9 sigma and black to -1.8, both
+# of which are strong content: for the "plus" adapters, which feed all 257
+# penultimate PATCH tokens to the resampler, a white letterbox is not an absent
+# region but a large bright surface the reference is now partly made of.
+CLIP_IMAGE_MEAN_RGB = (123, 117, 104)
+
+
+def fit_square_for_clip(image, resize_mode, resample=None):
+    """Square an image the way the UNIT's resize mode says, before CLIP crops it.
+
+    THE PROBLEM. Embedding preprocessors (CLIP vision, InsightFace) hand their
+    input straight to `clip_vision.encode_image`, whose processor resizes the
+    short side and CENTER CROPS to a square. That crop is unconditional: it is
+    not the unit's Resize Mode, it does not know one exists, and on a 1:2
+    reference it silently discards half the picture. Resize Mode meanwhile did
+    nothing at all on this path - the resize-mode geometry in
+    process_unit_after_every_sampling only ever runs on IMAGE-valued
+    preprocessor output, and an embedding is not that.
+
+    So the setting was inert exactly where its default ("Resize and Fill",
+    chosen because cropping silently discards control content - see
+    ControlNetUnit.resize_mode) had the most to prevent. Handing the encoder a
+    square makes its own crop a no-op, and then the unit's mode is what decides
+    which square:
+
+      Resize and Fill  -> pad the short side to `max(h, w)`, no content lost
+      Crop and Resize  -> center-crop to `min(h, w)`, i.e. what CLIP did anyway
+      Just Resize      -> squash to a square, distorted but complete
+
+    Every side is chosen so k == 1 in crop_and_resize_image: the geometry is a
+    pad or a crop, never a resample, so nothing is softened on the way to an
+    encoder that is about to resample to 224 regardless.
+
+    The padded case is the one with a cost worth stating: the subject now
+    occupies the smaller half of a square, so its scale in the embedding drops.
+    That is the trade the mode's name promises - keep everything, at the price
+    of size - and it is the caller's (the user's) choice, which is the point.
+    """
+    if not judge_image_type(image):
+        return image
+    old_h, old_w = image.shape[0], image.shape[1]
+    if old_h == old_w:
+        return image
+    if resize_mode == external_code.ResizeMode.INNER_FIT:
+        side = min(old_h, old_w)
+        fill = None
+    else:
+        # OUTER_FIT pads and RESIZE squashes; both keep every pixel, so both
+        # want the LARGER side - downscaling here would only throw away detail
+        # the encoder has not been given a chance to use yet.
+        side = max(old_h, old_w)
+        fill = None
+        if resize_mode == external_code.ResizeMode.OUTER_FIT:
+            # sized to the array's own channel count: judge_image_type admits
+            # RGBA too, and a 3-element fill against a 4-channel border is a
+            # broadcast error rather than a colour
+            channels = int(image.shape[2])
+            fill = tuple(CLIP_IMAGE_MEAN_RGB[:channels]) if channels <= 3 \
+                else CLIP_IMAGE_MEAN_RGB + (255,) * (channels - 3)
+    return crop_and_resize_image(image, resize_mode, side, side,
+                                 resample=resample, fill_border_color=fill)
 
 def judge_image_type(img):
     return isinstance(img, np.ndarray) and img.ndim == 3 and int(img.shape[2]) in [3, 4]

@@ -1029,40 +1029,48 @@ class ControlNetUiGroup(object):
             self.weight = gr.State(self.default_unit.weight)
             self.guidance_start = gr.State(self.default_unit.guidance_start)
             self.guidance_end = gr.State(self.default_unit.guidance_end)
-            # Hidden channels for the rainbow-hue weight masks painted directly
-            # on an input image canvas via its toolbar tools (weight_mask.js);
-            # each holds the full-alpha mask PNG at that input's resolution. Per
-            # input slot: a global mask (priority over the bands) plus the three
-            # per-band layer masks. The painter finds them by the class, which
-            # carries the slot it belongs to.
+            # Hidden channels for the weight masks painted directly on an input
+            # image canvas via its toolbar tool (weight_mask.js); each holds the
+            # full-alpha mask PNG at that input's resolution.
+            #
+            # ONE SLOT PER INPUT - the G mask, and only G. An input mask says
+            # which part of THIS INPUT is worth reading, and that question has
+            # no coarse/mid/fine variant: the bands are UNet DEPTH, which is a
+            # property of where control is injected, not of what it was read
+            # from. The per-band channels live on the Output mask tab now, and
+            # the per-slot band FIELDS are gone from the dataclass with them.
             self.weight_masks = []
             for slot in range(external_code.MAX_INPUT_IMAGES):
-                channels = {}
-                for band in (None, "coarse", "mid", "fine"):
-                    field = external_code.ControlNetUnit.weight_mask_field(slot, band)
-                    channels[band or "global"] = LogicalImage(
-                        visible=False,
-                        label=field,
-                        numpy=True,
-                        elem_id=f"{elem_id_tabname}_{tabname}_controlnet_{field}",
-                        elem_classes=[f"cnet-wmask-{slot}-{band or 'global'}-state"],
-                    )
-                self.weight_masks.append(channels)
-            # canonical names for the first input, still referenced by name
+                field = external_code.ControlNetUnit.weight_mask_field(slot)
+                self.weight_masks.append({"global": LogicalImage(
+                    visible=False,
+                    label=field,
+                    numpy=True,
+                    elem_id=f"{elem_id_tabname}_{tabname}_controlnet_{field}",
+                    elem_classes=[f"cnet-wmask-{slot}-global-state"],
+                )})
+            # canonical name for the first input, still referenced by name
             self.weight_mask = self.weight_masks[0]["global"]
-            self.weight_mask_coarse = self.weight_masks[0]["coarse"]
-            self.weight_mask_mid = self.weight_masks[0]["mid"]
-            self.weight_mask_fine = self.weight_masks[0]["fine"]
-            # Hidden channel for the mask painted on the "Output mask" tab
-            # (same painter, same hue encoding); read as an output-side
-            # injection mask only - it never gates the control input.
-            self.output_mask = LogicalImage(
-                visible=False,
-                label='output_mask',
-                numpy=True,
-                elem_id=f"{elem_id_tabname}_{tabname}_controlnet_output_mask",
-                elem_classes=["cnet-output-mask-state"],
-            )
+            # Hidden channels for the masks painted on the "Output mask" tab
+            # (same painter, same encoding). FOUR of them, because this is where
+            # the profiles' spatial half lives: G carries the main profile (and
+            # depth/drift, which shape main), C/M/F carry the band profiles.
+            # Read as output-side injection masks only - they never gate the
+            # control input.
+            self.output_masks = {}
+            for band in (None, "coarse", "mid", "fine"):
+                field = external_code.ControlNetUnit.output_mask_field(band)
+                self.output_masks[band or "global"] = LogicalImage(
+                    visible=False,
+                    label=field,
+                    numpy=True,
+                    elem_id=f"{elem_id_tabname}_{tabname}_controlnet_{field}",
+                    elem_classes=[f"cnet-omask-{band or 'global'}-state"],
+                )
+            self.output_mask = self.output_masks["global"]
+            self.output_mask_coarse = self.output_masks["coarse"]
+            self.output_mask_mid = self.output_masks["mid"]
+            self.output_mask_fine = self.output_masks["fine"]
 
         # Per-step cond/uncond balance, replacing the legacy Control Mode
         # chooser: y = 0.5 balanced, 1 = control matters most, 0 = prompt
@@ -1179,11 +1187,13 @@ class ControlNetUiGroup(object):
             "control_mode": self.control_mode,
             "weight_profile": self.weight_profile,
             **{
-                external_code.ControlNetUnit.weight_mask_field(slot, band): channels[band or "global"]
+                external_code.ControlNetUnit.weight_mask_field(slot): channels["global"]
                 for slot, channels in enumerate(self.weight_masks)
+            },
+            **{
+                external_code.ControlNetUnit.output_mask_field(band): self.output_masks[band or "global"]
                 for band in (None, "coarse", "mid", "fine")
             },
-            "output_mask": self.output_mask,
             "balance_profile": self.balance_profile,
             "unit_prompt": self.unit_prompt,
             "unit_negative_prompt": self.unit_negative_prompt,
@@ -1482,9 +1492,7 @@ class ControlNetUiGroup(object):
         # revert a neighbour; it no longer can - see field_updater. That is
         # also why closing and reopening a tab was the only way to un-stick an
         # input image the racing writers had reverted.)
-        mask_channels = [self.weight_masks[i][key]
-                         for i in range(max_slots)
-                         for key in ("global", "coarse", "mid", "fine")]
+        mask_channels = [self.weight_masks[i]["global"] for i in range(max_slots)]
         close_outputs = [
             self.input_slots_open,
             self.active_canvas,
@@ -1506,8 +1514,7 @@ class ControlNetUiGroup(object):
                 f"{image_field}_fg": None,
                 f"{image_field}_enabled": True,
             }
-            for band in (None, "coarse", "mid", "fine"):
-                fields[external_code.ControlNetUnit.weight_mask_field(slot, band)] = None
+            fields[external_code.ControlNetUnit.weight_mask_field(slot)] = None
             return fields
 
         def close_active_slot(slots_open, active, order_value, current_unit):

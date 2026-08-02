@@ -34,13 +34,21 @@ built to play it.
 
 |  |  |
 |---|---|
-| **Space** — paint control strength straight onto the image. Rainbow hue is the weight, red 1 → violet 0; brush size, feathering and an eraser are in the same menu. Four independent mask slots per input: one global, three per depth band — a mask is a profile's spatial half, so which slots are live follows the profile selector rather than being a second switch to keep in sync. Anything painted means the control never escapes the paint. | ![weight mask](resources/ui-weight-mask.png) |
+| **Space** — paint control strength straight onto the image. Rainbow hue is the weight, red 1 → violet 0; brush size, feathering and an eraser are in the same menu. Two surfaces, two questions. On an **input** there is one slot, **G**: which part of *this input* is read at all — its shape gates what the model (or CLIP) is shown of it, and its painted value averages into that input's share of the unit. On the **Output mask** tab there are four — **G / C / M / F** — and they are the profiles' spatial half: G for the main profile, C/M/F for the coarse/mid/fine bands, so which slots are live follows the profile selector rather than being a second switch to keep in sync. Anything painted means the control never escapes the paint. | ![weight mask](resources/ui-weight-mask.png) |
 | **Steps** — a curve editor. Click to add points, drag to move, double-click to delete; drag a segment's green midpoint to bend it into a parabola. Down the left: the step preset, one oscillatory button cycled through cosine and the three multi-phase partitions, and a convergence toggle that lets those waves settle into an even split part-way through the schedule. A vertical response slider bends the whole curve toward high or low values, and the range selects reach down to **−1**, where the control actively pushes away. The dotted verticals are your real step cells; the dot on each curve is the value that step reads. | ![the weight editor in multi-phase](resources/ui-profile-multiphase.png) |
 | **Depth** — its own plot, its own axis: X is the injection layer from fine to coarse, Y a per-layer multiplier. Draw it and the unit runs your step curve *times* your depth curve — a time curve and a depth curve, separable, both yours. | ![depth](resources/ui-profile-depth.png) |
 
 Prefer buckets to a curve? The same depth axis is quantized into three **band
 profiles** — coarse / mid / fine, one step curve each, drawn together on one
-plot, selected by the coloured buttons under the presets.
+plot, selected by the coloured buttons under the presets. Each has its own
+output mask, so a band is a step curve *and* a region: composition steered here,
+texture steered there.
+
+Why depth is an **output**-side question: a band addresses UNet depth, which is
+a property of where control is injected. An input canvas may not be spatially
+related to the output at all — an IP-Adapter reference is not — so painting
+per-band regions there could only ever be guesswork about geometry the reference
+does not have.
 
 ![bands](resources/ui-profile-bands.png)
 

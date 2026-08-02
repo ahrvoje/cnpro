@@ -415,15 +415,19 @@ pieces would move.
   alpha channel; the original binarize-at-128 decode threw the ramp away and
   every feathered edge came out hard. Unpainted (alpha 0) stays weight 0; a
   hue fallback covers legacy chromatic masks.
-  Four slots PER INPUT (`weight_mask[_<n>][_coarse|_mid|_fine]`, 20 channels
-  for 5 inputs): global (governs all layers) or per-band layers
-  (coarse/mid/fine = composition/form/texture injection bands). Each input is
-  an independent control, so its masks restrict only its own contribution and
-  gate only its own hint; `weight_mask.js` reads the owning slot from the
-  canvas group's `cnet-input-slot-<n>` class.
+  ONE slot per input (`weight_mask[_<n>]`, 5 channels for 5 inputs) plus FOUR
+  output slots (`output_mask[_coarse|_mid|_fine]`) — see invariant 6 for why
+  the bands are output-side. Each input is an independent control, so its mask
+  restricts only its own contribution and gates only its own hint;
+  `weight_mask.js` reads the owning slot from the canvas group's
+  `cnet-input-slot-<n>` class.
   Restrict-to-painted semantics: any painted mask means control never
   escapes the paint; absent bands count as zero when band masks are in use.
-  A knowledge gate blanks the hint (or embedding input) where weight is 0.
+  A knowledge gate blanks the hint where weight is 0; on an embedding
+  preprocessor the gate is BINARY and fills with the CLIP mean colour rather
+  than black, and the mask's painted VALUE becomes that input's scalar share
+  instead of a per-pixel weight (there is no per-region weight for CLIP to
+  apply — it emits one token set for the frame).
   The tool box also holds an ERASER toggle (strokes remove paint back to
   UNPAINTED — not the same as painting 0, which is an explicit zero to the
   restrict rule) and a FEATHER slider (Gaussian-blurs the exported grayscale
@@ -510,12 +514,26 @@ pieces would move.
   rather than the pending one. It re-uses, never re-derives: `cnetLiveInputs`
   for which Inputs run, `cnproWeightProfile` for the grammar, `cnproWeightMask`
   for the mask codec and ramp, `cnetInsertSources` for the two insert buttons.
-  MODELLED: enabled units, every live Input (so the multi-phase split lands on
-  the same count the generation fans out over), the profile with waves / mids /
-  response exponent / range, band mode (main × band, each band's own mask,
-  absent bands zero, the three averaged since they drive different layers), the
-  depth curve as its mean multiplier, the G and C/M/F masks, the output mask,
-  the resize-mode geometry. NOT modelled, and said so in the panel's tooltip:
+  ONE CHANNEL AT A TIME (2026-08-02): a `.cnet-coverage-channel` radio picks
+  cross-attention (IP-Adapter; the DEFAULT) or residual (real ControlNet /
+  ControlLora / T2I / Z-Image). Adding a residual weight to an attention weight
+  is a category error — they land in different places in the UNet and never sum
+  with each other — so the channels are never combined. A unit's mechanism
+  comes from `.cnet-model-type-state` (`classify_controlnet_type`, rewritten on
+  model.change), failing OPEN to residual on unknown/none per invariant 16;
+  ControlLLLite is neither (it modulates attention PROJECTIONS and has no mask
+  route at all) and is named in the status line rather than folded into a
+  channel it does not belong to. Units on the other channel appear as a note,
+  never as silence.
+  MODELLED: enabled units, every live Input with its 1/N share (python gives
+  each input a share of the unit and the shares sum to 1, so nothing on a
+  channel can exceed 1 by itself — a reading above 1 IS cross-unit stacking,
+  and the status line names the units that make it), the profile with waves /
+  mids / response exponent / range, band mode (main × band, absent bands zero,
+  the three averaged since they drive different layers), the depth curve as its
+  mean multiplier, the output G and C/M/F masks, the input G mask on the
+  residual channel only (it is not registered with the output on the attention
+  channel), the resize-mode geometry. NOT modelled, and said so in the panel's tooltip:
   the unit Use-Mask, the balance profile, the drift, and the preprocessor —
   coverage is about WEIGHT, not content. The status line reports contributions,
   output size, metric, max, % uncovered, % above 1, any compute-grid cap, and
@@ -796,12 +814,29 @@ pieces would move.
   clicks, keyed module + resolution + sliders + image/mask sha1 (LRU 8,
   ndarray outputs only — embedding preprocessors return dicts holding model
   refs and are never retained; 'shuffle' modules are never cached).
-- **Weight masks on IP-Adapter** (2026-07-23) — the painted input masks
-  (global or band-union) are folded into the `mask` argument for patchers
-  that restrict via it (IP-Adapter attn_mask) — they now shape the OUTPUT
-  region of those patchers too, not just gate the input. ControlNetPatcher
-  ignores the argument (its advanced path carries the paint), so nothing
-  applies twice.
+- **Weight masks on IP-Adapter** (2026-07-23, REVERSED 2026-08-02) — the
+  painted INPUT masks used to be folded into the `mask` argument for patchers
+  that restrict via it (IP-Adapter attn_mask), so they shaped those patchers'
+  output region too. That route is REMOVED: an input mask on an embedding
+  preprocessor has no spatial correspondence to the output, and sending it
+  through the unit's resize mode made the reference's aspect ratio decide where
+  in the frame its style landed. The output masks (G/C/M/F) are now the only
+  spatial source for that argument; the input mask gates the encoder's view and
+  supplies the input's scalar share. See invariant 6.
+- **Reference squaring for embedding preprocessors** (2026-08-02) — CLIP's own
+  processor center-crops to a square unconditionally, so Resize Mode was inert
+  on this path and a 1:2 reference silently lost half its content.
+  `utils.fit_square_for_clip` squares it FIRST, under the unit's mode: Resize
+  and Fill pads to `max(h, w)` with `CLIP_IMAGE_MEAN_RGB` (123,117,104 — the
+  processor's own image mean, the only fill that normalizes to ~0 sigma; white
+  is +1.9 and black −1.8, both strong content the "plus" adapters' 257 patch
+  tokens will encode), Crop and Resize center-crops to `min(h, w)`, Just Resize
+  squashes. Sides are chosen so `k == 1`: a pad or a crop, never a resample
+  before an encoder that resamples anyway. The mask-gated region takes the same
+  neutral fill for the same reason. Recognizing an embedding preprocessor reads
+  the host's `gate_input_by_weight_mask` flag OR
+  `classify_controlnet_type(unit.model) == 'ipadapter'` — the flag alone left
+  this silently inert wherever the host had not set it.
 - **Mask previews in the results gallery are opt-in** (2026-07-23,
   `controlnet_mask_preview_in_results`, default off) — they multiplied the
   gallery (global + bands + output, base + hires, every run) with no
@@ -1243,17 +1278,45 @@ support) keep patchers that only understand constant weight behaving sanely.
    Oversized exports (> 8 MB data-url) DOWNSCALE the grayscale (never the
    hue canvas — gray interpolates as valid weights, hues do not) until they
    fit; the python side resizes to generation dims anyway.
-6. **THE MASK SLOTS FOLLOW THE PROFILE SELECTOR.** The four slots are the
-   four weight profiles' spatial half — G belongs to the MAIN profile, C/M/F
-   to the coarse/mid/fine band profiles — so the editor's band selector picks
-   which slots a generation uses, and nothing else does: main — and depth,
-   which multiplies main rather than replacing it, and drift, which moves
-   where depth is read — runs on G with C/M/F dormant; a band selection runs
-   on C/M/F with G dormant. One decision, two readers:
-   `external_code.masks_in_force` (applied, python) and
-   `weight_mask.js::liveSlotKeys` (shown, JS), which
+6. **THE OUTPUT MASK SLOTS FOLLOW THE PROFILE SELECTOR.** Rewritten
+   2026-08-02: the four slots moved from the INPUT canvases to the Output mask
+   tab, and an input carries G alone.
+
+   TWO SURFACES, TWO QUESTIONS.
+   - An **input** mask answers "which part of THIS INPUT is worth reading". It
+     is a SHAPE plus one NUMBER: the shape gates what the model (or CLIP) is
+     shown of it, and the painted value reduces to that input's scalar share of
+     the unit (`external_code.input_mask_share`, normalized so the shares sum
+     to 1). It has no coarse/mid/fine variant, so there is one slot.
+   - The **output** masks are the four weight profiles' spatial half — G for
+     the MAIN profile, C/M/F for the coarse/mid/fine band profiles — so the
+     editor's band selector picks which of them a generation uses, and nothing
+     else does: main (and depth, which multiplies main rather than replacing
+     it, and drift, which moves where depth is read) runs on G with C/M/F
+     dormant; a band selection runs on C/M/F with G dormant.
+
+   WHY OUTPUT-SIDE. A band addresses UNet DEPTH, a property of where control is
+   injected, so "which part of the frame does the coarse band steer" is only
+   well posed in output geometry. An input canvas need not be spatially related
+   to the output at all: an IP-Adapter reference is not, and routing its paint
+   into an attn_mask meant the REFERENCE'S ASPECT RATIO decided which part of
+   the frame its style reached (it rode `crop_and_resize_mask` under the unit's
+   resize mode, a transform that maps SOURCE onto output). That route is gone;
+   the output masks are the only spatial source for patchers that restrict via
+   the mask argument.
+
+   One decision, two readers: `external_code.masks_in_force` (applied, python)
+   and `weight_mask.js::liveSlotKeys` (shown, JS), which
    `tests/test_mask_profile_coupling.py` runs against each other over the
    strings the editor really writes.
+
+   THE SLOT SET IS DECLARED IN FOUR PLACES AND THEY MUST AGREE — this bit on
+   the move itself (2026-08-02): the registry `scope` (`canvas_tools.js`), the
+   `display: none !important` id rules in `style.css`, the class sweep in
+   `canvas_extra.js::attach`, and `weight_mask.js::slotDefsFor`. Updating only
+   the registry left C/M/F invisible on the output canvas with no error
+   anywhere — invariant 29's exact shape. A test that renders both container
+   kinds and asserts the visible button set is the guard.
 
    Both readers decide by asking whether the selector IS a band, never by
    listing the ones that are not — `liveSlotKeys` always did; its dormant-slot
@@ -1277,15 +1340,16 @@ support) keep patchers that only understand constant weight behaving sanely.
    time if such paint exists, because silently ignoring it while the button
    still shows its painted-mask border is the worst option available.
 
-   THE COUPLING IS NOT A GATE. All four slots stay armable and paintable at
-   all times and are styled identically whatever the selector says — the
-   dormant dimming was removed 2026-07-31 (see below). Painting a band mask
-   under the main profile is legitimate preparation; requiring a profile
-   switch before the brush works is a constraint the rule never needed.
+   THE COUPLING IS NOT A GATE. All four output slots stay armable and
+   paintable at all times and are styled identically whatever the selector
+   says — the dormant dimming was removed 2026-07-31 (see below). Painting a
+   band mask under the main profile is legitimate preparation; requiring a
+   profile switch before the brush works is a constraint the rule never needed.
 
-   The output mask is orthogonal to all of them: it belongs to no band,
-   multiplies the result, never calls `apply_knowledge_gate`,
-   and must stay folded in AFTER `preprocessor.process_before_every_sampling`
+   One thing about the output masks has NOT changed: they are output-side
+   ONLY. None of them ever calls `apply_knowledge_gate` — the control model
+   keeps seeing the whole hint and only the injection is restricted — and they
+   must stay folded in AFTER `preprocessor.process_before_every_sampling`
    (the inpaint preprocessors read the same `mask` argument as their hole
    definition).
 7. `suppressSyncUrls` in canvas_extra.js is a COUNTED map consumed per

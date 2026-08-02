@@ -857,10 +857,22 @@
 .cnet-output-mask-group [id^="topazMpxButton_"],
 .cnet-output-mask-group [id^="topazHqButton_"],
 .cnet-output-mask-group [id^="topazDenoiseButton_"],
-.cnet-output-mask-group [id^="wmaskCoarseButton_"],
-.cnet-output-mask-group [id^="wmaskMidButton_"],
-.cnet-output-mask-group [id^="wmaskFineButton_"],
 .cnet-output-mask-group .forge-adjust-control {
+    display: none !important;
+}
+
+/* C/M/F are OUTPUT-side slots, so they are hidden on the INPUT canvases -
+   the exact inverse of where this rule used to sit. The bands are UNet
+   DEPTH; an input mask has no per-depth variant, so an input canvas paints
+   G alone (weight_mask.js slotDefsFor, canvas_tools.js `scope`).
+
+   Stated by id, like the block above, because `display: none !important`
+   is the only thing that beats weight_mask.js's per-slot
+   `slot.button.style.display = ''`: the painter reveals every slot it
+   wires, and inline style loses to !important but beats everything else. */
+.cnet-input-image-group [id^="wmaskCoarseButton_"],
+.cnet-input-image-group [id^="wmaskMidButton_"],
+.cnet-input-image-group [id^="wmaskFineButton_"] {
     display: none !important;
 }
 

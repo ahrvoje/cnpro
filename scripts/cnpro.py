@@ -12,7 +12,8 @@ import gradio as gr
 from lib_cnpro import global_state, external_code
 from lib_cnpro.external_code import ControlNetUnit
 from lib_cnpro.utils import align_dim_latent, set_numpy_seed, crop_and_resize_image, \
-    crop_and_resize_mask, prepare_mask, judge_image_type, predict_hires_dimensions
+    crop_and_resize_mask, fit_square_for_clip, prepare_mask, judge_image_type, \
+    predict_hires_dimensions, CLIP_IMAGE_MEAN_RGB
 from lib_cnpro.controlnet_ui.controlnet_ui_group import ControlNetUiGroup
 from lib_cnpro.controlnet_ui.coverage import render_coverage_panel
 from lib_cnpro.controlnet_ui.photopea import Photopea
@@ -153,10 +154,11 @@ class ControlNetCachedParameters:
         self.control_mask_for_hr_fix = None
         self.output_mask = None
         self.output_mask_for_hr_fix = None
+        self.output_mask_bands = {}
+        self.output_mask_bands_for_hr_fix = {}
         self.weight_mask = None
         self.weight_mask_for_hr_fix = None
-        self.weight_mask_bands = {}
-        self.weight_mask_bands_for_hr_fix = {}
+        self.input_shares = []
         # parallel to control_cond: which Input slot each cond came from
         self.slot_order = []
 
@@ -478,46 +480,84 @@ class ControlNetForForgeOfficial(scripts.Script):
         # selection runs on C/M/F. See external_code.masks_in_force.
         band_selected = external_code.band_mode_active(unit.weight_profile)
 
-        def decode_slot_masks(slot_index):
-            """(global, {band: values}) of one input slot, decoded.
+        def decode_slot_mask(slot_index):
+            """The decoded G mask of one input slot, or None.
 
-            Only the masks the ACTIVE PROFILE uses come back - the others are
-            dropped here, at the single point where the raw channels are read,
-            so no consumer downstream has to remember the rule (or invent a
-            second one, which is what it used to do in two places).
-
-            Memoized: the same slot is decoded for the input gate and again
-            for the mask tensors - cv2 work on full-res masks, once is enough.
+            Memoized: the same slot is decoded for the input gate, for its
+            scalar share and again for the mask tensor - cv2 work on full-res
+            masks, once is enough.
             """
             if slot_index not in decoded_slot_cache:
-                raw_global, raw_bands = unit.input_weight_masks(slot_index)
-                bands = {band: values for band, values in
-                         ((band, decode_weight_mask(raw)) for band, raw in raw_bands.items())
-                         if values is not None}
-                decoded_slot_cache[slot_index] = external_code.masks_in_force(
-                    decode_weight_mask(raw_global), bands, band_selected)
+                decoded_slot_cache[slot_index] = decode_weight_mask(
+                    unit.input_weight_mask(slot_index))
             return decoded_slot_cache[slot_index]
 
-        # Embedding preprocessors (CLIP vision / InsightFace) read the image
-        # globally, so the weight-mask knowledge gate must blank weight-0
-        # content BEFORE they run: their output is a non-spatial embedding the
-        # later cond-level gate cannot act on. Spatial preprocessors are gated
-        # at cond level instead (no fake edges along the blanked border).
+        # This input's share of the unit, from the painted VALUE of its G mask.
+        # Painting a whole input at 0.5 and another at 1.0 is how "count this
+        # reference half as much" is said; the shape is a separate matter and
+        # is handled by the gate and the mask tensor.
+        input_share_cache = {}
+
+        def input_share_for(slot_index):
+            if slot_index not in input_share_cache:
+                share, graded = external_code.input_mask_share(decode_slot_mask(slot_index))
+                if graded:
+                    # A gradient on an input mask has no per-region consumer -
+                    # not for an embedding preprocessor (CLIP emits one token
+                    # set for the frame) and not for the share, which is one
+                    # number by construction. Say that it was averaged, rather
+                    # than let a carefully painted ramp look like it did
+                    # something it cannot do.
+                    logger.warning(
+                        f"ControlNet input {slot_index + 1}: the G mask is painted with more "
+                        f"than one weight. An input mask is a SHAPE plus one NUMBER - the "
+                        f"shape gates what is read, the value becomes this input's share of "
+                        f"the unit - so the painted values were averaged to "
+                        f"{share:.3f}. Paint per-region weights on the Output mask tab, "
+                        f"where they scale the injection per output region.")
+                input_share_cache[slot_index] = share
+            return input_share_cache[slot_index]
+
+        # EMBEDDING preprocessors (CLIP vision / InsightFace) are the ones whose
+        # output is not an image, and this flag is how CNPro recognizes them.
+        # It is named for the first thing that needed the distinction (the input
+        # gate below); it is read here as the general question because it is the
+        # only marker available before the preprocessor has run - and after it
+        # has run is too late for both callers. `judge_image_type` on the OUTPUT
+        # answers the same question and is what the cond-side code uses; the two
+        # must agree, and the host sets the flag on exactly the CLIP-vision-type
+        # preprocessors that return embeddings.
+        # ...and the MODEL type is consulted alongside it, because the flag is
+        # the host's and is not reliably set on every CLIP-vision preprocessor.
+        # Relying on it alone left the squaring below silently inert for exactly
+        # the units that needed it: the reference reached CLIP non-square and
+        # the adapter printed its own "not a square, will center crop" warning,
+        # which is the symptom this whole path exists to remove.
+        # classify_controlnet_type reads the safetensors header and returns
+        # 'ipadapter' for IP-Adapter / InstantID / FaceID alike.
+        def is_embedding_preprocessor():
+            if getattr(preprocessor, 'gate_input_by_weight_mask', False):
+                return True
+            return global_state.classify_controlnet_type(unit.model) == 'ipadapter'
+
+        # Embedding preprocessors read the image globally, so the weight-mask
+        # knowledge gate must blank weight-0 content BEFORE they run: their
+        # output is a non-spatial embedding the later cond-level gate cannot act
+        # on. Spatial preprocessors are gated at cond level instead (no fake
+        # edges along the blanked border).
         # Masks are per input slot, so the gate is computed per input too.
         def input_gate_for(slot_index):
-            if not getattr(preprocessor, 'gate_input_by_weight_mask', False):
+            gate_values = decode_slot_mask(slot_index)
+            if not is_embedding_preprocessor() or gate_values is None:
                 return None
-            gate_values, bands = decode_slot_masks(slot_index)
-            # Whichever of the two the active profile uses (decode_slot_masks
-            # has already dropped the other). Bands: restrict-to-painted means
-            # an absent band is zero, so the gate is the union of the painted
-            # ones - everywhere this unit is allowed to act at all.
-            if gate_values is None and bands:
-                gate_values = np.maximum.reduce(list(bands.values()))
-            return None if gate_values is None else gate_values > 0
+            # BINARY, deliberately. The shape is the whole of an input mask's
+            # spatial meaning here; its value has already been taken as the
+            # scalar share, and a partial value cannot mean "partly read" to an
+            # encoder that sees one image.
+            return gate_values > 0
 
         def report_masks_not_in_force():
-            """Say when paint exists that the SELECTED profile does not use.
+            """Say when OUTPUT paint exists that the SELECTED profile does not use.
 
             Dropping it silently is the worst option available: the button
             still carries its painted-mask border, the overlay still shows the
@@ -530,22 +570,21 @@ class ControlNetForForgeOfficial(scripts.Script):
             # painter exported a stroke, so `is not None` answers the question -
             # and this runs on every generation, over every slot the mode is NOT
             # using, where a full-resolution decode would be pure waste.
+            raw_global, raw_bands = unit.output_weight_masks()
             ignored = set()
-            for slot_index in slot_order:
-                raw_global, raw_bands = unit.input_weight_masks(slot_index)
-                if band_selected:
-                    if raw_global is not None:
-                        ignored.add('G')
-                else:
-                    for band, raw in raw_bands.items():
-                        if raw is not None:
-                            ignored.add(band[0].upper())
+            if band_selected:
+                if raw_global is not None:
+                    ignored.add('G')
+            else:
+                for band, raw in raw_bands.items():
+                    if raw is not None:
+                        ignored.add(band[0].upper())
             if ignored:
                 logger.warning(
-                    f"ControlNet: {', '.join(sorted(ignored))} weight mask(s) are painted "
+                    f"ControlNet: {', '.join(sorted(ignored))} output mask(s) are painted "
                     f"but NOT applied - the "
                     f"{'band' if band_selected else 'main'} profile is selected, and the "
-                    f"mask slots follow that selector "
+                    f"output mask slots follow that selector "
                     f"({'C/M/F' if band_selected else 'G'} is what runs). Press the "
                     f"matching profile selector to use them.")
 
@@ -562,8 +601,37 @@ class ControlNetForForgeOfficial(scripts.Script):
             input_gate = input_gate_for(slot_index)
             if input_gate is not None and isinstance(input_image, np.ndarray) \
                     and input_image.ndim == 3 and input_image.shape[:2] == input_gate.shape:
-                input_image = input_image * input_gate[..., None].astype(input_image.dtype)
-                logger.info("ControlNet weight mask gated the preprocessor input (embedding preprocessor).")
+                # Gated-out area becomes CLIP-NEUTRAL, not black. Zeroing it
+                # normalizes to about -1.8 sigma in the vision tower, which is
+                # not an absent region but a large dark surface the reference is
+                # now partly made of - the same mistake as a white letterbox,
+                # for the same reason (utils.CLIP_IMAGE_MEAN_RGB).
+                neutral = np.asarray(
+                    CLIP_IMAGE_MEAN_RGB[:input_image.shape[2]]
+                    if input_image.shape[2] <= 3
+                    else CLIP_IMAGE_MEAN_RGB + (255,) * (input_image.shape[2] - 3),
+                    dtype=input_image.dtype)
+                keep = input_gate[..., None]
+                input_image = np.where(keep, input_image, neutral).astype(input_image.dtype)
+                logger.info("ControlNet weight mask gated the preprocessor input "
+                            "(embedding preprocessor); the rest is filled with the CLIP "
+                            "mean colour so it carries no content of its own.")
+
+            # ...and only THEN square it. The gate is registered with the image
+            # as painted, so it has to land before any geometry moves; the
+            # squaring is what stops the CLIP processor's own unconditional
+            # center crop from deciding which half of a non-square reference
+            # survives. See utils.fit_square_for_clip for why Resize Mode is
+            # the right control and what each mode costs.
+            if is_embedding_preprocessor():
+                squared = fit_square_for_clip(input_image, resize_mode)
+                if squared is not input_image:
+                    logger.info(
+                        f"ControlNet: reference squared to {squared.shape[1]}x{squared.shape[0]} "
+                        f"under '{resize_mode.value}' before the embedding preprocessor - "
+                        f"the CLIP processor center-crops to a square, and this decides which "
+                        f"square rather than letting it discard the short side.")
+                    input_image = squared
 
             if unit.pixel_perfect:
                 unit.processor_res = external_code.pixel_perfect_resolution(
@@ -669,60 +737,99 @@ class ControlNetForForgeOfficial(scripts.Script):
         # itself stays.
         mask_previews = shared.opts.data.get("controlnet_mask_preview_in_results", False)
 
-        def prepare_weight_mask(values):
-            # Same geometric mapping as the control image, so the paint stays
-            # aligned with the source under every resize mode; values travel as
-            # grayscale, hue decoding already happened at source resolution.
-            # crop_and_resize_MASK: identical geometry, but a value-preserving
-            # resampler - the detected-map heuristics OTSU-snapped near-1.0
-            # paint to exactly 1.0 and stair-stepped feathered ramps (see
-            # utils.mask_resize).
+        def prepare_weight_mask(values, mode=None):
+            # `mode` None = the unit's resize mode, which is what an INPUT mask
+            # takes: same geometric mapping as the control image, so the paint
+            # stays aligned with the source. An OUTPUT mask passes RESIZE - it
+            # is registered with the generated frame, and the resize mode maps
+            # SOURCE geometry onto the output, which is not a transform it has
+            # any business going through.
+            #
+            # Values travel as grayscale, hue decoding already happened at
+            # source resolution. crop_and_resize_MASK: identical geometry, but a
+            # value-preserving resampler - the detected-map heuristics
+            # OTSU-snapped near-1.0 paint to exactly 1.0 and stair-stepped
+            # feathered ramps (see utils.mask_resize).
+            mode = resize_mode if mode is None else mode
             gray = HWC3((values * 255.0).round().astype(np.uint8))
-            resized = crop_and_resize_mask(gray, resize_mode, h, w)
+            resized = crop_and_resize_mask(gray, mode, h, w)
             if mask_previews:
                 attach_extra_result_image(resized)
             tensor = numpy_to_pytorch(resized).movedim(-1, 1)[:, :1]
             if has_high_res_fix:
-                resized_hr = crop_and_resize_mask(gray, resize_mode, hr_y, hr_x)
+                resized_hr = crop_and_resize_mask(gray, mode, hr_y, hr_x)
                 tensor_hr = numpy_to_pytorch(resized_hr).movedim(-1, 1)[:, :1]
             else:
                 tensor_hr = tensor
             return tensor, tensor_hr
 
-        # One set of masks per input, in the same order as the control conds:
-        # every input is its own control, so its masks restrict only its own
-        # contribution. Per input, EXACTLY ONE of the two is populated, and the
-        # profile selector says which (external_code.masks_in_force, applied in
-        # decode_slot_masks): main/depth -> the global mask, a band selection ->
-        # the C/M/F masks.
+        # ONE mask per input, in the same order as the control conds: every
+        # input is its own control, so its mask restricts only its own
+        # contribution. It is spatial only where the input IS spatially related
+        # to the output - a hint that went through the same resize mode. For an
+        # embedding preprocessor the shape has already done its work at the
+        # gate and the tensor would mean nothing, so none is built.
         report_masks_not_in_force()
         params.weight_mask = []
         params.weight_mask_for_hr_fix = []
-        params.weight_mask_bands = []
-        params.weight_mask_bands_for_hr_fix = []
+        # Per-input scalar shares, parallel to the conds: how much of the unit
+        # each input carries. Normalized below so they sum to 1.
+        params.input_shares = []
+        spatial_input_masks = not is_embedding_preprocessor()
         for slot_index in slot_order:
-            global_values, band_values = decode_slot_masks(slot_index)
-            if global_values is not None:
+            global_values = decode_slot_mask(slot_index)
+            if global_values is not None and spatial_input_masks:
                 tensor, tensor_hr = prepare_weight_mask(global_values)
             else:
                 tensor = tensor_hr = None
             params.weight_mask.append(tensor)
             params.weight_mask_for_hr_fix.append(tensor_hr)
+            share = input_share_for(slot_index)
+            params.input_shares.append(1.0 if share is None else share)
 
-            bands, bands_hr = {}, {}
-            for band, values in band_values.items():
-                band_tensor, band_tensor_hr = prepare_weight_mask(values)
-                bands[band] = band_tensor
-                bands_hr[band] = band_tensor_hr
-            params.weight_mask_bands.append(bands)
-            params.weight_mask_bands_for_hr_fix.append(bands_hr)
+        # THE INPUTS SUM, SO THEIR SHARES ARE NORMALIZED TO 1. The patcher chain
+        # adds the N controls with no normalization of its own (control_merge
+        # and the IP-Adapter attention patch both just accumulate), so without
+        # this a unit's pull would grow with the number of Input tabs open and
+        # the unit weight would stop meaning "how hard this unit pulls".
+        #
+        # Even shares reduce to the plain 1/N this used to apply unconditionally;
+        # uneven ones are the painted mask VALUES, which is how "count this
+        # reference half as much as that one" is said. Either way the unit's
+        # maximum is its profile's maximum, which is what makes a coverage
+        # reading above 1 mean cross-unit stacking and nothing else.
+        total_share = sum(params.input_shares)
+        if total_share > 0:
+            params.input_shares = [s / total_share for s in params.input_shares]
+        else:
+            # every input painted at weight 0: no contribution at all, and a
+            # division here would be by zero rather than meaningful
+            params.input_shares = [0.0 for _ in params.input_shares]
+        if len(params.input_shares) > 1:
+            logger.info(f"ControlNet {len(params.input_shares)} inputs, shares "
+                        f"{', '.join(f'{s:.3f}' for s in params.input_shares)} "
+                        f"(sum 1: the unit pulls as hard as its profile says, "
+                        f"however many inputs it holds).")
 
-        # Output mask: painted over a throwaway backdrop on its own tab, so it
-        # is registered with the GENERATED image, not with the control input -
-        # the unit's resize mode (which maps SOURCE geometry onto the output)
-        # must not be applied to it. The painted rectangle simply maps onto the
-        # output rectangle, hence a plain resize.
-        output_mask_values = decode_weight_mask(unit.output_mask)
+        # Output masks: painted over a throwaway backdrop on their own tab, so
+        # they are registered with the GENERATED image. FOUR channels, and the
+        # profile selector picks which run - G for the main profile (with depth
+        # and drift, which shape main rather than replacing it), C/M/F for the
+        # band profiles (external_code.masks_in_force).
+        raw_output_global, raw_output_bands = unit.output_weight_masks()
+        output_global_values, output_band_values = external_code.masks_in_force(
+            decode_weight_mask(raw_output_global),
+            {band: values for band, values in
+             ((band, decode_weight_mask(raw)) for band, raw in raw_output_bands.items())
+             if values is not None},
+            band_selected)
+        params.output_mask_bands = {}
+        params.output_mask_bands_for_hr_fix = {}
+        for band, values in output_band_values.items():
+            tensor, tensor_hr = prepare_weight_mask(values, external_code.ResizeMode.RESIZE)
+            params.output_mask_bands[band] = tensor
+            params.output_mask_bands_for_hr_fix[band] = tensor_hr
+        output_mask_values = output_global_values
         if output_mask_values is not None:
             gray = HWC3((output_mask_values * 255.0).round().astype(np.uint8))
             resized = crop_and_resize_mask(gray, external_code.ResizeMode.RESIZE, h, w)
@@ -916,22 +1023,22 @@ class ControlNetForForgeOfficial(scripts.Script):
                         f"(no weight profile, raw value {unit.weight_profile!r}) on {type(params.model).__name__}")
         params.model.weight_profile = weight_profile
 
-        # Mean, not sum. The patcher chain adds the N residuals with no
+        # Shares, not copies. The patcher chain adds the N controls with no
         # normalization of its own (control_merge / the IP-Adapter attention
         # patch both just accumulate), so N inputs at full weight would inject
-        # N times the pull of one. Each input is scaled by 1/N up front instead,
-        # which keeps the unit weight meaning "how hard this unit pulls"
-        # regardless of how many Input tabs are open - the summing is an
-        # implementation detail of combining them, not a strength multiplier.
-        # UNEVEN per-input weighting is the weight masks' job: a flat-painted
-        # global mask at value v scales exactly that input's contribution.
-        if len(conds) > 1:
-            share = 1.0 / len(conds)
-            params.model.strength *= share
-            if weight_profile is not None:
-                params.model.weight_profile = [(x, y * share) for x, y in weight_profile]
-            logger.info(f"ControlNet {len(conds)} inputs: each control scaled by 1/{len(conds)} "
-                        f"so their sum matches a single input at the unit weight.")
+        # N times the pull of one. Each input carries a SHARE instead, and the
+        # shares sum to 1 (params.input_shares) - so the unit weight keeps
+        # meaning "how hard this unit pulls" regardless of how many Input tabs
+        # are open, and no unit can exceed its own profile's maximum. A reading
+        # above 1 in the coverage panel is therefore cross-unit stacking, and
+        # only that.
+        #
+        # Even shares are the plain 1/N; uneven ones are the painted VALUES of
+        # the inputs' G masks, which is how "count this reference half as much"
+        # is said. Applied per input inside the loop below, so these two
+        # snapshots are what each input scales.
+        base_strength = params.model.strength
+        base_profile = params.model.weight_profile
 
         # Multi-phase ('P...' marker from the editor's oscillatory button past
         # plain cosine): every Input runs the SAME envelope with the wave
@@ -1160,8 +1267,13 @@ class ControlNetForForgeOfficial(scripts.Script):
 
         # per-input lists, parallel to conds
         weight_masks = params.weight_mask_for_hr_fix if is_hr_pass else params.weight_mask
-        band_mask_sets = params.weight_mask_bands_for_hr_fix if is_hr_pass else params.weight_mask_bands
         output_mask = params.output_mask_for_hr_fix if is_hr_pass else params.output_mask
+        # The OUTPUT-side per-band masks: the spatial half of the band profiles.
+        # Unit level, not per input - they say where a DEPTH steers the frame,
+        # which is a property of the injection, not of which reference it came
+        # from.
+        output_band_masks = (params.output_mask_bands_for_hr_fix if is_hr_pass
+                             else params.output_mask_bands) or {}
 
         def per_input(values, index):
             if not isinstance(values, list):
@@ -1188,12 +1300,33 @@ class ControlNetForForgeOfficial(scripts.Script):
         for index, (cond, mask) in enumerate(zip(conds, masks)):
             first = index == 0
             weight_mask = per_input(weight_masks, index)
-            band_masks = per_input(band_mask_sets, index) or {}
+
+            # THIS INPUT'S SHARE of the unit (params.input_shares sums to 1).
+            share = (params.input_shares[index]
+                     if index < len(params.input_shares) else 1.0 / len(conds))
+            params.model.strength = base_strength * share
+            params.model.weight_profile = (
+                None if base_profile is None
+                else [(x, y * share) for x, y in base_profile])
 
             # multi-phase: this input's phase-shifted variant of the profile
-            # (each pass reads params.model.weight_profile at patch time)
+            # (each pass reads params.model.weight_profile at patch time).
+            #
+            # NO share on this path: the n phase lobes already sum to exactly 1
+            # at every step by construction (external_code._phase_weight), so
+            # the wave IS the partition and scaling it again would divide by N
+            # twice. A wave therefore fixes the shares even - it decides WHEN
+            # each input pulls, and cannot also express how much.
             if multiphase_profiles is not None:
                 params.model.weight_profile = multiphase_profiles[index]
+                params.model.strength = base_strength
+                if first and any(abs(s - params.input_shares[0]) > 5e-3
+                                 for s in params.input_shares):
+                    logger.warning(
+                        "ControlNet: uneven input shares are painted, but this unit runs a "
+                        "phase family - the wave already splits the inputs evenly across "
+                        "the steps and its lobes sum to 1 by construction. The shares are "
+                        "ignored; remove the wave to weight inputs unevenly.")
             # same, for band mode - the bands ARE the weights there, so the
             # per-input variant has to land on band_weight_profiles instead
             if multiphase_band_profiles is not None:
@@ -1231,97 +1364,24 @@ class ControlNetForForgeOfficial(scripts.Script):
                     return cond * (gate_mask > 0).to(cond)
                 return cond
 
-            # Restrict-to-painted semantics. WHICH slots are live was decided
-            # once, by the profile selector, before the masks were ever decoded
-            # (external_code.masks_in_force): main/depth -> G, a band selection
-            # -> C/M/F. So at most one of these two is populated, and the
-            # branch below is not a precedence rule any more - it is just the
-            # two shapes a live mask set can have:
-            # 1. nothing painted in the live slots -> full image, ordinary control;
-            # 2. the global mask        -> it governs ALL layers;
-            # 3. the band masks         -> each painted band weights its own
-            #                              layers, every ABSENT band counts as
-            #                              ZERO (its layers inject nothing).
-            # In cases 2 and 3 control never escapes the painted regions.
-            # masks are per input, so they are reported per input too
+            # THE INPUT MASK. Spatial only for a hint that is registered with
+            # the output - it went through the unit's resize mode, so paint over
+            # the hint's left arm restricts the output's left arm. It is not
+            # built at all for an embedding preprocessor (there is no such
+            # correspondence to exploit); there, the mask's shape has already
+            # gated what the encoder was shown and its value has become this
+            # input's share.
+            #
+            # It is NOT routed into any attention mask. Where control lands in
+            # the OUTPUT is the output masks' question, below, and answering it
+            # from an input canvas was how an IP-Adapter reference's aspect
+            # ratio ended up deciding which part of the frame its style reached.
             which = f" (input {index + 1})" if len(conds) > 1 else ""
-
-            # everywhere this input's painted masks allow control at all; also
-            # routed into the attention mask of patchers that restrict via the
-            # mask ARGUMENT (below)
-            painted_restrict = None
-            # per-band variant of the same, for patchers whose injection sites
-            # each carry a UNet depth (IP-Adapter): they take one mask PER BAND
-            # instead of the union, so painting coarse differently from fine
-            # restricts different depths - what the band buttons already say
-            band_restrict = None
-
             if weight_mask is not None:
                 params.model.region_masks = combine_with_unit_mask(weight_mask)
                 cond = apply_knowledge_gate(weight_mask)
-                painted_restrict = weight_mask
-                logger.info(f"ControlNet weight mask{which} applied on {type(params.model).__name__}")
-            elif band_masks:
-                # union of the painted bands = everywhere any control acts at all
-                # (absent bands are zero, so they cannot widen it)
-                union = None
-                for tensor in band_masks.values():
-                    union = tensor if union is None else torch.maximum(union, tensor.to(union))
-                banded = {band: combine_with_unit_mask(tensor)
-                          for band, tensor in band_masks.items()}
-                if getattr(params.model, 'masks_via_advanced_weighting', False):
-                    # Per-band masks: coarse gates the deepest injection layers
-                    # (+ middle), mid the middle band, fine the shallowest; layers
-                    # of bands WITHOUT a mask are zeroed per layer in
-                    # compute_controlnet_weighting.
-                    #
-                    # Routed by CAPABILITY, not by class. This used to read
-                    # `isinstance(params.model, ControlNetPatcher)`, which meant a
-                    # new residual patcher (Z-Image) silently fell into the
-                    # attention branch below and got a union mask where it should
-                    # have had per-band ones - the exact failure the no-model-type-
-                    # branching invariant exists to prevent.
-                    params.model.region_masks = banded
-                else:
-                    # Patchers without per-layer injection get the union here;
-                    # those whose ATTENTION sites carry a depth take the
-                    # per-band dict through the mask argument instead (below).
-                    params.model.region_masks = combine_with_unit_mask(union)
-                    if getattr(params.model, 'supports_band_profiles', False):
-                        band_restrict = banded
-                # content must stay unknown to the model outside every painted
-                # region, so the hint is blanked beyond the union
-                cond = apply_knowledge_gate(union)
-                painted_restrict = union
-                logger.info(f"ControlNet layer weight masks ({', '.join(sorted(band_masks))}){which} "
-                            f"applied on {type(params.model).__name__}, absent bands zeroed")
-
-            # Painted weight masks for patchers that restrict spatially via the
-            # mask ARGUMENT rather than region_masks (IP-Adapter
-            # takes it as attn_mask): fold the paint into it, so the painted
-            # masks shape those patchers' OUTPUT region too instead of only
-            # gating their input. Residual patchers ignore the argument (their
-            # advanced path already carries the paint), so nothing is applied
-            # twice; patchers with neither route (ControlLLLite) keep their
-            # existing unsupported warning via the output-mask path.
-            if painted_restrict is not None \
-                    and not getattr(params.model, 'masks_via_advanced_weighting', False) \
-                    and getattr(params.model, 'supports_output_mask', False):
-                if band_restrict:
-                    # one attn_mask per band: each patched site takes the mask
-                    # of its own depth, and a band with no mask means its sites
-                    # inject nothing (restrict-to-painted, per band)
-                    mask = {band: fold_masks(mask, tensor)
-                            for band, tensor in band_restrict.items()}
-                    if first:
-                        logger.info(f"ControlNet per-band weight masks routed into the "
-                                    f"attention masks of {type(params.model).__name__} "
-                                    f"({', '.join(sorted(band_restrict))}; absent bands inject nothing).")
-                else:
-                    mask = fold_masks(mask, painted_restrict)
-                    if first:
-                        logger.info(f"ControlNet weight mask routed into the attention mask "
-                                    f"of {type(params.model).__name__}.")
+                logger.info(f"ControlNet input weight mask{which} applied on "
+                            f"{type(params.model).__name__}")
 
             # Output mask (its own tab): output-side only, so it never feeds the
             # knowledge gate - the control model keeps seeing the whole hint and
@@ -1341,18 +1401,51 @@ class ControlNetForForgeOfficial(scripts.Script):
                 # residual patchers ignore this argument, so nothing is applied
                 # twice. Folded after the preprocessor call above on purpose - the
                 # inpaint preprocessors read `mask` as their hole definition.
-                # The argument may now be a per-band dict (see above), and the
-                # output mask is output-side: it applies to every band alike.
                 if isinstance(mask, dict):
                     mask = {band: fold_output_mask(tensor) for band, tensor in mask.items()}
                 else:
                     mask = fold_output_mask(mask)
                 if first:
                     if getattr(params.model, 'supports_output_mask', False):
-                        logger.info(f"ControlNet output mask applied on {type(params.model).__name__}")
+                        logger.info(f"ControlNet output mask (G) applied on "
+                                    f"{type(params.model).__name__}")
                     else:
                         logger.warning(f"Output mask ignored: {type(params.model).__name__} "
                                        f"does not restrict its injection spatially.")
+
+            # THE PER-BAND OUTPUT MASKS. Each band is a UNet DEPTH, and these
+            # say where that depth steers the frame - the only geometry in which
+            # the question is well posed, which is why they are output-side.
+            # Restrict-to-painted holds per band: with any of C/M/F painted, an
+            # ABSENT band injects nothing.
+            #
+            # Routed by CAPABILITY, never by model type: a residual patcher
+            # scales its per-layer injection through region_masks, an attention
+            # patcher takes one attn_mask per site through the mask argument,
+            # and a patcher with neither route gets the warning rather than
+            # silence.
+            if output_band_masks:
+                banded = {band: combine_with_unit_mask(tensor)
+                          for band, tensor in output_band_masks.items()}
+                if getattr(params.model, 'masks_via_advanced_weighting', False):
+                    params.model.region_masks = banded
+                    if first:
+                        logger.info(f"ControlNet per-band output masks "
+                                    f"({', '.join(sorted(banded))}) applied per injection layer "
+                                    f"on {type(params.model).__name__}, absent bands zeroed")
+                elif getattr(params.model, 'supports_output_mask', False) \
+                        and getattr(params.model, 'supports_band_profiles', False):
+                    mask = {band: fold_masks(mask if not isinstance(mask, dict) else mask.get(band),
+                                             tensor)
+                            for band, tensor in banded.items()}
+                    if first:
+                        logger.info(f"ControlNet per-band output masks routed into the "
+                                    f"attention masks of {type(params.model).__name__} "
+                                    f"({', '.join(sorted(banded))}; absent bands inject nothing).")
+                elif first:
+                    logger.warning(f"Per-band output masks ignored: "
+                                   f"{type(params.model).__name__} has no per-depth injection "
+                                   f"to restrict.")
 
             params.model.process_before_every_sampling(p, cond, mask, *args, **kwargs)
 

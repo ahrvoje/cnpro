@@ -724,14 +724,42 @@ def band_mode_active(profile) -> bool:
                for segment in profile.split('#')[1:])
 
 
+def input_mask_share(values):
+    """(scalar weight, is_graded) of one input's G mask, or (None, False).
+
+    AN INPUT MASK IS A BINARY SHAPE PLUS ONE NUMBER. Its shape says which part
+    of the input is worth reading - for an embedding preprocessor that is the
+    whole of its spatial meaning, since CLIP emits one token set for the image
+    and has nowhere to put a per-region weight. Its VALUE is how much this
+    input counts in the sum of the unit's inputs, which is a scalar.
+
+    So the value is reduced here, over the PAINTED pixels only: unpainted area
+    means "not part of this input", not "this input at weight 0", and averaging
+    over it would make a small bright patch read as a weak input. `is_graded`
+    reports whether the paint actually holds more than one value, so the caller
+    can say out loud that a gradient was flattened rather than let it look
+    like it did something.
+    """
+    if values is None:
+        return None, False
+    painted = values > 0
+    if not painted.any():
+        return None, False
+    kept = values[painted]
+    lo = float(kept.min())
+    hi = float(kept.max())
+    return float(kept.mean()), (hi - lo) > 5e-3
+
+
 def masks_in_force(global_mask, band_masks, band_selected: bool):
-    """Which painted weight masks a unit runs on: (global, {band: mask}).
+    """Which painted OUTPUT masks a unit runs on: (global, {band: mask}).
 
     THE PROFILE SELECTOR DECIDES, not which masks happen to be painted. The
-    four mask slots are the four profiles' spatial half: the G slot belongs to
-    the MAIN profile and the C/M/F slots to the band profiles, so whichever
-    selector is pressed picks the mask(s) with it. Main (or depth, which
-    multiplies main) runs on G alone; a band selection runs on C/M/F alone.
+    four output slots are the four profiles' spatial half: the G slot belongs
+    to the MAIN profile (with depth and drift, which shape main rather than
+    replacing it) and the C/M/F slots to the band profiles, so whichever
+    selector is pressed picks the mask(s) with it. Main (or depth) runs on G
+    alone; a band selection runs on C/M/F alone.
 
     Before this, the masks had their own precedence - "a painted global mask
     governs everything, otherwise any painted band does" - which is a SECOND
@@ -1029,45 +1057,40 @@ class ControlNetUnit:
     weight_profile: str = ""
     # Weight mask painted over the source image (RGBA, HWC uint8; grayscale
     # value = weight, feather in alpha - legacy rainbow hues still decode).
-    # WHICH masks run is the profile SELECTOR's decision, not a precedence
-    # rule: the '#B<band>' marker in weight_profile selects EITHER this global
-    # mask (no marker: main/depth modes) OR the per-band masks below - the
-    # non-selected set is DROPPED with a log line, never fallen back to. See
-    # masks_in_force.
+    # ONE mask per input, and it is a SHAPE plus a NUMBER: the shape says which
+    # part of this input is worth reading (it gates what an embedding
+    # preprocessor is shown, and for a spatially-registered hint it also
+    # restricts where that input's control lands), and the painted value
+    # reduces to one scalar - this input's share of the unit's inputs. See
+    # input_mask_share. Per-depth spatial restriction is an OUTPUT question and
+    # lives on output_mask_coarse/mid/fine.
     weight_mask: Optional[np.ndarray] = None
-    # Per-band layer masks (same encoding): coarse = composition band
-    # (deepest injection layers + middle), mid = form band, fine = texture
-    # band. Live only while a band selector is pressed ('#B<band>' in
-    # weight_profile); an absent band means full weight everywhere for that
-    # band.
-    weight_mask_coarse: Optional[np.ndarray] = None
-    weight_mask_mid: Optional[np.ndarray] = None
-    weight_mask_fine: Optional[np.ndarray] = None
-    # Same four slots for input 2..MAX_INPUT_IMAGES: every input is its own
-    # control, so it carries its own masks - painting on input 3 restricts what
-    # input 3 contributes and never touches the others.
+    # One per input 2..MAX_INPUT_IMAGES: every input is its own control, so it
+    # carries its own mask - painting on input 3 restricts what input 3
+    # contributes and never touches the others.
     weight_mask_2: Optional[np.ndarray] = None
-    weight_mask_2_coarse: Optional[np.ndarray] = None
-    weight_mask_2_mid: Optional[np.ndarray] = None
-    weight_mask_2_fine: Optional[np.ndarray] = None
     weight_mask_3: Optional[np.ndarray] = None
-    weight_mask_3_coarse: Optional[np.ndarray] = None
-    weight_mask_3_mid: Optional[np.ndarray] = None
-    weight_mask_3_fine: Optional[np.ndarray] = None
     weight_mask_4: Optional[np.ndarray] = None
-    weight_mask_4_coarse: Optional[np.ndarray] = None
-    weight_mask_4_mid: Optional[np.ndarray] = None
-    weight_mask_4_fine: Optional[np.ndarray] = None
     weight_mask_5: Optional[np.ndarray] = None
-    weight_mask_5_coarse: Optional[np.ndarray] = None
-    weight_mask_5_mid: Optional[np.ndarray] = None
-    weight_mask_5_fine: Optional[np.ndarray] = None
-    # Output-side weight mask (same rainbow encoding), painted on the "Output
-    # mask" tab over a throwaway reference image: it is registered with the
-    # GENERATED image, not with the control input, so it only scales the
-    # control injection per output region and never gates what the control
+    # Output-side weight masks (same encoding), painted on the "Output mask"
+    # tab over a throwaway reference image: they are registered with the
+    # GENERATED image, not with the control input, so they only scale the
+    # control injection per output region and never gate what the control
     # model gets to see. Empty = control applies to the whole output.
+    #
+    # THE SPATIAL HALF OF THE PROFILES LIVES HERE, not on the input canvas.
+    # G belongs to the MAIN profile (and to depth/drift, which shape main
+    # rather than replacing it) and C/M/F to the coarse/mid/fine band
+    # profiles, so the editor's band selector picks which of them run - see
+    # masks_in_force. Output geometry is the only geometry in which that
+    # question is well posed: the bands address UNET DEPTH, which every
+    # patcher resolves against the frame being generated, while an input
+    # canvas is registered with a hint that may not be spatially related to
+    # the output at all (an IP-Adapter reference is not).
     output_mask: Optional[np.ndarray] = None
+    output_mask_coarse: Optional[np.ndarray] = None
+    output_mask_mid: Optional[np.ndarray] = None
+    output_mask_fine: Optional[np.ndarray] = None
     # Per-step cond/uncond balance profile, same 'x@y;...' serialization as
     # weight_profile. y = 0.5 is balanced (control on cond and uncond), y = 1
     # applies control to cond only (control matters most), y = 0 to uncond
@@ -1159,11 +1182,9 @@ class ControlNetUnit:
         return triples
 
     @staticmethod
-    def weight_mask_field(slot, band=None):
-        """Field name of a weight mask channel. slot is 0-based (tab order),
-        band is None for the global mask or coarse/mid/fine."""
-        name = "weight_mask" if slot == 0 else f"weight_mask_{slot + 1}"
-        return name if band is None else f"{name}_{band}"
+    def weight_mask_field(slot):
+        """Field name of an input weight mask channel; slot is 0-based (tab order)."""
+        return "weight_mask" if slot == 0 else f"weight_mask_{slot + 1}"
 
     @staticmethod
     def input_order_permutation(order):
@@ -1182,12 +1203,26 @@ class ControlNetUnit:
         perm.extend(slot for slot in range(MAX_INPUT_IMAGES) if slot not in perm)
         return perm
 
-    def input_weight_masks(self, slot):
-        """(global, {band: mask}) of one input slot, raw RGBA as painted."""
-        bands = {}
-        for band in ("coarse", "mid", "fine"):
-            bands[band] = getattr(self, ControlNetUnit.weight_mask_field(slot, band))
-        return getattr(self, ControlNetUnit.weight_mask_field(slot)), bands
+    def input_weight_mask(self, slot):
+        """The raw RGBA G mask of one input slot, as painted.
+
+        G ALONE: an input mask answers "which part of this input is worth
+        reading", and that question has no coarse/mid/fine variant - the bands
+        address UNet depth, which is a property of where control is injected,
+        so they live on the output masks.
+        """
+        return getattr(self, ControlNetUnit.weight_mask_field(slot))
+
+    @staticmethod
+    def output_mask_field(band=None):
+        """Field name of an output mask channel; band is None for G."""
+        return "output_mask" if band is None else f"output_mask_{band}"
+
+    def output_weight_masks(self):
+        """(global, {band: mask}) of the output-side masks, raw RGBA as painted."""
+        bands = {band: getattr(self, ControlNetUnit.output_mask_field(band))
+                 for band in ("coarse", "mid", "fine")}
+        return self.output_mask, bands
 
     @staticmethod
     def infotext_fields():
@@ -1239,12 +1274,12 @@ class ControlNetUnit:
             unit.mask_image = decode_base64_image_array(unit.mask_image)
         if isinstance(unit.weight_mask, str):
             unit.weight_mask = decode_base64_image_array(unit.weight_mask)
-        mask_fields = ['output_mask']
+        mask_fields = [ControlNetUnit.output_mask_field(band)
+                       for band in (None, 'coarse', 'mid', 'fine')]
         for slot in range(MAX_INPUT_IMAGES):
-            for band in (None, 'coarse', 'mid', 'fine'):
-                field = ControlNetUnit.weight_mask_field(slot, band)
-                if field != 'weight_mask':  # decoded above
-                    mask_fields.append(field)
+            field = ControlNetUnit.weight_mask_field(slot)
+            if field != 'weight_mask':  # decoded above
+                mask_fields.append(field)
         for band_field in mask_fields:
             band_value = getattr(unit, band_field)
             if isinstance(band_value, str):
@@ -1294,8 +1329,7 @@ def _slot_field_names():
     for slot in range(MAX_INPUT_IMAGES):
         image = "image" if slot == 0 else f"image_{slot + 1}"
         names += [image, f"{image}_fg", f"{image}_enabled"]
-        names += [ControlNetUnit.weight_mask_field(slot, band)
-                  for band in (None, "coarse", "mid", "fine")]
+        names.append(ControlNetUnit.weight_mask_field(slot))
     return names
 
 
