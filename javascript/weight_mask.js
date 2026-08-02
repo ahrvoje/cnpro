@@ -343,6 +343,57 @@
             slot.state = state;
         }
 
+        /**
+         * Carry painted weight onto a new image geometry.
+         *
+         * A NEW PICTURE UNDER THE PAINT IS NOT A REASON TO DESTROY THE PAINT.
+         * The insert buttons (⤵I / ⤵O) and any other upload swap the image, and
+         * a swapped image usually has different natural dimensions - which used
+         * to reach the watchdog below as "image replaced" and call
+         * `clearMask(slot, true)`, wiping the painter's copy AND pushing '' to
+         * gradio. On the Output mask canvas that is the whole workflow (insert
+         * the last result, THEN paint where the control may act), so the mask
+         * was destroyed by the very action that sets the job up.
+         *
+         * The mask is registered with the FRAME, not with those pixels - python
+         * resizes it onto the generation dimensions anyway - so it is rescaled
+         * onto the new geometry. `syncState` re-exports at the new size so the
+         * server value never lags the painter (invariant 15).
+         *
+         * Returns false when there is nothing to carry, so the caller can fall
+         * back to the ordinary clear.
+         */
+        function rescaleMask(slot) {
+            const w = imgEl.naturalWidth;
+            const h = imgEl.naturalHeight;
+            if (!w || !h || !slot.hasPaint || !slot.mask
+                    || !slot.mask.width || !slot.mask.height) {
+                return false;
+            }
+            const scaled = document.createElement('canvas');
+            scaled.width = w;
+            scaled.height = h;
+            const ctx = scaled.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.drawImage(slot.mask, 0, 0, slot.mask.width, slot.mask.height, 0, 0, w, h);
+            slot.mask = scaled;
+            slot.dims = w + 'x' + h;
+            slot.last = null;
+            // both are stated in the OLD pixel grid: the bbox is only an upper
+            // bound (null = rescan the whole image) and an invert snapshot can
+            // no longer be restored onto this geometry
+            slot.bounds = null;
+            slot.preInvert = null;
+            slot.stroke++;
+            if (slot._syncTimer) {
+                clearTimeout(slot._syncTimer);
+                slot._syncTimer = 0;
+            }
+            syncState(slot);
+            updateOverlay(slot);
+            return true;
+        }
+
         function clearMask(slot, pushToGradio) {
             slot.mask = null;
             slot.hasPaint = false;
@@ -823,7 +874,10 @@
                         // destroying the restored mask AND the server value
                         // behind it.
                         installImportedMask(slot);
-                    } else {
+                    } else if (!rescaleMask(slot)) {
+                        // only when there is no paint to carry - see
+                        // rescaleMask for why a replaced image must not take
+                        // the mask down with it
                         clearMask(slot, true);
                     }
                 }

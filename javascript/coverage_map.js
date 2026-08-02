@@ -778,6 +778,33 @@
         return checked && checked.value === 'residual' ? 'residual' : 'attention';
     }
 
+    // WHICH MODEL KIND INJECTS THROUGH WHICH MECHANISM. Keys are
+    // classify_controlnet_type's strings (global_state.py); the tooltip below
+    // is generated from this same table, so the list the user reads and the
+    // routing the map performs cannot disagree.
+    const MECHANISM_BY_KIND = {
+        ipadapter: 'attention',
+        controlnet: 'residual',
+        controllora: 'residual',
+        t2i: 'residual',
+        lllite: 'lllite',
+    };
+
+    // The tooltip names CONTROL TYPES, not patcher classes. "ControlLora" and
+    // "residual patcher" are the right words for this file and the wrong ones
+    // on screen: the question being asked is "where does my canny go", and a
+    // list of loader kinds cannot answer it. Loader kinds stay in
+    // MECHANISM_BY_KIND above, which is what actually routes.
+    const CHANNEL_DOC = {
+        'cross-attention':
+            'IP-Adapter, InstantID, FaceID.\n'
+            + 'A reference image read as a CLIP embedding - style, look, identity.',
+        'residual':
+            'Canny, Depth, OpenPose, Scribble/Sketch, Lineart, SoftEdge, Tile, Seg, '
+            + 'Normal, Inpaint - every hint-image ControlNet, plus T2I-Adapter and '
+            + 'Z-Image.\nA hint the control model turns into residuals.',
+    };
+
     /** The mechanism a unit's selected MODEL injects through, from the hidden
      *  `.cnet-model-type-state` channel (classify_controlnet_type, rewritten on
      *  model.change). Fails OPEN to the residual channel on unknown/none, the
@@ -788,9 +815,28 @@
      *  a channel it does not belong to. */
     function mechanismOf(unit) {
         const kind = textareaValue(unit, '.cnet-model-type-state textarea').trim();
-        if (kind === 'ipadapter') return 'attention';
-        if (kind === 'lllite') return 'lllite';
-        return 'residual';
+        return MECHANISM_BY_KIND[kind] || 'residual';
+    }
+
+    /** Put the model lists on the channel control itself. gr.Radio has no
+     *  tooltip argument and its `info` paragraph renders ABOVE the control,
+     *  costing more height than the control (coverage.py says why that was
+     *  refused) - so the text is attached here, where the table it is generated
+     *  from also lives. Set on the radio's own labels as well as the block, so
+     *  hovering the option you are about to pick answers the question. */
+    function describeChannels(panel) {
+        const block = panel.querySelector('.cnet-coverage-channel');
+        if (!block) return;
+        block.title = 'Where the map reads control from. The two never sum - they '
+            + 'land in different places in the UNet.\n\n'
+            + 'CROSS-ATTENTION - ' + CHANNEL_DOC['cross-attention'] + '\n\n'
+            + 'RESIDUAL - ' + CHANNEL_DOC.residual + '\n\n'
+            + 'ControlLLLite is on neither; the status line names it.';
+        block.querySelectorAll('label').forEach((label) => {
+            const input = label.querySelector('input[type="radio"]');
+            const doc = input && CHANNEL_DOC[input.value];
+            if (doc) label.title = doc;
+        });
     }
 
     function metricOf(panel) {
@@ -1107,6 +1153,10 @@
             // megapixel of arithmetic; coalesce them into one run per pause
             clearTimeout(settingsTimer);
             settingsTimer = setTimeout(() => refresh(panel, true), 180);
+            // gradio re-renders a radio's inner inputs when its value changes,
+            // which drops the per-label titles set below; re-applying here is
+            // two querySelectors and puts them back on the nodes that exist now
+            describeChannels(panel);
         };
         ['change', 'input'].forEach((type) => {
             options.addEventListener(type, settingsChanged);
@@ -1158,6 +1208,8 @@
                 if (dataUrl) setBackground(panel, dataUrl);
             });
         });
+
+        describeChannels(panel);
 
         // enabling a unit / editing a profile is a DOM event away, but painting
         // a mask is a value-only textarea write nobody hears: the shared tick is

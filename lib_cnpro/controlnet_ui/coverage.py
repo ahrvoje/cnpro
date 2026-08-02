@@ -152,6 +152,16 @@ def render_coverage_panel(elem_id_tabname: str, gen_type: str) -> None:
             # the IP-Adapter side is where the arithmetic (per-input shares,
             # bands, several units on the same attention sites) is impossible
             # to do in your head.
+            #
+            # WHICH MODELS ARE ON WHICH CHANNEL is stated in the tooltip, and
+            # that tooltip is GENERATED in coverage_map.js from the same
+            # kind -> mechanism table the routing uses (MECHANISM_BY_KIND /
+            # CHANNEL_DOC), then attached here from JS. It is not written out in
+            # this file: a second copy of the list is a second thing to keep in
+            # step, and gr.Radio has no tooltip argument to hold it anyway - its
+            # `info` paragraph renders ABOVE the control, where it costs more
+            # height than the control itself (the reason there is no `info` on
+            # any control in this column).
             gr.Radio(
                 choices=["cross-attention", "residual"],
                 value="cross-attention",

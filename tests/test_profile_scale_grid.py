@@ -12,8 +12,9 @@ alone" at the very top of its plot.
 So the grid follows the axis on screen, and this pins that:
 
 1. the weight axis offers exactly (0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.35, 0.5,
-   0.6, 0.7, 0.8, 1) - the same list for main and for every band, because they
-   share one plot;
+   0.75, 1) - the same list for main and for every band, because they share one
+   plot. 0.6/0.7/0.8 were three stops that did not read as different choices;
+   0.75 replaced all three (2026-08-02);
 2. depth and drift keep -1 .. 2 in steps of 0.25;
 3. the balance editor keeps its own [0, 1] quarters;
 4. a profile STRING carrying an off-grid weight range still parses to that
@@ -33,7 +34,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-WEIGHT_GRID = [1, 0.8, 0.7, 0.6, 0.5, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0]
+WEIGHT_GRID = [1, 0.75, 0.5, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0]
 MULTIPLIER_GRID = [2 - 0.25 * i for i in range(13)]          # 2 .. -1
 BALANCE_GRID = [1, 0.75, 0.5, 0.25, 0]
 
