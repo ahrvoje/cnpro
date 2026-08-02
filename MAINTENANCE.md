@@ -507,6 +507,44 @@ pieces would move.
   script recovers the units row (`<tab prefix>_accordions`) and the tab from -
   no hidden data-* carrier element, because an element that exists only to hold
   two strings is the dead chrome the audit hunts for.
+  MAXIMIZE AND THE HOVER READOUT (2026-08-02) — the panel stays STATIC (nothing
+  here writes to a unit); both of these are about LOOKING at the map.
+  *Maximize* is the host's own ⛶ / ➖ pair, same glyphs, same titles, same
+  top-left corner of the frame (`canvas.html` `.forge-toolbar-box-a`), because
+  this canvas is read like the unit canvases and must be enlarged like them.
+  Two things are NOT optional in its CSS. It is the **stage** that goes
+  `position: fixed`, not the panel — the settings column and the legend say
+  nothing that needs the viewport — and therefore the toggle is a plain
+  `<button>` inside the stage rather than a ToolButton in the action row: a
+  full-viewport overlay covers that row, and an exit control the overlay hides
+  is not an exit control (Escape is wired for the same reason, on ONE document
+  listener rather than per panel). And lifting `max-height: 240px` is not
+  enough on its own — `max-*` only ever shrinks a replaced element, so the map
+  sat at its intrinsic size in the middle of the screen (measured 1024×512 on a
+  1280×720 viewport); `width/height: 100%` is what makes it grow and
+  `object-fit: contain` is what stops it stretching. No repaint is involved
+  either way: the canvas already IS the output raster and CSS was the only
+  thing scaling it.
+  *The readout* is the value under the pointer, following it. The ramp is a
+  good picture and a bad number — 0.9, 1.0 and 1.4 are the same red to the eye,
+  the contours only mark quarter steps, and past 1 `colorFor` spreads a whole
+  range over darker reds, so the picture cannot answer "what is THIS pixel"
+  even in principle. It therefore reads the FIELD (kept on the panel state by
+  `paint`, at the grid resolution it was aggregated on), never the canvas: the
+  canvas holds a colour that is not invertible above 1, with contours stroked
+  on top of it, over a backdrop, at the opacity slider's alpha.
+  `valueAt` does CONTAIN-MATH, and this is the part that looks like an
+  over-complication and is not: `object-fit: contain` letterboxes the raster
+  inside the element box on whichever axis has slack, so scaling the element's
+  rect reports values for pixels that are not on the picture. Maximized, that
+  slack is 36px top and bottom on a 2:1 map in a 720px viewport. That case is
+  the one discriminating probe in the browser harness — the naive mapping
+  passes every other check in it.
+  The readout HIDES the drop hint while it is up (`~` sibling rule in
+  style.css, which is why the readout comes first in the stage markup, and why
+  that rule must stay AFTER the `:hover` one it ties with on specificity).
+  Deliberate: both are centred pills on the same picture, the hint is
+  discoverability and the readout is an answer.
   Chrome in `lib_cnpro/controlnet_ui/coverage.py`; all arithmetic in
   `javascript/coverage_map.js`, in the BROWSER — the values it needs (enables,
   profile strings, painted mask channels, resize modes, width/height) reach the
@@ -1126,15 +1164,58 @@ support) keep patchers that only understand constant weight behaving sanely.
    eraser recomputes hasPaint at stroke end (an eraser stroke may have
    emptied the mask; a fully emptied mask canvas is also dropped, so
    sub-threshold antialiased fringes cannot resurrect with the next
-   stroke). (d) 2026-07-23: the UPLOAD SEQUENCE
-   (`dataset.forgeUploadSeq`, bumped by canvas_extra.js `replaceAll` ONLY —
-   genuine new content: uploads, drops, pastes, forgeCanvasPush, Topaz —
-   never adjustment echoes or layer edits) clears the slots on a NEW image
-   replacing the old at identical dimensions, which neither the dims check
-   nor the empty transition can see; `announceImageInfo` dispatches even
-   byte-identical info when the seq moved, or listeners would never hear
-   it. A late server→client mask push (value-only textarea write no
+   stroke). (d) A late server→client mask push (value-only textarea write no
    observer sees) is picked up by a 500 ms watch that calls importState.
+
+   **(e) 2026-08-02 — A NEW PICTURE UNDER THE PAINT IS NOT A REASON TO DESTROY
+   THE PAINT, and this is now structural rather than documented.** The mask is
+   registered with the FRAME, not with the pixels beneath it (python resizes it
+   onto the generation dimensions regardless), so a replaced image — the ⤵I /
+   ⤵O insert buttons, a drop, a paste, an upload — carries its mask onto the
+   new geometry instead of taking it down. Painting a mask and THEN inserting
+   the reference it belongs to is the ordinary order of work on the
+   Output-mask canvas, so the old behaviour destroyed the work with the very
+   action that set the job up.
+
+   THIS CLAUSE USED TO SAY THE OPPOSITE, and that is the lesson. It described
+   an UPLOAD SEQUENCE (`dataset.forgeUploadSeq`) that cleared every slot on a
+   new image at identical dimensions. When the contract was inverted, the dims
+   watchdog was taught to carry the paint and this branch — two hundred lines
+   away in the `forge-image-info` handler — was not, so an insert still wiped
+   the mask while the diff looked correct. THREE places independently answered
+   "the image changed, does the paint die?"; patching one is not a fix.
+   Invariant 29's shape exactly.
+
+   So the answer is given ONCE:
+   - `CLEAR_REASONS` (module scope, `weight_mask.js`) is the exhaustive list of
+     ways painted weight may legitimately end. Every entry is the USER or the
+     SERVER saying the paint itself is gone. None is "the picture changed", and
+     none may ever be.
+   - `clearMask(slot, push, reason)` REFUSES an undeclared reason: the paint
+     survives (the safe direction — a mask that outlives its welcome is visible
+     and one click from ✕; a wrongly destroyed one is silent and
+     unrecoverable) and the console names the call site.
+   - Every image-change site funnels through `onImageReplaced`, which cannot
+     clear except to repair a slot claiming paint with no canvas behind it.
+     It runs from the dims watchdog, from `forge-image-info`, AND from the
+     `<img>`'s own `load` — the announcement fires while the element still
+     reports the PREVIOUS `naturalWidth`, so `load` is the first moment the new
+     geometry is knowable. Without that third call the carry still happened, on
+     the next 500 ms tick, and "works because something else polls" is how this
+     contract was broken twice.
+   - `tests/test_mask_clear_reasons.py` reads the declaration and every call
+     site out of the source and fails if they disagree, if a new reason names
+     an image change, or if `clearMask` reappears in the image-info handler.
+     `tests/test_mask_survives_insert.py` drives the feature on a real
+     ForgeCanvas — paint, insert at a new size, insert at the SAME size (the
+     branch the first fix missed, invisible to any dimension check), then
+     remove the image and require the mask to be GONE. That last case is not
+     optional: without it the file passes on a painter that has simply stopped
+     clearing.
+
+   The upload sequence itself stays, for its other job: `announceImageInfo`
+   dispatches even byte-identical info when the seq moved, or a same-size
+   replacement would be silent to every listener.
 11. `params.control_cond` / `control_mask` are LISTS (one entry per input
    image), never batch-stacked — folding inputs onto the batch axis is what
    the removed Batch modes did, and it means something else entirely.

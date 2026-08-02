@@ -2613,6 +2613,138 @@
     opacity: 0.9;
 }
 
+/* THE VALUE UNDER THE POINTER. The ramp is a good picture and a bad number:
+   0.9, 1.0 and 1.4 are the same red to the eye, and the contours only mark the
+   quarter steps. It FOLLOWS the pointer rather than sitting in a corner,
+   because the question is always "what is THIS pixel" and a corner readout
+   makes the eye leave the pixel to read the answer.
+
+   tabular-nums so the digits do not jitter as the pointer moves - a number
+   that reflows on every sample reads as noise rather than as a measurement. */
+.cnet-coverage-readout {
+    position: absolute;
+    z-index: 4;
+    display: none;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #ffffff;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translate(-50%, -160%);
+}
+
+.cnet-coverage-readout.cnet-coverage-readout-on {
+    display: inline-flex;
+}
+
+/* near the top edge, "above the pointer" is off the picture */
+.cnet-coverage-readout.cnet-coverage-readout-on.cnet-coverage-readout-below {
+    transform: translate(-50%, 60%);
+}
+
+.cnet-coverage-readout-swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+    /* the map's own colour at that weight, so the number is tied to the picture
+       instead of to a legend the eye has to travel to; the hairline keeps the
+       violet end from vanishing into the pill */
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55);
+}
+
+/* THE HINT YIELDS TO THE READOUT. Both are centred pills over the same
+   picture, and the hint would land under the number exactly while the number
+   is being read. Deliberate trade: the drop hint is a discoverability
+   affordance and the readout is an answer, so the answer wins - the hint still
+   shows on the way in, over the letterbox, and before the first map is
+   painted. Sibling combinator, so the readout has to come FIRST in
+   coverage.py's stage markup; same specificity as the :hover rule above, so
+   this must stay AFTER it. */
+.cnet-coverage-readout.cnet-coverage-readout-on ~ .cnet-coverage-hint {
+    opacity: 0;
+}
+
+/* THE MAXIMIZE TOGGLE, in the stage's top-left corner - the corner the host's
+   canvases put ⛶ / ➖ in (canvas.css .forge-toolbar), hidden until the picture
+   is hovered for the same reason: permanent chrome on a map covers the map.
+   Kept visible while maximized, where it is the way back out. */
+.cnet-coverage-tools {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    z-index: 5;
+    display: flex;
+    gap: 3px;
+    padding: 3px 5px;
+    border-radius: 3px;
+    background: rgba(47, 47, 47, 0.8);
+    opacity: 0;
+    transition: opacity 0.12s ease-out;
+}
+
+.cnet-coverage-stage:hover .cnet-coverage-tools,
+.cnet-coverage-stage.cnet-coverage-maximized .cnet-coverage-tools {
+    opacity: 1;
+}
+
+.cnet-coverage-tools button {
+    height: 20px;
+    padding: 0 6px;
+    border: none;
+    border-radius: 2px;
+    background: #4a4a4a;
+    color: #ffffff;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    /* gradio wraps a gr.HTML block in .prose typography, which gives every
+       element a bottom margin and zeroes it on :last-child - the same thing the
+       host's own toolbar has to defend against (canvas.css .forge-btn), and it
+       mis-centers whichever button happens to be last */
+    margin: 0 !important;
+}
+
+.cnet-coverage-tools button:hover {
+    background: #5e5e5e;
+}
+
+/* MAXIMIZED: the stage takes the viewport and the canvas takes the stage.
+   The STAGE, not the panel - the settings column and the legend say nothing
+   that needs 100vw, and the map is the only thing the 240px cap costs.
+   Below .cnpro-canvas-menu (2147483000) and .cnet-modal, above everything
+   gradio lays out. */
+.cnet-coverage-stage.cnet-coverage-maximized {
+    position: fixed;
+    inset: 0;
+    z-index: 2147482000;
+    margin: 0;
+    padding: 8px;
+    border-style: solid;
+    border-radius: 0;
+    align-items: center;
+    background: var(--background-fill-primary);
+}
+
+/* The cap that makes the panel a panel is exactly what maximizing is for - but
+   lifting it is not enough on its own. `max-*` only ever SHRINKS a replaced
+   element, so a 1024x512 map maximized on a 2560px screen would have sat at
+   1024x512 in the middle of it (measured) - bigger than the 480x240 it came
+   from, and still not what the button says. `width/height: 100%` is what makes
+   it grow; `object-fit: contain` (on the base rule) is what keeps it from
+   stretching, and the LETTERBOX that produces is why coverage_map.js's valueAt
+   does contain-math instead of scaling the element's rect. */
+.cnet-coverage-stage.cnet-coverage-maximized .cnet-coverage-canvas {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+}
+
 /* the two legend halves: 12px like the status line, and the ramp thick enough
    not to read as a hairline beside text that size */
 .cnet-coverage-key,

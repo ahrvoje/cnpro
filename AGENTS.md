@@ -263,6 +263,9 @@ that, rather than throwing ENOENT from inside the harness as they used to.
 | `test_defaults.py` | — | "Resize and Fill" + resolution 1024 at every decision point |
 | `test_patcher_contract.py` | torch + host | flags declared; registry keeps declined/broken/refused apart |
 | `test_control_merge_parity.py` | torch + host | `control_merge` ≡ the pre-subclass copy, 16 configs; the host's weighting surface stays unset; loader returns CNPro's classes |
+| `test_unit_config_not_fatal.py` | — | a half-configured unit skips ITSELF (missing model / image), the other units still run, the skip reaches the infotext — and a genuine failure still raises |
+| `test_mask_clear_reasons.py` | — | painted weight dies only for a DECLARED reason, and no declared reason is an image changing (reads the source; the static half of invariant 15e) |
+| `test_mask_survives_insert.py` | node + playwright + host template | **that inserting an image does not destroy the mask painted on it** — at a new size, at the same size, and that removing the image still does |
 | `test_canvas_adapter.py` | node | a host-originated `loadImage()` reaches CNPro's wrapper — the alias direction |
 | `test_style_sheet.py` | — | style.css parses; every rendered class is styled; canvas geometry stays scoped |
 | `test_toolbar_contract.py` | node | executes the renderer + registry: ids, classes, reveal, audit |

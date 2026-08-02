@@ -42,9 +42,14 @@
 // an empty map read as "nothing is wrong".
 //
 // STATIC BY DESIGN: no tools, no painting, nothing here writes to any unit.
-// The only interactive part is the BACKDROP - drop an image on it, or insert
-// the img2img input / the current output raster - which is context to read the
-// map against and never leaves the browser.
+// Everything interactive about it is about LOOKING at the map, and none of it
+// leaves the browser: a BACKDROP to read the map against (drop an image on it,
+// or insert the img2img input / the current output raster), MAXIMIZE, and the
+// hover READOUT. The last two exist because the ramp is a good picture and a
+// bad number - 0.9, 1.0 and 1.4 are the same red to the eye and are three
+// different runs - and because a 240px preview of a 1024x1024 output is four
+// output pixels per screen pixel, which answers "where" and cannot answer
+// "where exactly".
 (function () {
     'use strict';
 
@@ -752,6 +757,19 @@
                 canvas: panel.querySelector('.cnet-coverage-canvas'),
                 status: panel.querySelector('.cnet-coverage-status'),
                 hint: panel.querySelector('.cnet-coverage-hint'),
+                stage: panel.querySelector('.cnet-coverage-stage'),
+                readout: panel.querySelector('.cnet-coverage-readout'),
+                readoutSwatch: panel.querySelector('.cnet-coverage-readout-swatch'),
+                readoutValue: panel.querySelector('.cnet-coverage-readout-value'),
+                // the last PAINTED field and the grid it was aggregated on, kept
+                // for the readout (see valueAt), plus the ramp paint resolved -
+                // hoisted out of the pointer handler because api() warns when a
+                // module is missing and a pointermove is not a place to warn from
+                field: null,
+                fieldW: 0,
+                fieldH: 0,
+                ramp: null,
+                maximized: false,
                 background: null,      // decoded backdrop Image
                 backgroundKey: '',
                 key: '',
@@ -972,6 +990,14 @@
         const metric = metricOf(panel);
         const both = aggregate(contributions, cw * ch);
         const field = metric === 'peak' ? both.peak : both.mean;
+        // what the hover readout reads. The FIELD, not the canvas: this is the
+        // array the colours were computed from, so the number and the pixel
+        // cannot disagree (see valueAt for why reading the canvas back cannot
+        // work at all above 1).
+        st.field = field;
+        st.fieldW = cw;
+        st.fieldH = ch;
+        st.ramp = ramp;
 
         let max = 0;
         let covered = 0;
@@ -1090,6 +1116,115 @@
         }
     }
 
+    // -------------------------------------------------------------- readout
+    //
+    // The value under the pointer. The colours answer "where" and the contours
+    // answer "which quarter"; neither answers "what is THIS pixel", and past 1
+    // the ramp cannot answer it even in principle - colorFor darkens the red
+    // over a whole range, so 1.2 and 1.6 are two shades nobody reads off a
+    // screen. So the number is read from the FIELD, at the resolution it was
+    // aggregated on, and never sampled back out of the canvas: the canvas holds
+    // a colour (not invertible above 1), with contour strokes drawn on top of
+    // it, over a backdrop, at the opacity slider's alpha.
+
+    /**
+     * Field value under a client point, or null when the pointer is not on the
+     * picture.
+     *
+     * `object-fit: contain` is why this is not `(clientX - rect.left) /
+     * rect.width`. The canvas element carries the OUTPUT's aspect ratio as its
+     * intrinsic one, and the CSS box it is given need not match: on the axis
+     * with slack the raster is centred and letterboxed inside the box, so the
+     * box is not the picture, and the naive mapping is wrong by half the
+     * letterbox at one edge and off the end at the other.
+     */
+    function valueAt(st, clientX, clientY) {
+        const canvas = st.canvas;
+        if (!st.field || !st.fieldW || !st.fieldH || !canvas) return null;
+        if (!canvas.width || !canvas.height) return null;
+        const rect = canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        const k = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+        const dw = canvas.width * k;
+        const dh = canvas.height * k;
+        const u = (clientX - (rect.left + (rect.width - dw) / 2)) / dw;
+        const v = (clientY - (rect.top + (rect.height - dh) / 2)) / dh;
+        if (u < 0 || u >= 1 || v < 0 || v >= 1) return null;
+        const x = Math.min(st.fieldW - 1, Math.floor(u * st.fieldW));
+        const y = Math.min(st.fieldH - 1, Math.floor(v * st.fieldH));
+        return st.field[y * st.fieldW + x];
+    }
+
+    function hideReadout(st) {
+        if (st.readout) st.readout.classList.remove('cnet-coverage-readout-on');
+    }
+
+    function showReadout(st, clientX, clientY) {
+        if (!st.readout || !st.stage) return;
+        const value = valueAt(st, clientX, clientY);
+        if (value === null) {
+            hideReadout(st);
+            return;
+        }
+        if (st.readoutValue) st.readoutValue.textContent = value.toFixed(2);
+        // the swatch is the same colorFor the pixel under the pointer was
+        // painted with, so the number is tied to the picture rather than to a
+        // legend the eye has to travel to
+        if (st.readoutSwatch && st.ramp) {
+            const c = colorFor(value, st.ramp);
+            st.readoutSwatch.style.background =
+                'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+        }
+        // positioned against the STAGE, which is the readout's containing block
+        // in both states: position:relative normally, position:fixed maximized
+        const rect = st.stage.getBoundingClientRect();
+        const y = clientY - rect.top;
+        st.readout.style.left = (clientX - rect.left) + 'px';
+        st.readout.style.top = y + 'px';
+        // above the pointer, except near the top edge, where "above" is off the
+        // stage and the label would be clipped by the panel above it
+        st.readout.classList.toggle('cnet-coverage-readout-below', y < 30);
+        st.readout.classList.add('cnet-coverage-readout-on');
+    }
+
+    // ------------------------------------------------------------- maximize
+    //
+    // The unit canvases have it (the host's ⛶ / ➖) and this one is read the
+    // same way, so it gets the same gesture with the same glyphs in the same
+    // corner. Only the mechanism differs: this is a plain <canvas> in an HTML
+    // block, not a ForgeCanvas, so there is no host toolbar to borrow one from.
+    //
+    // The STAGE goes fixed, not the panel. The settings column and the legend
+    // say nothing that needs the viewport; the map is the only thing the 240px
+    // height cap costs anything. NO REPAINT is needed either way - the canvas
+    // already IS the output raster at full resolution (paint() sizes it to
+    // size.w x size.h) and CSS is the only thing that was scaling it down.
+
+    function setMaximized(panel, on) {
+        const st = stateOf(panel);
+        if (!st.stage || st.maximized === !!on) return;
+        st.maximized = !!on;
+        st.stage.classList.toggle('cnet-coverage-maximized', st.maximized);
+        const max = panel.querySelector('.cnet-coverage-max');
+        const min = panel.querySelector('.cnet-coverage-min');
+        if (max) max.style.display = st.maximized ? 'none' : '';
+        if (min) min.style.display = st.maximized ? '' : 'none';
+        // the pointer has not moved but everything under it has
+        hideReadout(st);
+    }
+
+    // Escape is the way out of every full-screen thing on this page, and it is
+    // the one that still works when the pointer is nowhere near the corner.
+    // One document listener for every panel: they cannot both be maximized in
+    // any useful sense, and per-panel listeners on a document-level key are how
+    // a re-rendered panel leaks one.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        for (const [panel, st] of panels) {
+            if (st.maximized) setMaximized(panel, false);
+        }
+    });
+
     // ------------------------------------------------------------- backdrop
 
     function setBackground(panel, dataUrl, key) {
@@ -1173,9 +1308,20 @@
             maskCache.clear();
             refresh(panel, true);
         });
+        on('.cnet-coverage-max', () => setMaximized(panel, true));
+        on('.cnet-coverage-min', () => setMaximized(panel, false));
 
         // drag & drop a backdrop straight onto the map
         const stage = panel.querySelector('.cnet-coverage-stage') || panel;
+
+        // the value under the pointer. POINTER events, not mouse ones, so a pen
+        // or a touch drag reads the map too; the handler is on the stage rather
+        // than on the canvas so leaving the picture sideways (into the stage's
+        // own padding) also clears the label.
+        stage.addEventListener('pointermove', (e) => {
+            showReadout(stateOf(panel), e.clientX, e.clientY);
+        });
+        stage.addEventListener('pointerleave', () => hideReadout(stateOf(panel)));
         ['dragenter', 'dragover'].forEach((type) => {
             stage.addEventListener(type, (e) => {
                 e.preventDefault();
@@ -1222,11 +1368,16 @@
     });
 
     window.cnetRegisterTick(() => {
-        for (const panel of panels.keys()) {
+        for (const [panel, st] of panels) {
             if (!panel.isConnected) {
                 panels.delete(panel);
                 continue;
             }
+            // A maximized stage is `position: fixed`, so it is hidden with its
+            // ancestors but NOT moved by them: switch txt2img -> img2img with
+            // this panel maximized and it comes back maximized over a tab it
+            // does not belong to. The state follows the panel off screen.
+            if (st.maximized && !window.cnetVisible(panel)) setMaximized(panel, false);
             refresh(panel, false);
         }
     });

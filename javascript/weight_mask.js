@@ -63,6 +63,45 @@
         fine: 'wmaskFineButton_',
     };
 
+    // ------------------------------------ WHO MAY DESTROY PAINTED WEIGHT
+    //
+    // THE CONTRACT: a new picture under the paint is NOT a reason to destroy the
+    // paint. The mask is registered with the FRAME, not with those pixels -
+    // python resizes it onto the generation dimensions regardless - so an image
+    // that is replaced (⤵I / ⤵O, a drop, a paste, an upload) carries its mask
+    // onto the new geometry. Painting a mask and THEN inserting the reference it
+    // belongs to is the ordinary workflow on the Output-mask canvas, and it must
+    // not be the action that wipes the work.
+    //
+    // WHY THIS IS A DECLARED LIST AND NOT A COMMENT. The contract has now been
+    // broken twice, both times the same way: three separate places answer "the
+    // image changed - does the paint die?", each one on its own, and a fix
+    // patched ONE of them. The dims watchdog was taught to carry the paint while
+    // the same-size-replacement branch two hundred lines away went on calling
+    // `clearMask(slot, true)`, so an insert still destroyed the mask and the fix
+    // looked correct in the diff. That is MAINTENANCE invariant 29's shape
+    // exactly: declared in one place, honoured in another.
+    //
+    // So destroying paint now requires NAMING one of these reasons, `clearMask`
+    // REFUSES any name that is not here (the paint survives and the console says
+    // which call site failed), every image-change site is funnelled through
+    // `onImageReplaced`, which cannot clear except to repair an already
+    // inconsistent slot - and `tests/test_mask_clear_reasons.py` reads this
+    // object and every call site out of the source and fails the build if the
+    // two disagree, if a new reason describes an image change, or if the
+    // image-info handler ever grows a `clearMask` again.
+    //
+    // Every entry is the USER or the SERVER saying the paint itself is gone.
+    // None of them is "the picture underneath changed", and none of them may
+    // ever be.
+    const CLEAR_REASONS = {
+        'clear-button': 'the ✕ tool: the user asked for the mask to go',
+        'erased-empty': 'the eraser took the last painted pixel',
+        'server-cleared': 'gradio holds an empty channel and the painter is idle',
+        'canvas-emptied': 'the canvas announced NO image at all (clear, tab close, unit reset)',
+        'nothing-to-carry': 'hasPaint with no mask canvas behind it - repairing an inconsistent slot',
+    };
+
     // ------------------------------------------- masks follow the profile
     //
     // THE FOUR MASK SLOTS ARE THE FOUR PROFILES' SPATIAL HALF. G belongs to the
@@ -346,22 +385,16 @@
         /**
          * Carry painted weight onto a new image geometry.
          *
-         * A NEW PICTURE UNDER THE PAINT IS NOT A REASON TO DESTROY THE PAINT.
-         * The insert buttons (⤵I / ⤵O) and any other upload swap the image, and
-         * a swapped image usually has different natural dimensions - which used
-         * to reach the watchdog below as "image replaced" and call
-         * `clearMask(slot, true)`, wiping the painter's copy AND pushing '' to
-         * gradio. On the Output mask canvas that is the whole workflow (insert
-         * the last result, THEN paint where the control may act), so the mask
-         * was destroyed by the very action that sets the job up.
+         * The mechanism behind the contract in CLEAR_REASONS: the mask is
+         * registered with the FRAME, not with the pixels underneath it - python
+         * resizes it onto the generation dimensions anyway - so a swapped image
+         * gets the paint rescaled onto its geometry instead of taking the paint
+         * down with it. `syncState` re-exports at the new size so the server
+         * value never lags the painter (invariant 15).
          *
-         * The mask is registered with the FRAME, not with those pixels - python
-         * resizes it onto the generation dimensions anyway - so it is rescaled
-         * onto the new geometry. `syncState` re-exports at the new size so the
-         * server value never lags the painter (invariant 15).
-         *
-         * Returns false when there is nothing to carry, so the caller can fall
-         * back to the ordinary clear.
+         * ONLY `onImageReplaced` calls this. Returns false when there is
+         * provably nothing to carry (no mask canvas behind `hasPaint`), which
+         * is the single case that funnel may repair with a clear.
          */
         function rescaleMask(slot) {
             const w = imgEl.naturalWidth;
@@ -394,7 +427,58 @@
             return true;
         }
 
-        function clearMask(slot, pushToGradio) {
+        /**
+         * The image under the paint changed. THE ONE FUNNEL every such site
+         * goes through, and the reason this contract is now structural rather
+         * than three independent judgement calls that have twice disagreed.
+         *
+         * It cannot destroy a mask. The only `clearMask` it can reach is the
+         * repair of a slot that claims paint and has no canvas behind it -
+         * `rescaleMask` having reported there is provably nothing to carry -
+         * and the reason it names says so. Everything else here CARRIES:
+         *
+         *   * a mask imported at WIRE dimensions before the image had loaded is
+         *     fitted to the image now (installImportedMask drops `_wireImg`);
+         *   * a mask painted for the previous geometry is rescaled onto the new
+         *     one and re-exported at that size, so the server value never lags
+         *     the painter (invariant 15);
+         *   * a same-size replacement needs neither - the mask already fits and
+         *     the exported channel is already correct - so it is left alone.
+         *
+         * Callable before the new image has decoded: `currentDims()` is then
+         * stale or 0x0, nothing matches, nothing happens, and the 500 ms
+         * watchdog runs this again once the dimensions land.
+         */
+        function onImageReplaced(slot) {
+            if (!slot.hasPaint) return;
+            if (slot._wireImg) {
+                if (imgEl.naturalWidth) installImportedMask(slot);
+                return;
+            }
+            if (!imgEl.naturalWidth || slot.dims === currentDims()) return;
+            if (!rescaleMask(slot)) clearMask(slot, true, 'nothing-to-carry');
+        }
+
+        /**
+         * Drop a slot's paint. `reason` MUST be a key of CLEAR_REASONS - see
+         * that declaration for why this is enforced rather than documented.
+         *
+         * An undeclared reason REFUSES, it does not throw and it does not
+         * clear: the paint survives (the safe direction - a mask that outlives
+         * its welcome is visible on the canvas and one line from the ✕ button,
+         * while a wrongly destroyed one is silent and unrecoverable) and the
+         * console names the caller.
+         */
+        function clearMask(slot, pushToGradio, reason) {
+            if (!Object.prototype.hasOwnProperty.call(CLEAR_REASONS, reason)) {
+                console.error('[cnpro] weight mask: refused to clear slot "' + slot.key
+                    + '" - "' + reason + '" is not a declared reason to destroy painted '
+                    + 'weight. The paint was KEPT. If this really is a new way for a mask '
+                    + 'to legitimately end, add it to CLEAR_REASONS in weight_mask.js; if '
+                    + 'it is an image being replaced, route it through onImageReplaced '
+                    + 'instead.', new Error('clearMask call site').stack);
+                return;
+            }
             slot.mask = null;
             slot.hasPaint = false;
             slot.last = null;
@@ -867,19 +951,7 @@
                 // here would wipe the restored state), and without an image
                 // the mask is inert anyway.
                 if (slot.hasPaint && imgEl.naturalWidth && slot.dims !== currentDims()) {
-                    if (slot._wireImg) {
-                        // not a replacement: the import installed at wire
-                        // dimensions before the image finished loading. Fit
-                        // it to the image now (drops _wireImg), instead of
-                        // destroying the restored mask AND the server value
-                        // behind it.
-                        installImportedMask(slot);
-                    } else if (!rescaleMask(slot)) {
-                        // only when there is no paint to carry - see
-                        // rescaleMask for why a replaced image must not take
-                        // the mask down with it
-                        clearMask(slot, true);
-                    }
+                    onImageReplaced(slot);
                 }
                 // channel cleared server-side (close tab, unit reset): drop
                 // the local paint too, otherwise the next stroke-end would
@@ -893,7 +965,7 @@
                 // had just finished (the painter wrote the mask, the watchdog
                 // cleared it, the export then wrote hasPaint=false).
                 if (slot.state === 'idle' && slot.hasPaint && !slot.textarea.value) {
-                    clearMask(slot, false);
+                    clearMask(slot, false, 'server-cleared');
                 }
                 // red border marks buttons whose mask holds paint
                 // (classList.toggle with force is a no-op when unchanged)
@@ -1062,7 +1134,7 @@
 
         clearButton.addEventListener('click', function () {
             const slot = activeSlot();
-            if (slot) clearMask(slot, true);
+            if (slot) clearMask(slot, true, 'clear-button');
         });
 
         weightSlider.addEventListener('input', function () {
@@ -1119,7 +1191,7 @@
                 // a fully erased mask still holds sub-threshold antialiased
                 // fringes in the offscreen canvas; drop them, or the next
                 // brush stroke resurrects them into overlay and export
-                if (!slot.hasPaint) clearMask(slot, false);
+                if (!slot.hasPaint) clearMask(slot, false, 'erased-empty');
             }
             scheduleSync(slot);
         }
@@ -1150,40 +1222,52 @@
             }
         });
 
-        // The canvas announced "no image" (clear button, close tab, unit
-        // reset): drop every slot's paint. This is what makes clear + reload
-        // safe - the dimension check in the rAF loop cannot tell a NEW
-        // same-size image from an ADJUSTED one (levels/crop re-uploads, where
-        // paint must survive), but only real clears pass through the empty
-        // state. Transition-guarded: at startup a restored mask can arrive
-        // BEFORE the image loads, and the initial empty announcement must not
-        // wipe it. The upload-sequence counter (canvas_extra.js, bumped only
-        // for GENUINE new content - uploads, drops, forgeCanvasPush - never
-        // for adjustment echoes) closes the remaining hole: a new image
-        // REPLACING the old at identical dimensions, which neither the dims
-        // check nor the empty transition can see.
+        // THE IMAGE ANNOUNCEMENT. Two cases, and only ONE of them ends a mask.
+        //
+        // AN IMAGE IS PRESENT - an upload, a drop, a paste, an adjustment echo,
+        // or an insert (⤵I / ⤵O via forgeCanvasPush). The paint SURVIVES all of
+        // them; onImageReplaced carries it. This branch used to clear every slot
+        // whenever the upload-sequence counter moved, i.e. on exactly the
+        // genuine-new-content events the insert buttons produce - which is why
+        // "keep the mask on insert" was fixed in the dims watchdog and the mask
+        // went on being destroyed anyway. There is nothing left here to get
+        // wrong, and `tests/test_mask_clear_reasons.py` fails if a `clearMask`
+        // ever reappears in it.
+        //
+        // NO IMAGE AT ALL - the clear button, a closed tab, a unit reset. This
+        // is the one image event that genuinely ends a mask: there is no frame
+        // left for it to be registered with. Transition-guarded, because at
+        // startup a restored mask can arrive BEFORE the image loads and the
+        // initial empty announcement must not wipe it.
+        // ...and again once the new raster has actually DECODED. The
+        // announcement above is dispatched from the upload path, where the
+        // <img> has a fresh src and still reports the PREVIOUS naturalWidth, so
+        // onImageReplaced sees dimensions that have not moved yet and correctly
+        // does nothing. `load` is the moment the new geometry is knowable, and
+        // it is the right signal to rescale on.
+        //
+        // Without it the carry still happened - on the next 500 ms watchdog tick
+        // - and that is exactly the kind of "works because something else polls"
+        // that this contract has already been broken by twice. Measured: with
+        // the tick suppressed, an insert left the exported mask at the OLD
+        // geometry until the following insert.
+        imgEl.addEventListener('load', function () {
+            for (const slot of slots) onImageReplaced(slot);
+        });
+
         let hadImage = !!container.dataset.forgeImageInfo;
-        let lastSeq = container.dataset.forgeUploadSeq || '';
         container.addEventListener('forge-image-info', function () {
-            const seq = container.dataset.forgeUploadSeq || '';
-            const seqChanged = seq !== lastSeq;
-            lastSeq = seq;
             if (container.dataset.forgeImageInfo) {
-                if (hadImage && seqChanged) {
-                    // same-size replacement: stale paint must not gate the
-                    // new image (different-size ones are caught by the rAF
-                    // dims check as well - double clearing is harmless)
-                    for (const slot of slots) {
-                        if (slot.hasPaint || slot.textarea.value) clearMask(slot, true);
-                    }
-                }
                 hadImage = true;
+                for (const slot of slots) onImageReplaced(slot);
                 return;
             }
             if (!hadImage) return;
             hadImage = false;
             for (const slot of slots) {
-                if (slot.hasPaint || slot.textarea.value) clearMask(slot, true);
+                if (slot.hasPaint || slot.textarea.value) {
+                    clearMask(slot, true, 'canvas-emptied');
+                }
             }
         });
 

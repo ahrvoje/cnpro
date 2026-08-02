@@ -99,6 +99,28 @@ def cached_preprocessor_call(preprocessor, module_name, input_image, input_mask,
     return output
 
 
+class UnitConfigurationError(ValueError):
+    """A unit is enabled but not finished being set up.
+
+    THE DISTINCTION THIS TYPE EXISTS TO MAKE (design rule 4.2 - never collapse
+    distinct failures into one outcome): "the user has not picked a model yet"
+    and "the loader is broken" are not the same event and must not have the same
+    consequence.
+
+    A misconfigured unit is the user's half-finished work. It takes ITSELF out of
+    the run - loudly, named, and recorded in the infotext - and every other unit
+    goes on working. A bug, a broken loader, a registry contract violation still
+    raises out of `process` the way it always did, because hiding one of those is
+    the silent miss this codebase is built to avoid.
+
+    Before this, `assert unit.model != 'None'` took the WHOLE process hook down:
+    enabling a unit and pressing Generate before choosing its model aborted the
+    hook for every OTHER unit as well, and the host then finished the image with
+    no control at all - a plausible wrong image, which costs far more to notice
+    than an error (invariant 26's rationale, in the UI layer).
+    """
+
+
 WEIGHT_MASK_HUE_SPAN = 270.0
 
 
@@ -345,8 +367,10 @@ class ControlNetForForgeOfficial(scripts.Script):
             if a1111_i2i_image is None:
                 # txt2img with an enabled-but-empty unit used to die on a bare
                 # uint8 assert inside HWC3; fail with the message instead
-                raise ValueError("controlnet is enabled but no input image is given "
-                                 "(and there is no img2img source image to fall back to)")
+                raise UnitConfigurationError(
+                    "no input image is given, and there is no img2img source "
+                    "image to fall back to. Drop an image on one of its Input "
+                    "tabs, or disable the unit.")
             resize_mode = external_code.resize_mode_from_value(p.resize_mode)
             slots = [(0, HWC3(np.asarray(a1111_i2i_image)), None)]
             using_a1111_data = True
@@ -366,7 +390,9 @@ class ControlNetForForgeOfficial(scripts.Script):
                 image = unit_image
 
             if not isinstance(image, np.ndarray):
-                raise ValueError("controlnet is enabled but no input image is given")
+                raise UnitConfigurationError(
+                    f"Input {slot_index + 1} is active but holds no image. Drop "
+                    f"one on that tab, or mute it with its checkbox.")
 
             image = HWC3(image)
 
@@ -851,8 +877,24 @@ class ControlNetForForgeOfficial(scripts.Script):
             model_filename = 'Not Needed'
             params.model = ControlModelPatcher()
         else:
-            assert unit.model != 'None', 'You have not selected any control model!'
-            model_filename = global_state.get_controlnet_filename(unit.model)
+            if not unit.model or unit.model == 'None':
+                raise UnitConfigurationError(
+                    f"no control model is selected, and the preprocessor "
+                    f"'{unit.module}' needs one. Pick a model in this unit's Model "
+                    f"dropdown, or choose a preprocessor that needs none.")
+            try:
+                model_filename = global_state.get_controlnet_filename(unit.model)
+            except KeyError:
+                # the dropdown holds a name the registry no longer knows: a file
+                # deleted or renamed since startup, or an infotext pasted from a
+                # machine with models this one does not have. That is the user's
+                # setup, not a bug, so it takes the same route as an unset model
+                # rather than a KeyError traceback naming a dict.
+                raise UnitConfigurationError(
+                    f"the selected control model '{unit.model}' is not among the "
+                    f"models currently on disk. Refresh the model list, or pick "
+                    f"another - the file may have been moved since startup, or "
+                    f"this may be an infotext from a machine that has it.")
             # load_control_model RAISES with a specific message now (which
             # loaders were tried, and whether one of them broke rather than
             # declined). The old `assert ... is not None` collapsed every cause
@@ -1512,11 +1554,43 @@ class ControlNetForForgeOfficial(scripts.Script):
         self.current_units = []
         enabled_units = self.get_enabled_units(args)
         Infotext.write_infotext(enabled_units, p)
-        for unit in enabled_units:
-            self.bound_check_params(unit)
+        skipped = []
+        for index, unit in enumerate(enabled_units):
             params = ControlNetCachedParameters()
-            self.process_unit_after_click_generate(p, unit, params, *args, **kwargs)
+            # THE UNIT IS APPENDED EITHER WAY. `current_units` pairs a unit with
+            # its OWN params for the whole run (that is what this list is for),
+            # and a params with `model is None` is already the inert unit every
+            # later hook checks for. Appending only on success would renumber the
+            # list the moment one unit is half-configured.
             self.current_units.append((unit, params))
+            try:
+                self.bound_check_params(unit)
+                self.process_unit_after_click_generate(p, unit, params, *args, **kwargs)
+            except UnitConfigurationError as exc:
+                # A HALF-CONFIGURED UNIT TAKES ONLY ITSELF OUT OF THE RUN.
+                # It used to take the whole hook down - one unit missing its
+                # model aborted `process` for every other unit too, and the host
+                # then produced an image with NO control from ANY of them. Same
+                # picture as a working run, no error in the gallery, and nothing
+                # saying which of the two happened.
+                params.model = None
+                params.preprocessor = None
+                skipped.append(f"unit {index + 1}: {exc}")
+                logger.error(
+                    f"CNPro: unit {index + 1} is enabled but not ready - {exc} "
+                    f"The unit was SKIPPED; the rest of the generation ran normally.")
+            except Exception:
+                # Not a configuration problem: a real failure, and it stays loud.
+                # Named with the unit it came from, because the traceback alone
+                # never said which of five units produced it.
+                logger.error(f"CNPro: unit {index + 1} failed while preparing "
+                             f"(this is not a missing selection - see the traceback).")
+                raise
+        # ...and the skip rides in the INFOTEXT, not only in a console nobody has
+        # open. An image generated without a unit the user believed was running
+        # is otherwise indistinguishable from one generated with it.
+        if skipped:
+            p.extra_generation_params["CNPro skipped units"] = "; ".join(skipped)
         return
 
     @torch.no_grad()

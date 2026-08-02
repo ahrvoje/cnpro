@@ -36,6 +36,8 @@ The ids/classes are a contract with coverage_map.js:
   .cnet-coverage-alpha        how strongly the map paints over a backdrop
   .cnet-coverage-status       the numbers, under the controls
   .cnet-coverage-canvas       sized to the OUTPUT resolution at paint time
+  .cnet-coverage-readout      the weight under the pointer, follows it
+  .cnet-coverage-max/-min     maximize / minimize the stage (the host's glyphs)
   .cnet-coverage-insert-*     backdrop from the img2img input / current output
   .cnet-coverage-clear-bg     drop the backdrop
   .cnet-coverage-refresh      recompute now, dropping the decoded-mask cache
@@ -52,6 +54,14 @@ TOSSDOWN_INPUT = "⤵I"
 TOSSDOWN_OUTPUT = "⤵O"
 CLEAR = "✕"
 REFRESH = "↻"
+
+# The maximize pair is the HOST's, character for character and title for title
+# (`modules_forge/forge_canvas/canvas.html`, `.forge-toolbar-box-a`). This canvas
+# is read like the unit canvases and now maximizes like them, so it says so with
+# the same two glyphs in the same corner rather than inventing a third
+# vocabulary for the same gesture.
+MAXIMIZE = "⛶"
+MINIMIZE = "➖"
 
 
 def _hue_ramp_css() -> str:
@@ -106,15 +116,37 @@ def _ramp_html() -> str:
 
 
 def _stage_html() -> str:
+    """The picture, plus the three things that sit ON it.
+
+    ORDER MATTERS, and only between the readout and the hint: the readout hides
+    the hint while it is up (`~` in style.css, and CSS sibling combinators only
+    look FORWARD), because both are centred pills on the same picture and the
+    hint would land under the number exactly when the number is being read.
+
+    The maximize pair is a plain pair of `<button>`s here rather than two
+    ToolButtons in the action row below, for a reason that is not style: a
+    maximized stage is `position: fixed` over the whole viewport, so it covers
+    that row. An exit control the overlay hides is not an exit control.
+    """
     return (
         '<div class="cnet-coverage-stage"'
         ' title="Total control weight per output pixel, aggregated over every enabled'
         ' unit and every Input that will run, in output geometry.'
         ' Violet 0, red 1; contours at 0, 0.25, 0.5, 0.75, orange at 1 and red above it.'
+        ' Hover for the value under the pointer.'
         ' Not included: the unit Use-Mask, the balance profile and the preprocessor -'
         ' this is about WEIGHT, not content.">'
         '<canvas class="cnet-coverage-canvas" width="1" height="1"></canvas>'
+        '<div class="cnet-coverage-readout">'
+        '<span class="cnet-coverage-readout-swatch"></span>'
+        '<span class="cnet-coverage-readout-value"></span>'
+        '</div>'
         '<div class="cnet-coverage-hint">drop an image here for context</div>'
+        '<div class="cnet-coverage-tools">'
+        f'<button type="button" class="cnet-coverage-max" title="Maximize">{MAXIMIZE}</button>'
+        f'<button type="button" class="cnet-coverage-min" title="Minimize"'
+        f' style="display: none;">{MINIMIZE}</button>'
+        '</div>'
         '</div>'
     )
 
