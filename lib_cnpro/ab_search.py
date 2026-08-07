@@ -1,0 +1,2069 @@
+"""Preference Bayesian optimization - the search engine behind CNPro A/B.
+
+WHAT PROBLEM THIS IS
+--------------------
+A CNPro configuration has no loss function. "Better" is whatever the person
+looking at the image says it is, they can only say it about images they have
+actually seen, and each opinion costs two full generations plus their
+attention. Meanwhile the space is combinatorial: four models x six profile
+offsets x five prompts x two LoRA weights on a 0.05 grid is already ~5 million
+points. Sweeping it is not slow, it is impossible - which is exactly why this
+is not an X/Y grid with more axes.
+
+So the user's taste is treated as a latent UTILITY f over the configuration
+space, given a Gaussian process prior; every graded comparison is evidence
+about f; and the next pair to ask about is chosen so that the answer is worth
+the most. Three consequences shape everything below:
+
+* **The observation is a comparison, not a value.** People are reliable about
+  "this one, not that one" and unreliable about "7 out of 10", so the model
+  never assumes a grade means the same thing twice - only that a higher grade
+  means the second image was preferred more strongly.
+* **f is never observed.** Only its ordering is, so the posterior is not
+  Gaussian and is approximated (Laplace) rather than written down.
+* **Queries are the scarce resource.** Which pair to ask about is as much of
+  the algorithm as the model is - see `next_duel`.
+
+THE MODEL
+---------
+    f ~ GP(0, k)                        latent utility over configurations
+    z = (f(B) - f(A)) / (sqrt(2)*s)     a duel's signed utility gap
+    P(B preferred) = Phi(z)             Thurstone / probit comparison model
+
+with `s` the scale of the noise in a single human judgement. A grade of 0..10
+enters as a SOFT LABEL p = grade/10, i.e. the log-likelihood of one duel is
+
+    p*log Phi(z) + (1 - p)*log Phi(-z)
+
+which is the cross-entropy of a fractional preference. This is what makes 5 =
+"cannot decide" informative rather than discarded: it is the statement
+f(A) = f(B), and it pulls the two configurations' utilities TOGETHER - "both
+were great" and "both were awful" say the same thing about the difference,
+which is the only thing a comparison can ever say. 0 and 10 are clamped to
+p = 0.02 / 0.98: a human who is certain is still occasionally wrong, and an
+un-clamped 0 asks the model for an infinite utility gap on one sample.
+
+Both terms are concave in z (log Phi is), so the negative log posterior is
+convex and the Laplace mode is unique - Newton's method below converges to the
+one answer rather than to whichever local optimum it started nearest.
+
+THE KERNEL, AND WHY MIXED SPACES ARE THE WHOLE POINT
+----------------------------------------------------
+Dimensions are of two kinds and they are not interchangeable:
+
+* a **choice** dimension (models, prompts, profile lines) has no metric - two
+  models are simply different - so its kernel factor is an OVERLAP kernel:
+  1 when equal, exp(-theta) when not.
+* a **range** dimension (a LoRA weight) is a number, and 0.55 genuinely does
+  tell you something about 0.60 - so its factor is the usual squared
+  exponential.
+
+...with two refinements that matter in practice. A choice dimension whose
+labels are all NUMBERS (an offset list `-0.2, -0.1, 0, 0.1`) is encoded as a
+range even though the user only gets to pick from the list. The values are
+ordered and the ordering is real; treating them as unrelated categories throws
+away the single most useful piece of structure the user handed us. And a
+weight dimension can be CONDITIONAL on a pick dimension (`Dimension.parent`):
+a LoRA slot's weight means nothing across two different LoRAs - the good
+weight for one is not evidence about the other - so between two points whose
+picks differ the weight contributes nothing to the kernel, and each pick
+learns its own weight response from its own observations alone.
+
+CHOOSING THE NEXT DUEL
+----------------------
+Two independent samples are drawn from the posterior over a candidate pool and
+each one's argmax becomes one side of the duel (dueling Thompson sampling, aka
+self-sparring). This is worth more than it looks:
+
+* it needs no hand-tuned exploration constant - the exploration comes from the
+  posterior's own uncertainty, which shrinks exactly where questions have been
+  answered;
+* it naturally produces CHAMPION vs CHALLENGER duels once the posterior is
+  confident, because the incumbent is the argmax of most samples - so the user
+  keeps seeing the current best rather than two configurations they have
+  already rejected; and
+* it degrades gracefully: with no data the samples are prior draws and the
+  duels are random, which is exactly the right behaviour at the start.
+
+Thompson sampling alone is a SINGLE-ANSWER machine, and taste is not a
+single answer - a person who likes two unrelated looks is the normal case,
+not a degenerate one. Three mechanisms widen it without giving up
+convergence, on a fixed cycle (see EXPLORE_CYCLE):
+
+* **The frontier.** `frontier()` is the diverse top of the posterior: up to
+  FRONTIER_SIZE configurations, each polished by coordinate ascent, each at
+  least FRONTIER_SEPARATION from the others. The candidate pool is built
+  around ALL of them rather than around one incumbent, so a second-best
+  basin keeps being refined instead of starving the moment the champion
+  pulls ahead by a hair.
+* **Cross-basin duels.** Every cycle one duel is champion-of-one-basin vs
+  champion-of-another. Comparisons are the only thing that anchors two
+  regions' utilities to the same scale; without these, two basins that were
+  each polished against their own neighbours drift apart and the ranking
+  between them is fiction.
+* **Uncertainty duels.** Every cycle one duel is the champion vs the pool
+  point the posterior knows least about. Thompson exploration shrinks as
+  the posterior sharpens - which is right near the top and wrong far from
+  it, where "never asked" and "confidently bad" would otherwise become
+  indistinguishable.
+
+Three further tactics are STOCHASTIC - each fires at a fixed MEAN rate
+(see BLUFF_MEAN / VOID_MEAN / RIVAL_MEAN) rather than on the cycle, so
+their arrivals cannot be anticipated, cannot phase-lock with the
+schedule, and cannot rut into a beat the rest of the search learns to
+compensate for. They exist because every mechanism above is a function
+of the history, and a search fed only by its own history can lock onto
+local similarities it has no way to see past:
+
+* **The bluff** (1 duel in ~7): one pair drawn uniformly at random - no
+  posterior, no locality, no history. Deliberately "suboptimal", like a
+  poker bluff: every other query's answer partly echoes what the model
+  already believes, and the random probe is the one question whose
+  answer cannot - novel information that no history-driven acquisition
+  would ever have asked for.
+* **Void probes** (1 in ~12): the space is scanned for regions nothing
+  ever shown comes near, and the duel is placed inside them - the two
+  sides preferably in two DIFFERENT voids. The uncertainty duel asks
+  about the least-known POOL point, and the pool is itself shaped by
+  the history; this asks about the parts of the space the whole session
+  has simply never visited.
+* **Rival samples** (1 in ~14): two attractors are drawn and each side
+  is a fresh GOOD sample from one of them - the attractors compared
+  between themselves through their populations, not only through their
+  champions (which is the cross-basin duel's job). Two basins whose
+  champions are settled can still hide that one is broad and reliable
+  while the other is a single lucky point.
+
+TWO DUELS ARE NEVER RE-ASKED PAST A CAP. Asked pairs are remembered and a
+pair that has been graded MAX_PAIR_REPEATS times is skipped when the next
+challenger is chosen: a third asking of the same question measures the
+user's consistency, not their taste, and it is exactly the "keeps showing
+me the same two images" failure a session-long search cannot afford.
+
+THE PRICE OF A QUESTION
+-----------------------
+Every duel shows two images, but not every image costs a generation: the
+host caches renders by recipe, so a configuration already rendered this
+session is roughly TWENTY TIMES cheaper to show again than to generate
+fresh (~30s a generation against a lookup). The engine learns what is
+currently reusable through `reuse_probe`, a host-injected callable
+(point -> bool); with no probe it is cost-blind, which is exactly the
+behaviour everything else in this docstring describes.
+
+What the probe buys is a swap rule in the Thompson slot, and only there:
+either side may be replaced by a reusable candidate whose SAMPLED utility
+lags the ideal pick by less than REUSE_MARGIN units of the learned
+judgement noise. That margin is the whole argument: a deficit smaller
+than the noise of a single human judgement is a difference the grader
+could not resolve anyway, so the cheaper question is - to the person
+answering it - the same question, at a twentieth of the wait. Information
+per second, not information per duel, is what a 30-second generation
+makes the right objective.
+
+What the rule refuses to become is an all-to-all tournament of the cache,
+because 20 reused comparisons cost the time of one new pair - and all of
+the user's attention with it. Three guards: the margin itself (relative
+to the noise, never an absolute "close enough"), the repeat cap (a cached
+PAIR is still never re-asked past it), and REUSE_STREAK_MAX - after that
+many consecutive duels in which both sides came from the cache, the
+preference switches off until a duel brings a fresh image, because only
+generation produces genuinely new evidence about new configurations. The
+exploration slots (seeds, bluff, void, rival, cross-basin, develop,
+uncertainty) are never biased: their value is where they land, not what
+they cost.
+
+THE TREND MODEL - A SECOND OPINION THAT ONLY PROPOSES
+-----------------------------------------------------
+A posterior evaluation costs microseconds; a generation costs ~30s. That
+asymmetry means practically unlimited model evaluations are worth one
+avoided generation, so a SECOND model - cheap, global, deliberately
+different in its bias - screens the space at a scale the duel loop never
+could: a ridge-regularized additive model (one-hot per opaque category,
+value and value-squared per numeric dimension, and per-parent-pick weight
+curves for conditional weights) fitted to the GP's own latent utilities
+at the observed points.
+
+Different bias on purpose. The GP's product kernel is local: about a
+combination of levels that were each seen only in OTHER company it can
+say little, because the overlap factors discount across every differing
+category at once. The additive model extrapolates main effects to
+never-visited combinations - "this model kept winning, that factor kept
+winning, so try them together" - which is exactly the guess a human would
+pencil in and the product kernel cannot.
+
+Symbiosis, not authority: each duel the trend model scores
+SURROGATE_BATCH uniform draws in one matrix multiply and nominates its
+top slice into the candidate pool (SURROGATE_SHARE), where the GP
+posterior and Thompson sampling still decide everything - nominees win
+duels or vanish, exactly like the interesting-mark hybrids. A wrong trend
+therefore costs pool slots and nothing else; a right one jumps the search
+to a promising unvisited combination without paying a generation per
+intermediate step. It is gated behind SURROGATE_MIN_DUELS because a trend
+fitted to three comparisons is a guess wearing a lab coat.
+
+THE SECOND ROW, AND THE ANCHOR
+------------------------------
+A single comparison cannot say "both of these are bad" - "both great" and
+"both awful" are the same statement about the difference. So `observe`
+takes a flag, DISLIKED: the panel shows the same 0..10 scale twice, and
+grading on the second row means "and I dislike both of them". Nothing
+extra is asked of the user - the judgement is the one they already have
+the moment a pair appears, and the click that grades the duel simply
+lands one row lower. The grade still steers inside the region (which side
+is LESS bad is information like any other); the row adds one absolute
+probit observation per side against the prior mean 0 - "par", what the GP
+believes about a configuration nobody has asked about. That is what lets
+a whole subspace be marked as avoid-this without spending duels ranking
+its interior, and what gives `portfolio(good=False)` an address for "bad"
+- with comparisons alone the posterior is translation-invariant and no
+region is ever anywhere.
+
+"INTERESTING" IS NOT A GRADE
+----------------------------
+The panel's per-image toggle marks a sample whose OVERALL quality is
+whatever the grades said - usually bad - but which touches a characteristic
+the user wants to see in good samples. The mark therefore never enters the
+likelihood: no observation, no utility, the sample stays exactly as bad as
+it was graded. It enters the ACQUISITION instead, as a donor: a share of
+every candidate pool is hybrids that transplant a few of the donor's
+coordinates into an attractor - the tempting characteristic, tried inside a
+good configuration - and the hybrids then earn their place through ordinary
+duels or vanish. See mark_interesting / _hybrid / INTERESTING_SHARE.
+
+Nothing in this module imports gradio, the host, or the rest of CNPro. It is
+numpy and stdlib, so `tests/test_ab_search.py` runs it directly.
+"""
+
+import math
+
+import numpy as np
+
+try:
+    # scipy rides along with the host and is ~40x faster on the tail values
+    # this uses. Nothing here NEEDS it - the fallback is exact, just slower -
+    # so its absence must not take the search down with it.
+    from scipy.special import erfc as _erfc
+except Exception:  # pragma: no cover - exercised only without scipy
+    _erfc = np.vectorize(math.erfc, otypes=[float])
+
+#: Utility gaps are clamped to this many "judgement noise" units before the
+#: likelihood sees them. Phi(-8) is 6e-16, which is representable and whose
+#: log is -35 - so the clamp costs nothing in the range that matters and buys
+#: two things: the tail arithmetic can never underflow to a zero denominator,
+#: and one confidently-wrong grade cannot drag a whole region of the space
+#: with it (the gradient saturates instead of growing without bound).
+Z_CLIP = 8.0
+
+#: How far a grade of exactly 0 or 10 is pulled off certainty. See the module
+#: docstring: a human who is sure is still sometimes wrong, and p in {0, 1} is
+#: a likelihood with no finite maximum.
+P_CLAMP = 0.02
+
+#: Newton iterations for the Laplace mode, and the convergence threshold on
+#: max|df|. The objective is convex and n is small, so this converges in a
+#: handful of steps; the cap is a guard, not a schedule.
+NEWTON_STEPS = 40
+NEWTON_TOL = 1e-7
+
+#: Hyperparameters are re-selected by marginal likelihood every this many
+#: observations. Every observation would be affordable too (n is tiny), but
+#: the selected values swing early on and a search whose kernel changes under
+#: it every single duel produces duels that look erratic to the user.
+HYPER_EVERY = 3
+
+#: The grids marginal likelihood picks from. Deliberately coarse: with a dozen
+#: comparisons there is not enough evidence to justify a fine grid, and a
+#: hyperparameter fitted to noise is worse than a reasonable constant.
+#: - LENGTHSCALES are in units of the normalized [0, 1] range dimensions
+#: - THETAS: exp(-theta) is how much utility two different categories share,
+#:   so 0.5 -> 0.61 ("models behave somewhat alike"), 4.0 -> 0.02 ("nothing
+#:   transfers")
+#: - NOISES is the scale of a single human judgement, in utility units
+#:
+#: THE GRID IS NARROW BECAUSE THE SELECTION IS BIASED, and that was measured
+#: rather than assumed. Marginal likelihood (ML-II) picked the SMOOTHEST, most
+#: forgiving corner of every grid it was offered - on 8 runs out of 8, at
+#: three different grids. That is the small-sample Occam effect: with a dozen
+#: comparisons, "nothing much matters and the human is noisy" explains the
+#: answers while spending the least prior mass, so it wins - and it is exactly
+#: the model that cannot tell two models apart, whose posterior is nearly flat,
+#: and a flat posterior recommends almost anything.
+#:
+#: A log-normal prior over the hyperparameters (MAP-II instead of ML-II) was
+#: written and measured against this: it did move the selection off the corner,
+#: and it did NOT improve the configuration found (better at 16 duels, worse at
+#: 32, across 8 seeds). So it is not here. What is here instead is a grid whose
+#: smooth end is still a usable model: at lengthscale 0.5 a knob's neighbours
+#: are related without being interchangeable, and at theta 0.5 two categories
+#: share 61% rather than 74%. Widening either end again re-opens the same hole.
+LENGTHSCALES = (0.15, 0.3, 0.5)
+THETAS = (0.5, 1.5, 4.0)
+NOISES = (0.4, 0.9)
+
+#: Candidate pool size per duel. The pool is what Thompson sampling maximizes
+#: over, so it is the resolution of the search: too small and the argmax is
+#: noise, too large and the m x m posterior covariance stops being free.
+POOL_SIZE = 320
+
+#: How much of the pool is drawn NEAR the incumbent rather than uniformly, as
+#: a function of how many comparisons are in. This is annealed rather than
+#: constant because the two ends of the search want opposite things and both
+#: were measured to matter:
+#:
+#:   a pool that is mostly local from the start   finds a worse answer early
+#:                                                (it polishes the first thing
+#:                                                it likes)
+#:   a pool that stays uniform to the end         never polishes at all - in a
+#:                                                million-point space a uniform
+#:                                                draw agrees with the incumbent
+#:                                                on nothing
+#:
+#: So it starts near-uniform and tightens as evidence accumulates, which is
+#: also what the person grading sees: unrelated configurations at first,
+#: variations on a theme once the theme is established.
+POOL_LOCAL_BASE = 0.05
+POOL_LOCAL_GROWTH = 0.015
+POOL_LOCAL_MAX = 0.45
+
+#: Duels before the model is trusted with the choice. Under three comparisons
+#: the posterior is essentially the prior and Thompson sampling would be an
+#: expensive way to pick at random - so it picks at random directly, which at
+#: least lets the pairs be chosen for SPREAD.
+SEED_DUELS = 3
+
+#: How different the two sides of a duel have to be before it is worth asking.
+#: One differing category counts 1; a range dimension counts the fraction of
+#: its span that separates them.
+#:
+#: WITHOUT THIS, A QUARTER OF THE DUELS ARE UNANSWERABLE, and that is measured:
+#: in a space of one LoRA row (which LoRA, and its weight) 19% of duels came
+#: back differing by a SINGLE 0.05 weight step, and in a space of one weight
+#: alone, 25% did. Two images from weights 0.60 and 0.65 are the same image.
+#: The user is then asked to grade a difference they cannot see, and whatever
+#: they answer is noise the model has to spend later duels unlearning.
+#:
+#: 0.2 is four steps of a 0.05 knob - the point where a LoRA weight starts to
+#: show. It costs the search the ability to ask about finer differences, which
+#: is not a loss: a person cannot answer those, so the comparison was never
+#: worth a generation. Any categorical difference clears the bar on its own.
+MIN_DUEL_SEPARATION = 0.2
+
+#: How often a duel that has already been graded may be asked again. Twice is
+#: replication - a noisy judgement is worth confirming once - and a third time
+#: is the search measuring the user's consistency instead of their taste. The
+#: cap is per PAIR, so the champion still re-fights (against new challengers)
+#: as often as the posterior wants it to.
+MAX_PAIR_REPEATS = 2
+
+#: How far a REUSABLE side may lag the Thompson pick it replaces, in units
+#: of the learned judgement noise s. The trade is only ever made inside
+#: this margin, and the unit is the argument for it: a sampled-utility
+#: deficit under one judgement's noise is a difference the grader cannot
+#: resolve, so the cached question is - to the person answering - the same
+#: question at ~1/20th the wait (see THE PRICE OF A QUESTION). Written in
+#: noise units rather than raw utility because the posterior's scale
+#: breathes with the anchors: an absolute margin would silently mean
+#: "anything" early and "nothing" late.
+REUSE_MARGIN = 0.75
+
+#: Consecutive duels in which BOTH sides came from the cache before the
+#: reuse preference switches itself off. Reused duels are 20x cheaper in
+#: generation time but full price in the user's attention, and only a
+#: generation produces new evidence about a new configuration - so after
+#: this many all-cached duels in a row the preference stands down and the
+#: Thompson choice runs cost-blind until a duel brings a fresh image. The
+#: cap removes the PREFERENCE, it does not force freshness: Thompson
+#: remains free to ask an all-cached question when that is genuinely the
+#: best question, which is what keeps the guard from costing convergence.
+REUSE_STREAK_MAX = 3
+
+#: The trend model's knobs - see THE TREND MODEL in the module docstring.
+#: MIN_DUELS gates it: under a handful of comparisons the "trend" is
+#: noise, and nominating from noise spends pool slots that the uniform
+#: fill uses better. BATCH is how many uniform draws it screens per duel -
+#: large on purpose, because a screen is one matrix multiply and the whole
+#: reason the model exists is that its evaluations are ~free next to a
+#: 30-second generation. SHARE is the slice of the pool its nominees get:
+#: modest, like the interesting-hybrids', because nominees are proposals
+#: to be tested, not answers. RIDGE is the regularization - the features
+#: are all 0..1, so one constant serves every space.
+SURROGATE_MIN_DUELS = 5
+SURROGATE_BATCH = 4096
+SURROGATE_SHARE = 0.15
+SURROGATE_RIDGE = 1e-2
+
+#: The duel schedule, as a cycle over graded duels. Within each cycle of this
+#: many duels, one is a CROSS-BASIN duel (two attractors' champions - the only
+#: thing that keeps separate basins on one utility scale) and one is an
+#: UNCERTAINTY duel (champion vs the point the posterior knows least about -
+#: the guard against "never asked" quietly becoming "confidently bad").
+#: The rest are ordinary Thompson duels, which is what converges.
+EXPLORE_CYCLE = 5
+
+#: The stochastic tactics, as MEAN periods. One roll of a single coin per
+#: duel is partitioned into three bands of width 1/period, so each tactic
+#: fires with exactly its own probability, at most one fires per duel, and
+#: the arrivals are geometric - "on average every Nth duel", never exactly
+#: every Nth. On average rather than on schedule on purpose: a fixed beat
+#: could phase-lock with EXPLORE_CYCLE (a tactic forever landing on a slot
+#: another mechanism already owns), and a predictable probe is one the
+#: rest of the schedule quietly organizes itself around. A tactic whose
+#: coin fires but which has nothing valid to ask falls through to Thompson
+#: like every other slot, so none of them can stall the search.
+#:
+#: BLUFF - a fully random pair, the poker bluff. Every other query is a
+#: function of the history and its answer partly echoes what the model
+#: already believes; the uniform pair is the one question that cannot.
+#: VOID - a pair from the largest region(s) of the space nothing shown
+#: comes near, preferably one side in each of two different voids.
+#: RIVAL - fresh good samples from two different attractors, so basins
+#: are compared through their populations, not only their champions.
+BLUFF_MEAN = 7
+VOID_MEAN = 12
+RIVAL_MEAN = 14
+
+#: What counts as a void: a candidate at least this far (in separation
+#: units - 1.0 is one whole categorical change, or a range dimension's
+#: full span) from EVERYTHING ever shown. Once the session has covered a
+#: space densely enough that nothing clears the bar, the tactic retires
+#: itself - correct, because a space with no void left has nothing for
+#: this tactic to find, and its coin's duels go back to Thompson.
+VOID_SEPARATION = 1.0
+
+#: Uniform draws scored per void probe. More than SEED_BATCH because the
+#: void is found by the EMPTIEST of the batch, and in a large space a thin
+#: batch's emptiest candidate is usually just a mediocre gap.
+VOID_BATCH = 128
+
+#: Neighbourhood samples drawn per attractor when a rival duel picks each
+#: basin's best current member.
+RIVAL_SAMPLES = 16
+
+#: How many diverse near-optima the frontier keeps polished, and how far
+#: apart two of them have to be to count as different answers rather than the
+#: same answer twice. 0.5 is half a range dimension's span; any categorical
+#: difference clears it on its own.
+FRONTIER_SIZE = 4
+FRONTIER_SEPARATION = 0.5
+
+#: A keeper has to be WORTH KEEPING, and the test is probabilistic because
+#: the utility scale is not fixed - with few absolute anchors the whole
+#: posterior compresses toward 0, and any threshold written in raw utility
+#: units silently changes meaning with it. So a keeper needs at least
+#: KEEP_VS_CHAMPION probability of matching the champion in one judgement
+#: (under the learned judgement noise), and at least KEEP_VS_PAR probability
+#: of beating par. Without the floor the frontier's tail fills with the best
+#: of mediocre regions - "diversity" that is really filler, measured at the
+#: 44th-67th percentile of a 62k-point bench space. Quality prevails;
+#: diversity is diversity OF THE GOOD.
+KEEP_VS_CHAMPION = 0.25
+KEEP_VS_PAR = 0.35
+
+#: Candidates drawn per space-filling pick during the seed duels.
+SEED_BATCH = 64
+
+#: "Interesting" marks kept, and the share of the candidate pool spent on
+#: their hybrids. An interesting sample is NOT a good sample - the user's
+#: definition is "overall bad, we can't use it, but this characteristic is
+#: tempting" - so the mark never touches the likelihood: the sample stays
+#: exactly as bad as it was graded. What it does is donate: hybrid
+#: candidates transplant a few of the marked configuration's coordinates
+#: into a good base (an attractor), which is literally "this characteristic,
+#: in a good sample", and the hybrids then live or die by ordinary duels.
+#: The share is deliberately modest and the transplant deliberately small
+#: (1-3 dimensions): a characteristic is usually carried by few coordinates,
+#: and flooding the pool with a bad sample's genome would be valuing the
+#: mark as if it meant "good".
+INTERESTING_MAX = 12
+INTERESTING_SHARE = 0.15
+
+#: A duel is a SURPRISE when a side the model gave less than this probability
+#: wins with a decisive grade (<=2 or >=8). A surprise arms one immediate
+#: follow-up duel for the winner - against the champion when they can be
+#: told apart, else inside its own neighbourhood. This is what "a 10 is not
+#: 'here we are'" means operationally, in BOTH directions: the grade neither
+#: settles the search (it is one noisy comparison) nor evaporates into the
+#: smoothing prior (a lone spike in hostile territory is otherwise averaged
+#: away before anything acts on it - measured on the hidden-gem bench, where
+#: gems were found and then LOST for exactly that reason).
+SURPRISE_P = 0.35
+
+#: What a dislike-both click says about EACH side against par: the
+#: probability that the configuration beats a par one. 0.15 rather than the
+#: P_CLAMP floor because a gut "I dislike both" is a real signal with real
+#: noise in it - strong enough that a region marked this way twice sinks
+#: well below anything merely ungraded, soft enough that one exasperated
+#: click cannot bury a subspace beyond recovery.
+#:
+#: THE MAGNITUDE SELF-CALIBRATES. The probability is fixed, but the utility
+#: gap it implies is Phi^-1(0.15) * sqrt(2) * s - in units of the judgement
+#: noise s, which marginal likelihood re-selects as the session goes. A
+#: decisive grader's dislikes therefore cut deep and an erratic grader's
+#: are automatically softened, with no absolute severity ever hand-tuned.
+DISLIKED_P = 0.15
+
+#: Observations kept. Beyond this the oldest are dropped: the fit is O(n^3)
+#: and, more to the point, taste drifts over a long session - the last 250
+#: comparisons describe what the user wants now.
+MAX_OBSERVATIONS = 250
+
+#: Range dimensions are enumerated on their own step grid when the incumbent
+#: is polished coordinate by coordinate; this caps that enumeration.
+MAX_GRID = 41
+
+
+# ---------------------------------------------------------------------------
+# The normal distribution, in the tail
+# ---------------------------------------------------------------------------
+
+_LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
+_SQRT_2 = math.sqrt(2.0)
+
+
+def _pdf(z):
+    return np.exp(-0.5 * z * z - _LOG_SQRT_2PI)
+
+
+def _cdf(z):
+    """Phi(z), through erfc rather than erf.
+
+    `0.5 * (1 + erf(z))` loses every significant digit for z below about -6:
+    the two terms cancel. erfc is computed directly in that tail and stays
+    accurate to full precision, which is what makes Z_CLIP = 8 safe.
+    """
+    return 0.5 * _erfc(-z / _SQRT_2)
+
+
+def _mills(z):
+    """phi(z)/Phi(z) - the inverse Mills ratio, i.e. d/dz log Phi(z)."""
+    return _pdf(z) / np.maximum(_cdf(z), 1e-300)
+
+
+# ---------------------------------------------------------------------------
+# The space
+# ---------------------------------------------------------------------------
+
+class Dimension:
+    """One degree of freedom.
+
+    A point in the space is a tuple with one entry per dimension: the INDEX of
+    the chosen label for a choice dimension, the value itself for a range one.
+    Indices rather than labels because the labels are the caller's objects
+    (prompt strings, model names) and this module never needs to look at them.
+    """
+
+    CHOICE = "choice"
+    RANGE = "range"
+
+    def __init__(self, name, kind, labels=None, ordinals=None,
+                 low=0.0, high=1.0, step=0.05):
+        self.name = name
+        self.kind = kind
+        self.labels = list(labels or [])
+        # Present only when every label parsed as a number - see `numeric`.
+        self.ordinals = None if ordinals is None else [float(v) for v in ordinals]
+        self.low = float(low)
+        self.high = float(high)
+        self.step = float(step) if step else 0.0
+        # Another Dimension INSTANCE in the same space, or None. Set on a
+        # weight dimension whose meaning depends on a pick dimension (which
+        # LoRA, which prompt): a weight is not transferable between two
+        # different LoRAs, and the kernel honours that by ignoring this
+        # dimension entirely between two points whose parent picks differ.
+        self.parent = None
+
+    @classmethod
+    def choice(cls, name, labels):
+        """A pick from a list. Numeric labels are recognised, not required.
+
+        A list of offsets and a list of model names are the same KIND of
+        control for the user - "one of these" - and it would be an odd UI that
+        made them declare which. So the detection is here, once: if every
+        label reads as a number the dimension is ordered and the kernel is
+        told so, otherwise the labels are opaque and it is not.
+        """
+        ordinals = []
+        for label in labels:
+            try:
+                ordinals.append(float(str(label).strip()))
+            except (TypeError, ValueError):
+                ordinals = None
+                break
+        # An ordering of one distinct value is not an ordering; it would also
+        # make the normalization below divide by zero.
+        if ordinals is not None and len(set(ordinals)) < 2:
+            ordinals = None
+        return cls(name, cls.CHOICE, labels=labels, ordinals=ordinals)
+
+    @classmethod
+    def range(cls, name, low, high, step=0.05):
+        low, high = (float(low), float(high))
+        if high < low:
+            low, high = high, low
+        return cls(name, cls.RANGE, low=low, high=high, step=step)
+
+    # -- membership ------------------------------------------------------
+
+    @property
+    def numeric(self):
+        """Does this dimension carry a metric the kernel can use?"""
+        return self.kind == Dimension.RANGE or self.ordinals is not None
+
+    @property
+    def trivial(self):
+        """A dimension with nothing to choose. It is kept (so the caller's row
+        numbering survives) but contributes no variation."""
+        if self.kind == Dimension.CHOICE:
+            return len(self.labels) < 2
+        return self.high - self.low < 1e-12
+
+    def snap(self, value):
+        """A range value on its own step grid, clamped to the bounds.
+
+        Snapping is not cosmetic. It bounds the number of distinct points the
+        search can ever visit, which is what lets repeated visits accumulate
+        evidence instead of scattering it over 0.6237 and 0.6241 - and it also
+        stops the user being shown two "different" LoRA weights that produce
+        the same image.
+        """
+        value = min(max(float(value), self.low), self.high)
+        if self.step > 0:
+            value = self.low + round((value - self.low) / self.step) * self.step
+            value = min(max(value, self.low), self.high)
+        return round(value, 6)
+
+    def sample(self, rng):
+        if self.kind == Dimension.CHOICE:
+            return int(rng.integers(max(len(self.labels), 1)))
+        return self.snap(rng.uniform(self.low, self.high))
+
+    def alternatives(self, current):
+        """Every value this dimension could take instead of `current`."""
+        if self.kind == Dimension.CHOICE:
+            return [i for i in range(len(self.labels)) if i != current]
+        if self.step > 0:
+            count = int(round((self.high - self.low) / self.step)) + 1
+        else:
+            count = MAX_GRID
+        count = max(2, min(count, MAX_GRID))
+        grid = [self.snap(self.low + (self.high - self.low) * i / (count - 1))
+                for i in range(count)]
+        return [v for v in dict.fromkeys(grid) if abs(v - current) > 1e-9]
+
+    def baseline(self):
+        """The value this dimension starts at: the first listed choice, or the
+        bottom of a range - which for a LoRA weight is the LoRA switched off.
+        Both read as "what the user would have had without this row"."""
+        return 0 if self.kind == Dimension.CHOICE else self.snap(self.low)
+
+    def encode(self, value):
+        """The kernel's coordinate for a value: normalized to [0, 1] when the
+        dimension has a metric, the bare index when it does not (only equality
+        is ever asked of it)."""
+        if self.kind == Dimension.RANGE:
+            span = self.high - self.low
+            return 0.0 if span <= 0 else (float(value) - self.low) / span
+        if self.ordinals is not None:
+            lo, hi = min(self.ordinals), max(self.ordinals)
+            index = int(value) if 0 <= int(value) < len(self.ordinals) else 0
+            return (self.ordinals[index] - lo) / (hi - lo)
+        return float(value)
+
+    def describe(self, value):
+        if self.kind == Dimension.CHOICE:
+            index = int(value)
+            if 0 <= index < len(self.labels):
+                return str(self.labels[index])
+            return "?"
+        return f"{float(value):g}"
+
+
+class Space:
+    """The declared degrees of freedom, and the points they span."""
+
+    def __init__(self, dimensions):
+        self.dimensions = list(dimensions)
+        self._numeric = np.array([d.numeric for d in self.dimensions], dtype=bool)
+        # (weight dim index, pick dim index) for every conditional weight -
+        # resolved by IDENTITY, because the parent is the instance the caller
+        # paired it with, not any dimension that happens to look alike.
+        self.conditional = []
+        for index, dimension in enumerate(self.dimensions):
+            if dimension.parent is None:
+                continue
+            for parent_index, candidate in enumerate(self.dimensions):
+                if candidate is dimension.parent:
+                    self.conditional.append((index, parent_index))
+                    break
+
+    def __len__(self):
+        return len(self.dimensions)
+
+    @property
+    def live(self):
+        """Indices of the dimensions that actually vary."""
+        return [i for i, d in enumerate(self.dimensions) if not d.trivial]
+
+    @property
+    def size(self):
+        """How many distinct points the space holds, or None if that overflows
+        being a useful number. Reported to the user, never used in the maths."""
+        total = 1
+        for d in self.dimensions:
+            if d.kind == Dimension.CHOICE:
+                total *= max(len(d.labels), 1)
+            elif d.step > 0:
+                total *= max(int(round((d.high - d.low) / d.step)) + 1, 1)
+            else:
+                return None
+            if total > 10 ** 12:
+                return None
+        return total
+
+    def baseline(self):
+        return tuple(d.baseline() for d in self.dimensions)
+
+    def sample(self, rng):
+        return tuple(d.sample(rng) for d in self.dimensions)
+
+    def perturb(self, point, rng, count=1):
+        """`point` with `count` of its live dimensions re-drawn.
+
+        The local half of the candidate pool. A pool of purely uniform draws
+        is fine for finding the right region and hopeless for polishing inside
+        it: with eight dimensions, a uniform draw agrees with the incumbent on
+        nothing, so every candidate near the incumbent has to be built on
+        purpose.
+        """
+        live = self.live
+        if not live:
+            return tuple(point)
+        values = list(point)
+        for index in rng.choice(live, size=min(count, len(live)), replace=False):
+            values[index] = self.dimensions[index].sample(rng)
+        return tuple(values)
+
+    def key(self, point):
+        """Identity of a point. Range values are already snapped to their grid,
+        so rounding here only guards against float noise from arithmetic."""
+        return tuple(
+            int(v) if d.kind == Dimension.CHOICE else round(float(v), 6)
+            for d, v in zip(self.dimensions, point))
+
+    def separation(self, a, b):
+        """How far apart two configurations are, in "visible change" units.
+
+        A differing category counts 1 - two models are either the same model
+        or a different one, there is no half. A range dimension counts the
+        fraction of its own span that separates the two values, so the number
+        means the same thing whether the knob runs 0..1 or 0.5..1.5. See
+        MIN_DUEL_SEPARATION for what it is for.
+        """
+        total = 0.0
+        for dimension, x, y in zip(self.dimensions, a, b):
+            if dimension.kind == Dimension.CHOICE:
+                total += 0.0 if int(x) == int(y) else 1.0
+            else:
+                span = dimension.high - dimension.low
+                if span > 0:
+                    total += abs(float(x) - float(y)) / span
+        return total
+
+    def encode(self, points):
+        if not points:
+            return np.zeros((0, len(self.dimensions)))
+        return np.array([[d.encode(v) for d, v in zip(self.dimensions, p)]
+                         for p in points], dtype=float)
+
+    @property
+    def numeric_mask(self):
+        return self._numeric
+
+    def describe(self, point):
+        """A one-line reading of a point, live dimensions only."""
+        parts = []
+        for index in self.live:
+            d = self.dimensions[index]
+            parts.append(f"{d.name} = {d.describe(point[index])}")
+        return " | ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# The search
+# ---------------------------------------------------------------------------
+
+class PreferenceSearch:
+    """Graded duels in, a configuration out.
+
+    Usage is a loop: `next_duel()` -> show both -> `observe(a, b, grade)`, and
+    `best()` at any point (including mid-loop - it is what the STOP button
+    prints, so it must be meaningful after every single answer).
+    """
+
+    def __init__(self, space, seed=0, seed_duels=SEED_DUELS,
+                 pool_size=POOL_SIZE):
+        self.space = space
+        self.rng = np.random.default_rng(seed)
+        self.seed_duels = seed_duels
+        self.pool_size = pool_size
+
+        self.points = []            # unique configurations, in first-seen order
+        self._index = {}            # space key -> row in self.points
+        # (index_a, index_b, p); index_a is None for an ABSOLUTE observation,
+        # a verdict's statement about index_b against the prior mean.
+        self.observations = []
+        self.duels = 0              # graded duels + verdicts, NOT len(observations)
+
+        self._asked = {}            # unordered pair key -> times asked
+        self._shown = []            # every point ever put in front of the user
+        self._shown_keys = set()
+        self._levels_shown = set()  # (dimension index, choice index) seen so far
+        self._attractors = []       # every distinct basin, proven or not
+        self._keepers = []          # the floored, public frontier
+        self._redirect = False      # last duel was disliked - change the subject
+        self._dislike_streak = 0    # consecutive disliked duels
+        self._surprise = None       # unexpected winner awaiting its follow-up
+        self._interesting = []      # donor configurations, oldest first
+
+        # Host-injected cost oracle: point -> "an image of this configuration
+        # is already made and reusable". None (the default, and what every
+        # test without a host runs under) means every side costs a
+        # generation - the cost-blind behaviour. See THE PRICE OF A QUESTION.
+        self.reuse_probe = None
+        self._reuse_streak = 0      # consecutive duels with both sides cached
+        self._probe_memo = {}       # this duel's probe answers, by point key
+
+        self.f = np.zeros(0)        # Laplace mode of the latent utility
+        self._alpha = np.zeros(0)   # K^-1 f, the predictive weights
+        self._W = np.zeros((0, 0))  # likelihood curvature at the mode
+        self._K = np.zeros((0, 0))
+        self._hyper = (LENGTHSCALES[1], THETAS[1], NOISES[0])
+        self._logz = float("-inf")
+        self._dirty = True
+
+    # -- observations ----------------------------------------------------
+
+    def _row(self, point):
+        key = self.space.key(point)
+        index = self._index.get(key)
+        if index is None:
+            index = len(self.points)
+            self._index[key] = index
+            self.points.append(tuple(point))
+        return index
+
+    def mark_interesting(self, point):
+        """Register a configuration as a DONOR - see INTERESTING_MAX.
+
+        Not an observation: the mark carries no opinion about how good the
+        configuration is (the grade already said that, and the user's own
+        definition of the button is "overall bad"). It only makes the
+        configuration's coordinates available for hybridization in the
+        candidate pool, so its tempting characteristic gets tried inside
+        good samples. Marking the same configuration again is a no-op.
+        """
+        key = self.space.key(point)
+        if any(self.space.key(existing) == key
+               for existing in self._interesting):
+            return
+        self._interesting.append(tuple(point))
+        if len(self._interesting) > INTERESTING_MAX:
+            del self._interesting[0]
+
+    def observe(self, point_a, point_b, grade, disliked=False,
+                interesting_a=False, interesting_b=False):
+        """Record one graded duel. `grade` is 0..10, 0 = A far better.
+
+        `disliked` is the panel's second row: the SAME 0..10 comparison,
+        clicked there instead of the normal row when the user dislikes BOTH
+        sides. That is a feeling a person has the moment a pair appears and
+        can report at no extra cost - the click that grades the duel simply
+        lands one row lower - and it carries exactly what a comparison
+        cannot: "both are awful" and "both are great" are the same statement
+        about the difference. The grade itself still matters (which side is
+        LESS bad steers the model inside the region like any other duel);
+        what `disliked` adds is one absolute observation per side against
+        the prior mean 0 - par, what the GP believes about a configuration
+        nobody has asked about. That is what turns a bad subspace into
+        something the search can mark once and then AVOID, rather than rank
+        carefully from the inside at two generations a question - and it is
+        what gives `portfolio(good=False)` an address for "bad".
+
+        `interesting_a` / `interesting_b` are the per-image toggles: "this
+        one has a characteristic worth carrying into good samples" - fully
+        compatible with the same side being graded down and disliked, which
+        is the expected combination. They route to `mark_interesting` and
+        touch nothing else; see it for why a mark is not evidence.
+        """
+        p = min(max(float(grade) / 10.0, P_CLAMP), 1.0 - P_CLAMP)
+
+        # Was this outcome a SURPRISE? Checked against the model as it stood
+        # BEFORE this answer, and only when that model is current (`_dirty`
+        # is the tell) - a stale posterior's expectations are not
+        # expectations. A disliked duel cannot surprise upward: its winner
+        # is merely less bad. See SURPRISE_P for what arming this does.
+        self._surprise = None
+        if self.observations and not self._dirty and not disliked:
+            means, _ = self._posterior([tuple(point_a), tuple(point_b)],
+                                       with_covariance=False)
+            scale = _SQRT_2 * max(self._hyper[2], 1e-3)
+            expected_b = float(_cdf((means[1] - means[0]) / scale))
+            if grade >= 8 and expected_b < SURPRISE_P:
+                self._surprise = tuple(point_b)
+            elif grade <= 2 and expected_b > 1.0 - SURPRISE_P:
+                self._surprise = tuple(point_a)
+
+        index_a, index_b = self._row(point_a), self._row(point_b)
+        self.observations.append((index_a, index_b, p))
+        if disliked:
+            for index in (index_a, index_b):
+                self.observations.append((None, index, DISLIKED_P))
+        if interesting_a:
+            self.mark_interesting(point_a)
+        if interesting_b:
+            self.mark_interesting(point_b)
+        # A dislike is also read at the PROCESS level - "this is not going
+        # well" - so the next duel changes the subject (see next_duel), and a
+        # STREAK of them un-anneals the pool (see _pool) rather than letting
+        # the search keep polishing a direction being declared a dead end.
+        self._redirect = bool(disliked)
+        self._dislike_streak = self._dislike_streak + 1 if disliked else 0
+        self.duels += 1
+        if len(self.observations) > MAX_OBSERVATIONS:
+            self._forget_oldest()
+        self._dirty = True
+
+    def _forget_oldest(self):
+        """Drop observations past the cap and rebuild the point set.
+
+        Points are rebuilt rather than kept: a configuration nothing refers to
+        any more still costs a row and a column in every matrix below, and the
+        whole reason for the cap is that those are cubic.
+        """
+        kept = self.observations[-MAX_OBSERVATIONS:]
+        old_points = self.points
+        self.points, self._index = [], {}
+        rebuilt = []
+        for a, b, p in kept:
+            rebuilt.append((None if a is None else self._row(old_points[a]),
+                            self._row(old_points[b]), p))
+        self.observations = rebuilt
+
+    # -- the model -------------------------------------------------------
+
+    def _kernel(self, u, v, lengthscale, theta):
+        """k(u, v) as a product over dimensions - see the module docstring."""
+        if u.size == 0 or v.size == 0:
+            return np.zeros((u.shape[0], v.shape[0]))
+        numeric = self.space.numeric_mask
+        delta = u[:, None, :] - v[None, :, :]
+        # A conditional weight is not transferable across its parent pick: a
+        # LoRA's best weight says nothing about a different LoRA's. Between
+        # two points whose picks differ, the weight's delta is zeroed - the
+        # pair's similarity is then the pick difference alone, the same
+        # whether the weights happen to match or not. (Counting the weight
+        # there would claim that lora B at 0.2 says more about lora A at 0.2
+        # than lora B at 0.9 does, which is exactly the false transfer.)
+        for child, parent in self.space.conditional:
+            differs = np.abs(delta[:, :, parent]) > 1e-9
+            delta[:, :, child] = np.where(differs, 0.0, delta[:, :, child])
+        log_k = np.zeros(delta.shape[:2])
+        if numeric.any():
+            scaled = delta[:, :, numeric] / max(lengthscale, 1e-6)
+            log_k -= 0.5 * np.sum(scaled * scaled, axis=2)
+        if (~numeric).any():
+            differs = np.abs(delta[:, :, ~numeric]) > 1e-9
+            log_k -= theta * np.sum(differs, axis=2)
+        return np.exp(log_k)
+
+    def _likelihood(self, f, noise):
+        """log p(D|f), its gradient, and the curvature W = -d2/df2.
+
+        W is not diagonal: every duel couples two points, contributing a 2x2
+        block. It is positive semi-definite because each duel's log-likelihood
+        is concave in the gap - which is what makes the Newton iteration below
+        a descent on a convex objective rather than a hopeful fixed point.
+        """
+        n = len(self.points)
+        scale = _SQRT_2 * max(noise, 1e-3)
+        g = np.zeros(n)
+        W = np.zeros((n, n))
+        total = 0.0
+        for a, b, p in self.observations:
+            # An absolute observation (a is None) is the same probit statement
+            # with the anchor - utility 0, the prior mean - on side A. Its
+            # curvature touches only the diagonal: nothing couples to a point
+            # whose utility is not a variable.
+            gap = f[b] if a is None else f[b] - f[a]
+            z = np.clip(gap / scale, -Z_CLIP, Z_CLIP)
+            cdf_pos, cdf_neg = _cdf(z), _cdf(-z)
+            total += p * math.log(max(cdf_pos, 1e-300)) \
+                + (1.0 - p) * math.log(max(cdf_neg, 1e-300))
+
+            mills_pos, mills_neg = _mills(z), _mills(-z)
+            # d/dz of the duel's log-likelihood, and its second derivative
+            d1 = p * mills_pos - (1.0 - p) * mills_neg
+            d2 = (-p * mills_pos * (z + mills_pos)
+                  + (1.0 - p) * mills_neg * (z - mills_neg))
+
+            block = -d2 / (scale * scale)     # >= 0; the duel's contribution
+            g[b] += d1 / scale
+            W[b, b] += block
+            if a is None:
+                continue
+            g[a] -= d1 / scale
+            W[a, a] += block
+            W[a, b] -= block
+            W[b, a] -= block
+        return total, g, W
+
+    def _laplace(self, K, noise, warm=None):
+        """The Laplace approximation for one set of hyperparameters.
+
+        Returns (f_hat, W, log_marginal). The Newton step is written in the
+        `f <- K (WK + I)^-1 (Wf + g)` form so that only K itself is ever
+        inverted, and it is damped by a backtracking line search: an early
+        step with almost no data can otherwise overshoot into the saturated
+        tail of Phi, where the gradient is ~0 and the iteration stalls at a
+        point that is not the mode.
+        """
+        n = K.shape[0]
+        eye = np.eye(n)
+        jitter = 1e-6 * (np.trace(K) / max(n, 1) + 1.0)
+        K = K + jitter * eye
+
+        f = np.zeros(n) if warm is None or warm.shape[0] != n else warm.copy()
+
+        def objective(vec):
+            total, _, _ = self._likelihood(vec, noise)
+            return total - 0.5 * float(vec @ np.linalg.solve(K, vec))
+
+        current = objective(f)
+        total, g, W = self._likelihood(f, noise)
+        for _ in range(NEWTON_STEPS):
+            try:
+                target = np.linalg.solve(W @ K + eye, W @ f + g)
+            except np.linalg.LinAlgError:
+                break
+            step = K @ target - f
+            for shrink in (1.0, 0.5, 0.25, 0.1, 0.02):
+                candidate = f + shrink * step
+                value = objective(candidate)
+                if value >= current - 1e-12:
+                    break
+            else:
+                break
+            moved = float(np.max(np.abs(candidate - f)))
+            f, current = candidate, value
+            total, g, W = self._likelihood(f, noise)
+            if moved < NEWTON_TOL:
+                break
+
+        sign, logdet = np.linalg.slogdet(eye + W @ K)
+        if sign <= 0:
+            logdet = 0.0
+        log_marginal = total - 0.5 * float(f @ np.linalg.solve(K, f)) - 0.5 * logdet
+        return f, W, K, log_marginal
+
+    def _fit(self):
+        if not self._dirty or not self.observations:
+            return
+        u = self.space.encode(self.points)
+
+        search_hypers = (len(self.observations) % HYPER_EVERY == 1
+                         or self._logz == float("-inf"))
+        candidates = ([(l, t, s) for l in LENGTHSCALES for t in THETAS for s in NOISES]
+                      if search_hypers else [self._hyper])
+
+        best = None
+        for lengthscale, theta, noise in candidates:
+            K = self._kernel(u, u, lengthscale, theta)
+            f, W, K, logz = self._laplace(K, noise, warm=self.f)
+            if best is None or logz > best[0]:
+                best = (logz, f, W, K, (lengthscale, theta, noise))
+
+        self._logz, self.f, self._W, self._K, self._hyper = best
+        self._alpha = np.linalg.solve(self._K, self.f)
+        self._dirty = False
+
+    # -- prediction ------------------------------------------------------
+
+    def _posterior(self, points, with_covariance=True):
+        """Posterior mean (and covariance) of f at `points`.
+
+        At the Laplace mode the predictive mean is the ordinary GP one with
+        alpha = K^-1 f_hat, and the covariance loses `Ks' (WK + I)^-1 W Ks` -
+        the amount the comparisons pinned down. With no observations at all
+        this is the prior, which is the correct answer and not a special case
+        worth branching on: mean 0 everywhere, so `next_duel` draws two
+        unrelated points and the loop starts.
+        """
+        u = self.space.encode(points)
+        lengthscale, theta, _ = self._hyper
+        if not self.observations:
+            mean = np.zeros(len(points))
+            if not with_covariance:
+                return mean, None
+            return mean, self._kernel(u, u, lengthscale, theta)
+
+        self._fit()
+        observed = self.space.encode(self.points)
+        cross = self._kernel(u, observed, lengthscale, theta)
+        mean = cross @ self._alpha
+        if not with_covariance:
+            return mean, None
+
+        prior = self._kernel(u, u, lengthscale, theta)
+        eye = np.eye(self._K.shape[0])
+        try:
+            reduction = np.linalg.solve(self._W @ self._K + eye, self._W)
+        except np.linalg.LinAlgError:
+            reduction = np.zeros_like(self._W)
+        cov = prior - cross @ reduction @ cross.T
+        cov = 0.5 * (cov + cov.T)
+        np.fill_diagonal(cov, np.maximum(np.diag(cov), 1e-12))
+        return mean, cov
+
+    def _sample(self, mean, cov, count):
+        """`count` independent draws from N(mean, cov), Cholesky where it can.
+
+        The covariance is a difference of two kernel matrices and is only PSD
+        in exact arithmetic, so the factorization is retried with growing
+        jitter and finally falls back to sampling the diagonal alone. That
+        fallback is not a silent degradation: dropping the correlations makes
+        the draws NOISIER, so the duel it produces is more exploratory than
+        intended, never falsely confident.
+        """
+        size = mean.shape[0]
+        scale = float(np.mean(np.diag(cov))) + 1e-12
+        for exponent in range(-10, -3):
+            try:
+                factor = np.linalg.cholesky(cov + (10.0 ** exponent) * scale * np.eye(size))
+            except np.linalg.LinAlgError:
+                continue
+            return [mean + factor @ self.rng.standard_normal(size)
+                    for _ in range(count)]
+        deviation = np.sqrt(np.maximum(np.diag(cov), 0.0))
+        return [mean + deviation * self.rng.standard_normal(size)
+                for _ in range(count)]
+
+    # -- queries ---------------------------------------------------------
+
+    def _pair_key(self, a, b):
+        """The identity of a duel, unordered: A vs B is the same question as
+        B vs A, and the repeat cap must see it as one."""
+        key_a, key_b = self.space.key(a), self.space.key(b)
+        return (key_a, key_b) if key_a <= key_b else (key_b, key_a)
+
+    def _times_asked(self, a, b):
+        return self._asked.get(self._pair_key(a, b), 0)
+
+    def _rendered(self, point):
+        """Is this configuration's image already made? Asked through the
+        host-injected `reuse_probe`, memoized per duel - the host answers by
+        building the point's whole recipe string, and one duel's selection
+        may ask about the same pool point several times. A probe that is
+        absent, or that BREAKS, reads as "nothing is reusable": the reuse
+        preference is an economy, and an economy that can take the search
+        down with it costs more than it saves.
+        """
+        if self.reuse_probe is None:
+            return False
+        key = self.space.key(point)
+        cached = self._probe_memo.get(key)
+        if cached is None:
+            try:
+                cached = bool(self.reuse_probe(tuple(point)))
+            except Exception:
+                cached = False
+            self._probe_memo[key] = cached
+        return cached
+
+    def _remember(self, a, b):
+        """Book-keep a duel about to be shown; returns it for the caller.
+
+        Every path out of next_duel comes through here, which is what makes
+        the repeat cap and the coverage bonus honest: they are about what the
+        user has SEEN, and a duel the user then skips was still seen.
+        """
+        key = self._pair_key(a, b)
+        self._asked[key] = self._asked.get(key, 0) + 1
+        # The reuse streak counts what the user is about to SEE: a duel made
+        # entirely of images already rendered, however it came about - by
+        # the reuse preference or by Thompson honestly wanting two cached
+        # points. Both spend the user's attention without generating new
+        # evidence, and both is what REUSE_STREAK_MAX bounds the run of.
+        if self.reuse_probe is not None:
+            if self._rendered(a) and self._rendered(b):
+                self._reuse_streak += 1
+            else:
+                self._reuse_streak = 0
+        for point in (a, b):
+            point_key = self.space.key(point)
+            if point_key not in self._shown_keys:
+                self._shown_keys.add(point_key)
+                self._shown.append(tuple(point))
+            for index, dimension in enumerate(self.space.dimensions):
+                if dimension.kind == Dimension.CHOICE and not dimension.trivial:
+                    self._levels_shown.add((index, int(point[index])))
+        return a, b
+
+    def _coverage_bonus(self, point):
+        """How many categorical levels this point would show for the first
+        time, in separation units (a categorical difference counts 1, so half
+        of one per unseen level keeps the bonus subordinate to spread)."""
+        bonus = 0.0
+        for index, dimension in enumerate(self.space.dimensions):
+            if dimension.kind == Dimension.CHOICE and not dimension.trivial \
+                    and (index, int(point[index])) not in self._levels_shown:
+                bonus += 0.5
+        return bonus
+
+    def _spread_pick(self, anchor=None):
+        """A space-filling draw: the candidate farthest from everything shown.
+
+        This is the design of experiments the seed duels run on. A uniform
+        draw is unbiased and also careless - three random duels can put six
+        points in one corner and never show half the models - so each seed
+        point is the best of SEED_BATCH candidates, scored by its distance to
+        every point already shown plus a bonus for categorical levels not yet
+        seen. With `anchor`, the pick must also be a visible distance from it
+        (it is the other side of the same duel).
+        """
+        best, widest = None, None
+        for _ in range(SEED_BATCH):
+            candidate = self.space.sample(self.rng)
+            if anchor is not None:
+                separation = self.space.separation(anchor, candidate)
+                if separation < MIN_DUEL_SEPARATION:
+                    if widest is None or separation > widest[0]:
+                        widest = (separation, candidate)
+                    continue
+            spread = min((self.space.separation(shown, candidate)
+                          for shown in self._shown), default=3.0)
+            # Capped so that in a huge space the coverage bonus still moves
+            # the pick, rather than drowning under raw distance.
+            score = min(spread, 3.0) + self._coverage_bonus(candidate)
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        if best is not None:
+            return best[1]
+        # Nothing cleared the anchor bar - the space is too small to hold a
+        # visible difference - so the widest miss is the best question left.
+        if widest is not None:
+            return widest[1]
+        return self.space.perturb(anchor, self.rng, count=len(self.space))
+
+    def _hybrid(self, donor, base):
+        """`base` with 1-3 live coordinates transplanted from `donor`.
+
+        The donor is an "interesting" configuration - overall bad, one
+        characteristic worth keeping - and the base is a good one. A
+        characteristic is usually carried by FEW coordinates, so the
+        transplant is small: a hybrid that took half the donor's genome
+        would mostly inherit what made the donor bad.
+        """
+        live = self.space.live
+        if not live:
+            return tuple(base)
+        child = list(base)
+        count = min(int(self.rng.integers(1, 4)), len(live))
+        for index in self.rng.choice(live, size=count, replace=False):
+            child[index] = donor[index]
+        return tuple(child)
+
+    def _surrogate_features(self, points):
+        """The trend model's design matrix - see THE TREND MODEL.
+
+        Additive by construction, which is the model's whole reason for
+        existing: an intercept, then per live dimension either a one-hot
+        block (opaque category) or the encoded value and its square
+        (numeric - the square is what lets a knob's trend PEAK inside its
+        range instead of only at an end). A conditional weight mirrors the
+        kernel's no-transfer rule feature-wise: its value and square appear
+        once PER PARENT LEVEL, masked to the rows that picked that level,
+        so each pick's weight curve is its own pair of coefficients and
+        duels graded on one LoRA's weight never shape the trend of another.
+        """
+        if not points:
+            return np.zeros((0, 1))
+        u = self.space.encode(points)
+        raw = np.array([[float(v) for v in p] for p in points], dtype=float)
+        live = set(self.space.live)
+        children = {child for child, _parent in self.space.conditional}
+        columns = [np.ones(len(points))]
+        for index in sorted(live):
+            dimension = self.space.dimensions[index]
+            if index in children:
+                continue
+            if dimension.numeric:
+                value = u[:, index]
+                columns.append(value)
+                columns.append(value * value)
+            else:
+                for level in range(len(dimension.labels)):
+                    columns.append(
+                        (np.abs(raw[:, index] - level) < 0.5).astype(float))
+        for child, parent in self.space.conditional:
+            if child not in live:
+                continue
+            value = u[:, child]
+            parent_dim = self.space.dimensions[parent]
+            if parent_dim.kind != Dimension.CHOICE \
+                    or len(parent_dim.labels) < 2:
+                # A trivial (or non-choice) parent has one effective level,
+                # so the child is an ordinary numeric dimension.
+                columns.append(value)
+                columns.append(value * value)
+                continue
+            for level in range(len(parent_dim.labels)):
+                mask = (np.abs(raw[:, parent] - level) < 0.5).astype(float)
+                columns.append(mask * value)
+                columns.append(mask * value * value)
+        return np.stack(columns, axis=1)
+
+    def _surrogate_fit(self):
+        """Ridge weights fitted to the Laplace mode at the observed points,
+        or None while there is too little to fit.
+
+        The target is `self.f` - the GP's own belief - rather than raw
+        grades, and that is the symbiosis: the main solver has already done
+        the work of turning noisy fractional comparisons and dislike
+        anchors into per-point utilities, so the trend model inherits all
+        of it for the cost of a least-squares solve, and the two models can
+        never disagree about what the DATA said, only about what it implies
+        elsewhere.
+        """
+        if len(self.points) < 4 or self.f.shape[0] != len(self.points):
+            return None
+        X = self._surrogate_features(self.points)
+        try:
+            weights = np.linalg.solve(
+                X.T @ X + SURROGATE_RIDGE * np.eye(X.shape[1]),
+                X.T @ self.f)
+        except np.linalg.LinAlgError:
+            return None
+        return weights
+
+    def _surrogate_nominees(self, count):
+        """The trend model's shortlist: the top `count` of SURROGATE_BATCH
+        uniform draws, scored in one matrix multiply.
+
+        Nominees enter the candidate pool and nothing else - the GP
+        posterior and Thompson sampling still decide what is asked, so a
+        wrong trend costs pool slots and a right one puts the cross-
+        combination guess in front of the real judge without a generation
+        spent discovering each combination separately.
+        """
+        if count <= 0:
+            return []
+        self._fit()
+        weights = self._surrogate_fit()
+        if weights is None:
+            return []
+        batch = [self.space.sample(self.rng) for _ in range(SURROGATE_BATCH)]
+        scores = self._surrogate_features(batch) @ weights
+        picked, keys = [], set()
+        for index in np.argsort(-scores):
+            point = batch[int(index)]
+            key = self.space.key(point)
+            if key in keys:
+                continue
+            keys.add(key)
+            picked.append(point)
+            if len(picked) >= count:
+                break
+        return picked
+
+    def _pool(self):
+        """Candidates for this duel: every attractor's neighbourhood, fresh
+        uniform draws, everything already seen - and, when the user has
+        marked configurations as interesting, HYBRIDS of those donors with
+        the attractors: the marked characteristic, tried inside good
+        samples. The hybrids get a modest fixed share (INTERESTING_SHARE)
+        and no other privilege - they win duels or they disappear. Once
+        the trend model has enough duels behind it, its NOMINEES join on
+        the same terms (SURROGATE_SHARE): the additive extrapolation's
+        best cross-combination guesses, offered to the posterior, never
+        imposed on it.
+
+        The observed points are in there so that the current champion can be
+        re-selected. A duel between two never-seen configurations is a
+        measurement with no common reference, and a chain of them lets the
+        utility scale drift; re-fighting the incumbent is what keeps the
+        comparisons anchored - and it is also what the user expects to see.
+
+        The local half is split over the whole FRONTIER, not spent on one
+        incumbent: the champion keeps half (it is the answer being polished),
+        and the other attractors share the rest, so a close second basin goes
+        on being refined instead of starving the moment it falls behind.
+        """
+        pool, keys = [], set()
+
+        def add(point):
+            key = self.space.key(point)
+            if key not in keys:
+                keys.add(key)
+                pool.append(tuple(point))
+
+        for point in self.points:
+            add(point)
+        if self.observations:
+            centers = self._attractors or [self.best()]
+            for center in centers:
+                add(center)
+            share = min(POOL_LOCAL_MAX,
+                        POOL_LOCAL_BASE + POOL_LOCAL_GROWTH * self.duels)
+            # "This is not going well", sustained, un-anneals the search:
+            # every consecutive disliked duel halves the polishing share, so
+            # the pool falls back toward broad exploration until something
+            # lands outside the territory being disliked. Recovery is
+            # automatic - the streak resets on the first normal grade.
+            share /= 2 ** min(self._dislike_streak, 3)
+            for _ in range(int(self.pool_size * share)):
+                if len(centers) == 1 or self.rng.random() < 0.5:
+                    center = centers[0]
+                else:
+                    center = centers[int(self.rng.integers(1, len(centers)))]
+                add(self.space.perturb(center, self.rng,
+                                       count=int(self.rng.integers(1, 3))))
+            if self._interesting:
+                for _ in range(int(self.pool_size * INTERESTING_SHARE)):
+                    donor = self._interesting[
+                        int(self.rng.integers(len(self._interesting)))]
+                    base = centers[int(self.rng.integers(len(centers)))]
+                    add(self._hybrid(donor, base))
+            # The trend model's nominees - the cross-combination guesses no
+            # neighbourhood perturbation and no uniform draw would put in
+            # front of the posterior at any useful rate. A fixed modest
+            # share, like the hybrids', and the same deal: they win duels
+            # or they vanish. See THE TREND MODEL.
+            if self.duels >= SURROGATE_MIN_DUELS:
+                for point in self._surrogate_nominees(
+                        int(self.pool_size * SURROGATE_SHARE)):
+                    add(point)
+        while len(pool) < self.pool_size:
+            before = len(pool)
+            add(self.space.sample(self.rng))
+            if len(pool) == before and len(pool) >= max(2, self.space.size or 2):
+                break     # the space itself is smaller than the pool
+        return pool
+
+    def _seed_duel(self):
+        """The opening duels, before there is a posterior worth sampling.
+
+        The first one is anchored: the BASELINE (first choice of every list,
+        bottom of every range - i.e. the configuration the user would have had
+        without any of this) against the most spread-out draw available. That
+        makes the first question a meaningful one - "is any of this an
+        improvement?" - and it puts a reference point into the data that later
+        duels can be compared against. Every seed point after that is a
+        space-filling pick (see _spread_pick), so the opening duels are a
+        design over the space rather than a handful of coin flips.
+        """
+        if not self._shown and not self.observations:
+            first = self.space.baseline()
+        else:
+            first = self._spread_pick()
+        return first, self._spread_pick(anchor=first)
+
+    def _cross_duel(self, attractors):
+        """Two basins' champions, or None when there is no pair worth asking.
+
+        The pair asked least often wins the slot; a pair already at the
+        repeat cap, or too alike to grade, is not a question.
+        """
+        best = None
+        for i in range(len(attractors)):
+            for j in range(i + 1, len(attractors)):
+                a, b = attractors[i], attractors[j]
+                if self.space.separation(a, b) < MIN_DUEL_SEPARATION:
+                    continue
+                asked = self._times_asked(a, b)
+                if asked >= MAX_PAIR_REPEATS:
+                    continue
+                rank = (asked, i + j)
+                if best is None or rank < best[0]:
+                    best = (rank, (a, b))
+        return best[1] if best else None
+
+    def _develop_duel(self, unproven):
+        """A duel INSIDE the least-observed unproven basin: its
+        representative against its own neighbourhood, or None.
+
+        An unproven attractor cannot prove itself through cross-basin duels
+        alone - those rank its current representative, and its current
+        representative is wherever the thin evidence happens to sit, usually
+        nowhere near the basin's actual peak. Finding the peak takes duels
+        between points of the SAME basin, which Thompson sampling almost
+        never asks for (its argmax lives in the champion's basin). Fired
+        only while an unproven basin exists, so a settled search never pays
+        for it.
+        """
+        if not unproven:
+            return None
+        counts = [sum(1 for point in self.points
+                      if self.space.separation(target, point)
+                      < FRONTIER_SEPARATION)
+                  for target in unproven]
+        target = unproven[int(np.argmin(counts))]
+        for _ in range(64):
+            candidate = self.space.perturb(target, self.rng,
+                                           count=int(self.rng.integers(1, 3)))
+            if self.space.separation(target, candidate) \
+                    >= MIN_DUEL_SEPARATION \
+                    and self._times_asked(target, candidate) \
+                    < MAX_PAIR_REPEATS:
+                return target, candidate
+        return None
+
+    def _explore_duel(self, pool, mean, cov):
+        """The champion against an OPTIMISTIC unknown, or None when
+        everything visible from here has been asked.
+
+        Ranked by mean + sd, not by variance alone: pure max-variance points
+        to wherever is unexplored, which in a large space spreads the budget
+        thin; optimism points to promising-and-uncertain, which is what
+        develops a second basin into something the frontier can hold - and a
+        region sunk by dislikes has a low mean, so it is passed over without
+        any special case."""
+        champion = (self._attractors[0] if self._attractors
+                    else pool[int(np.argmax(mean))])
+        optimism = mean + np.sqrt(np.maximum(np.diag(cov), 0.0))
+        for index in np.argsort(-optimism):
+            candidate = pool[int(index)]
+            if self.space.separation(champion, candidate) < MIN_DUEL_SEPARATION:
+                continue
+            if self._times_asked(champion, candidate) >= MAX_PAIR_REPEATS:
+                continue
+            return champion, candidate
+        return None
+
+    def _bluff_duel(self):
+        """A pair drawn uniformly at random - the bluff - or None.
+
+        No posterior, no attractors, no history: both sides are pure
+        uniform draws, subject only to being tellable-apart and not asked
+        past the cap. See BLUFF_MEAN for why being locally suboptimal on
+        purpose is the point.
+        """
+        for _ in range(32):
+            a = self.space.sample(self.rng)
+            b = self.space.sample(self.rng)
+            if self.space.separation(a, b) < MIN_DUEL_SEPARATION:
+                continue
+            if self._times_asked(a, b) >= MAX_PAIR_REPEATS:
+                continue
+            return a, b
+        return None
+
+    def _void_duel(self):
+        """A pair from the unvisited reaches of the space, or None.
+
+        Side A is the emptiest of VOID_BATCH uniform draws - the candidate
+        farthest from EVERYTHING ever shown - and only counts when that
+        distance clears VOID_SEPARATION: a "void" is a region the session
+        has genuinely never come near, not merely the widest gap in a
+        well-covered space. Side B maximizes the smaller of (its own
+        emptiness, its distance to A), which lands it in a DIFFERENT void
+        whenever one exists and on the far side of the same void when only
+        one does - either way the duel brings back two observations from
+        territory no history-driven mechanism was ever going to visit.
+        """
+        if not self._shown:
+            return None
+        candidates = [self.space.sample(self.rng) for _ in range(VOID_BATCH)]
+        emptiness = [min(self.space.separation(shown, candidate)
+                         for shown in self._shown)
+                     for candidate in candidates]
+        first = int(np.argmax(emptiness))
+        if emptiness[first] < VOID_SEPARATION:
+            return None
+        a = candidates[first]
+        best = None
+        for candidate, empty in zip(candidates, emptiness):
+            distance = self.space.separation(a, candidate)
+            if distance < MIN_DUEL_SEPARATION:
+                continue
+            if self._times_asked(a, candidate) >= MAX_PAIR_REPEATS:
+                continue
+            score = min(empty, distance)
+            if best is None or score > best[0]:
+                best = (score, candidate)
+        return (a, best[1]) if best else None
+
+    def _rival_duel(self, attractors):
+        """Fresh good samples from two DIFFERENT attractors, or None.
+
+        The cross-basin duel ranks two basins' champions; this ranks their
+        POPULATIONS: each side is the best of RIVAL_SAMPLES perturbations
+        of its own attractor, kept only if it is strictly closer to its own
+        center than to the rival's (a perturbation that flipped the basin-
+        defining coordinate belongs to the other side's argument, not this
+        side's). The attractor pair is drawn at random, so over a session
+        every pair of basins gets compared, not only the two the fixed
+        schedule keeps picking.
+        """
+        if len(attractors) < 2:
+            return None
+        picked = self.rng.choice(len(attractors), size=2, replace=False)
+        home, away = attractors[int(picked[0])], attractors[int(picked[1])]
+        sides = []
+        for center, rival in ((home, away), (away, home)):
+            members = [center]
+            for _ in range(RIVAL_SAMPLES):
+                candidate = self.space.perturb(center, self.rng,
+                                               count=int(self.rng.integers(1, 3)))
+                if self.space.separation(candidate, center) \
+                        < self.space.separation(candidate, rival):
+                    members.append(candidate)
+            means, _ = self._posterior(members, with_covariance=False)
+            sides.append([members[int(i)] for i in np.argsort(-means)])
+        for a in sides[0][:4]:
+            for b in sides[1][:4]:
+                if self.space.separation(a, b) >= MIN_DUEL_SEPARATION \
+                        and self._times_asked(a, b) < MAX_PAIR_REPEATS:
+                    return a, b
+        return None
+
+    def next_duel(self):
+        """The pair to show next: (A, B)."""
+        # One duel, one set of probe answers: the render cache this reflects
+        # changes between duels (this duel's own renders enter it), never
+        # during one selection.
+        self._probe_memo = {}
+        if self.duels < self.seed_duels:
+            return self._remember(*self._seed_duel())
+
+        # For the side effect as much as the answer: refreshes the INTERNAL
+        # attractor list the pool and the duels below draw on - which
+        # includes promising-but-unproven basins the public frontier floors
+        # out, because a basin proves itself through exactly these duels.
+        self.frontier()
+        attractors = self._attractors
+        pool = self._pool()
+        if len(pool) < 2:
+            return self._remember(*self._seed_duel())
+
+        # The schedule: within every EXPLORE_CYCLE graded duels, one duel
+        # ranks two basins against each other, one develops an unproven
+        # basin from the inside (only while one exists), and one probes the
+        # optimistic unknown; the rest are Thompson duels, which is what
+        # converges. Every special slot falls through to Thompson when it
+        # has nothing to ask, so none of them can stall the search.
+        phase = self.duels % EXPLORE_CYCLE
+        if phase == EXPLORE_CYCLE - 3 and len(attractors) >= 2:
+            duel = self._cross_duel(attractors)
+            if duel is not None:
+                return self._remember(*duel)
+        if phase == EXPLORE_CYCLE - 2:
+            keeper_keys = {self.space.key(k) for k in self._keepers}
+            unproven = [attractor for attractor in attractors
+                        if self.space.key(attractor) not in keeper_keys]
+            duel = self._develop_duel(unproven)
+            if duel is not None:
+                return self._remember(*duel)
+
+        # A surprising winner gets its follow-up FIRST - before the schedule,
+        # before exploration - while the trail is hot: against the champion
+        # when the two can be told apart (which both verifies the upset and
+        # ranks it), else against its own neighbourhood (which finds what
+        # else is in there).
+        if self._surprise is not None:
+            target, self._surprise = self._surprise, None
+            champion = attractors[0] if attractors else None
+            if champion is not None \
+                    and self.space.separation(target, champion) \
+                    >= MIN_DUEL_SEPARATION \
+                    and self._times_asked(target, champion) < MAX_PAIR_REPEATS:
+                return self._remember(target, champion)
+            duel = self._develop_duel([target])
+            if duel is not None:
+                return self._remember(*duel)
+
+        mean, cov = self._posterior(pool)
+        # A disliked duel redirects the very next one to exploration: "this
+        # is not going well" answered by more of the same would be the search
+        # not listening. One duel, not a mode - the posterior has already
+        # absorbed the dislike, and Thompson resumes from wherever it leads.
+        if self._redirect:
+            self._redirect = False
+            duel = self._explore_duel(pool, mean, cov)
+            if duel is not None:
+                return self._remember(*duel)
+
+        # The stochastic tactics - see BLUFF_MEAN / VOID_MEAN / RIVAL_MEAN.
+        # One roll, three bands, so each fires with exactly its own rate and
+        # at most one per duel. Below the surprise follow-up and the dislike
+        # redirect (a hot trail and "this is not going well" both outrank a
+        # coin), above the Thompson draw - whose share the coins dilute,
+        # which is the point: Thompson is the mechanism that locks in.
+        roll = self.rng.random()
+        if roll < 1.0 / BLUFF_MEAN:
+            duel = self._bluff_duel()
+        elif roll < 1.0 / BLUFF_MEAN + 1.0 / VOID_MEAN:
+            duel = self._void_duel()
+        elif roll < 1.0 / BLUFF_MEAN + 1.0 / VOID_MEAN + 1.0 / RIVAL_MEAN:
+            duel = self._rival_duel(attractors)
+        else:
+            duel = None
+        if duel is not None:
+            return self._remember(*duel)
+
+        if phase == EXPLORE_CYCLE - 1:
+            duel = self._explore_duel(pool, mean, cov)
+            if duel is not None:
+                return self._remember(*duel)
+
+        first, second = self._sample(mean, cov, 2)
+
+        # The reuse preference - see REUSE_MARGIN and THE PRICE OF A
+        # QUESTION. Active only when the host wired a probe and the streak
+        # cap has not tripped, and only HERE, in the Thompson slot: the
+        # exploration slots above are about where they land, not what they
+        # cost. The margin is REUSE_MARGIN judgement-noise units under the
+        # LEARNED noise, so what is ever traded away is a sampled-utility
+        # difference the grader could not have resolved.
+        margin = None
+        if self.reuse_probe is not None \
+                and self._reuse_streak < REUSE_STREAK_MAX:
+            margin = REUSE_MARGIN * max(self._hyper[2], 1e-3)
+
+        index_a = int(np.argmax(first))
+        if margin is not None:
+            # Walking down the first sample's own ranking keeps this a
+            # Thompson choice: the first CACHED configuration inside the
+            # margin asks (to the grader) the argmax's question at a
+            # twentieth of the cost, and if none is, the argmax stands.
+            for candidate in np.argsort(-first):
+                candidate = int(candidate)
+                if float(first[candidate]) < float(first[index_a]) - margin:
+                    break
+                if self._rendered(pool[candidate]):
+                    index_a = candidate
+                    break
+
+        # B is the highest-sampled configuration that is VISIBLY different
+        # from A, not simply the highest-sampled one. Walking down the second
+        # sample's own ranking keeps this a Thompson choice - the posterior
+        # still decides which challenger is worth asking about - while
+        # guaranteeing the question can be answered at all. Both samples
+        # peaking on the same point is the same case and needs no branch of
+        # its own: a point's separation from itself is 0. A pair already
+        # asked MAX_PAIR_REPEATS times is walked past the same way: the
+        # posterior's next-favourite challenger is a new question, the
+        # favourite re-asked a third time is not. With the reuse preference
+        # active, the walk continues past the first valid challenger - but
+        # never below the margin - looking for a valid CACHED one; a fresh
+        # side costs a whole generation, so the same
+        # question-the-grader-cannot-tell-apart rule applies to B as to A.
+        index_b, fallback = None, None
+        for candidate in np.argsort(-second):
+            candidate = int(candidate)
+            if index_b is not None and (
+                    margin is None
+                    or float(second[candidate])
+                    < float(second[index_b]) - margin):
+                break
+            separation = self.space.separation(pool[index_a], pool[candidate])
+            if separation >= MIN_DUEL_SEPARATION:
+                if self._times_asked(pool[index_a],
+                                     pool[candidate]) >= MAX_PAIR_REPEATS:
+                    continue
+                if index_b is None:
+                    index_b = candidate
+                    if margin is None or self._rendered(pool[candidate]):
+                        break
+                elif self._rendered(pool[candidate]):
+                    index_b = candidate
+                    break
+                continue
+            if index_b is None and separation > 0 \
+                    and (fallback is None or separation > fallback[0]):
+                fallback = (separation, candidate)
+        if index_b is None:
+            # The whole pool is within a hair of A. That means the space
+            # itself is too small to hold a visible difference, so the widest
+            # pair available is the best question there is.
+            index_b = fallback[1] if fallback else (index_a + 1) % len(pool)
+        return self._remember(pool[index_a], pool[index_b])
+
+    # -- the answer ------------------------------------------------------
+
+    def _polish(self, start, frozen=()):
+        """Coordinate ascent on the posterior mean from `start`: for each
+        dimension in turn, try every alternative and keep the best. A greedy
+        search over the FULL combinatorial space (not over the pool), which is
+        what turns a dozen comparisons into an answer from a space of
+        millions. Returns (point, posterior mean).
+
+        Dimensions in `frozen` are not moved. That is how the frontier keeps
+        a second basin a second basin: from an imperfect start, the single
+        move "switch to the champion's model" often looks better than any
+        within-basin move - the champion's neighbourhood is simply better
+        mapped - and unrestricted ascent walks the runner-up straight into
+        the champion. Freezing the dims that make it a DIFFERENT answer
+        leaves the ascent free to do what it is for: tuning the detail.
+        """
+        current = list(start)
+        score = float(self._posterior([tuple(current)], with_covariance=False)[0][0])
+        for _ in range(len(self.space) + 2):
+            improved = False
+            for index in self.space.live:
+                if index in frozen:
+                    continue
+                dimension = self.space.dimensions[index]
+                alternatives = dimension.alternatives(current[index])
+                if not alternatives:
+                    continue
+                candidates = []
+                for value in alternatives:
+                    trial = list(current)
+                    trial[index] = value
+                    candidates.append(tuple(trial))
+                means, _ = self._posterior(candidates, with_covariance=False)
+                pick = int(np.argmax(means))
+                if float(means[pick]) > score + 1e-9:
+                    current = list(candidates[pick])
+                    score = float(means[pick])
+                    improved = True
+            if not improved:
+                break
+        return tuple(current), score
+
+    def best(self):
+        """The configuration with the highest posterior utility.
+
+        Not simply the best-graded point seen: the posterior generalizes -
+        it can prefer a configuration nobody has looked at, because the model
+        has learned which model, which offset and which LoRA weight each
+        carried their own weight - and coordinate ascent is what walks there.
+
+        Defined as the frontier's champion, not a separate computation: the
+        frontier polishes from DIVERSE starts and can summit a hill the
+        single strongest observed point's ascent never reaches - measured on
+        the hidden-gem bench, where the two disagreed and best() was the one
+        that was wrong. One answer, one code path.
+        """
+        if not self.observations:
+            return self.space.baseline()
+        keepers = self.frontier()
+        return keepers[0] if keepers else self.space.baseline()
+
+    def _candidates(self, centers, per_center=24):
+        """A candidate set for frontier/portfolio: everything observed, the
+        neighbourhoods of `centers`, and uniform draws up to POOL_SIZE."""
+        candidates, keys = [], set()
+
+        def add(point):
+            key = self.space.key(point)
+            if key not in keys:
+                keys.add(key)
+                candidates.append(tuple(point))
+
+        for point in self.points:
+            add(point)
+        for center in centers:
+            for _ in range(per_center):
+                add(self.space.perturb(center, self.rng,
+                                       count=int(self.rng.integers(1, 3))))
+        for _ in range(POOL_SIZE * 4):
+            if len(candidates) >= POOL_SIZE:
+                break
+            add(self.space.sample(self.rng))
+        return candidates
+
+    def _diverse_top(self, candidates, means, count, separation, best_first=True):
+        """Greedy selection down a ranking, keeping only candidates at least
+        `separation` from everything already kept."""
+        picked = []
+        order = np.argsort(-means) if best_first else np.argsort(means)
+        for index in order:
+            point = candidates[int(index)]
+            if all(self.space.separation(point, kept) >= separation
+                   for kept in picked):
+                picked.append(point)
+            if len(picked) >= count:
+                break
+        return picked
+
+    def _diverse_centers(self, utilities, count):
+        """Maximin pick among the DECENT observed points: the strongest
+        first, then always the decent point FARTHEST from everything chosen.
+
+        Diversity-first, not utility-first, and that is the load-bearing
+        choice: ranked by utility, the runners-up are always the champion's
+        own basin wearing a different prompt - one categorical difference
+        clears any separation gate - and a frontier grown from them collapses
+        to one basin the moment it is polished. Farthest-point selection
+        reaches the OTHER basin whenever it holds any decent point at all.
+
+        "Decent" is the top HALF of what was observed - and deliberately NOT
+        "above par": an underexplored basin idles just below zero until the
+        cross-basin duels prove it, and those duels only happen to basins
+        this selection admits. Excluding it here starves it in exactly the
+        state it needs feeding - measured on the two-peak test taste, where
+        the second peak's whole population sat at -0.05. "Above par" is the
+        PUBLIC keeper floor's test (see frontier), where it belongs.
+        Permissive is cheap: a mediocre center costs only a polish - it
+        climbs into a real basin and the dedupe collapses it.
+        """
+        if not len(utilities):
+            return []
+        threshold = float(np.quantile(utilities, 0.5))
+        decent = [index for index in range(len(self.points))
+                  if utilities[index] >= threshold]
+        centers = [int(np.argmax(utilities))]
+        while len(centers) < count and decent:
+            picked, widest = None, 0.0
+            for index in decent:
+                separation = min(
+                    self.space.separation(self.points[index],
+                                          self.points[center])
+                    for center in centers)
+                if separation > widest:
+                    widest, picked = separation, index
+            if picked is None or widest < FRONTIER_SEPARATION:
+                break
+            centers.append(picked)
+        return [self.points[index] for index in centers]
+
+    def frontier(self, count=FRONTIER_SIZE):
+        """The diverse top of the posterior: up to `count` configurations,
+        each polished by coordinate ascent, each at least FRONTIER_SEPARATION
+        from the others, best first.
+
+        This is the multi-answer form of `best()`, and it exists because
+        taste is not unimodal: a user who likes two unrelated looks is the
+        normal case. The frontier is recomputed every duel and is what the
+        candidate pool polishes around - so a strong second basin keeps
+        being refined - and what the cross-basin duels rank against each
+        other.
+        """
+        if not self.observations:
+            return [self.space.baseline()]
+        self._fit()
+
+        # One polish per maximin center (see _diverse_centers), with twice as
+        # many centers as slots: two centers can still share a basin (their
+        # distinguishing dims may be numeric, which the freeze below leaves
+        # loose), and without the surplus every such collapse would cost the
+        # frontier a member. Non-champion centers are polished with the
+        # OPAQUE categorical dims that distinguish them from every kept
+        # member frozen - see _polish for why letting those move hands the
+        # runner-up basin to the champion.
+        result = []
+        for center in self._diverse_centers(self.f, count * 2):
+            if len(result) >= count:
+                break
+            frozen = {index for index, dimension
+                      in enumerate(self.space.dimensions)
+                      if dimension.kind == Dimension.CHOICE
+                      and dimension.ordinals is None
+                      and any(int(center[index]) != int(kept[index])
+                              for kept, _score in result)}
+            point, score = self._polish(center, frozen=frozen)
+            if all(self.space.separation(point, kept) >= FRONTIER_SEPARATION
+                   for kept, _score in result):
+                result.append((point, score))
+        result.sort(key=lambda pair: -pair[1])
+        # TWO lists come out of this, on purpose. The INTERNAL one
+        # (_attractors) keeps every distinct basin including the promising-
+        # but-unproven - it feeds the pool split and the cross-basin duels,
+        # which are exactly how an unproven basin gets the evidence to prove
+        # itself, and flooring it would starve the runner-up the moment it
+        # fell behind. The PUBLIC one - the return value, the keepers
+        # rendered on stop - applies the keeper floor: the champion at
+        # whatever it is worth, everything behind it at FRONTIER_KEEP of the
+        # champion and never below par. Diversity of the GOOD, not one
+        # answer plus filler.
+        self._attractors = [point for point, _score in result]
+        if result:
+            # Scale-free floor - see KEEP_VS_CHAMPION / KEEP_VS_PAR. The
+            # probabilities are computed under the learned judgement noise,
+            # so the test means the same thing whether the posterior is
+            # stretched by strong anchors or compressed toward 0 without
+            # them.
+            scale = _SQRT_2 * max(self._hyper[2], 1e-3)
+            champion_score = result[0][1]
+            result = result[:1] + [
+                (point, score) for point, score in result[1:]
+                if float(_cdf((score - champion_score) / scale))
+                >= KEEP_VS_CHAMPION
+                and float(_cdf(score / scale)) >= KEEP_VS_PAR]
+        self._keepers = [point for point, _score in result]
+        return list(self._keepers)
+
+    def suggest(self, good=True):
+        """ONE configuration from the good (or bad) end, varied per call.
+
+        The GOOD/BAD buttons' engine: a draw from the portfolio rather than
+        its top entry, because the whole point of asking twice is getting
+        two different answers - the generator is a distribution over the
+        wanted (or unwanted) region, not a lookup of its argmax.
+        """
+        picks = self.portfolio(6, good=good)
+        if not picks:
+            return self.space.sample(self.rng)
+        return picks[int(self.rng.integers(len(picks)))]
+
+    def portfolio(self, count=8, good=True,
+                  min_separation=MIN_DUEL_SEPARATION):
+        """`count` diverse configurations from the good (or bad) end of the
+        posterior - the "generator" the search converges towards.
+
+        `good=True` samples the high end: diverse, acceptable-or-better
+        configurations near the attractors, for generating variety rather
+        than one recipe. `good=False` samples the low end - useful as a
+        check ("is THIS what it thinks I hate?") and as a probe of whether
+        the bad regions were actually mapped. The low end only means
+        anything once dislike clicks have anchored it: with comparisons
+        alone the posterior is translation-invariant and "bad" has no
+        address.
+        """
+        if not self.observations:
+            return []
+        self._fit()
+        centers = self._diverse_centers(self.f if good else -self.f,
+                                        FRONTIER_SIZE)
+        candidates = self._candidates(centers)
+        means, _ = self._posterior(candidates, with_covariance=False)
+        return self._diverse_top(candidates, means, count, min_separation,
+                                 best_first=good)
+
+    def confidence(self):
+        """How sure the model is that `best()` beats a typical rival, 0..1.
+
+        Read as a probability: it is P(best preferred) against the median of
+        the current candidate pool, under the posterior. Shown to the user
+        because "12 duels in" says nothing on its own - eight duels over two
+        dimensions is a finished search and eight over eight is barely
+        started.
+        """
+        if not self.observations:
+            return 0.0
+        pool = self._pool()
+        mean, cov = self._posterior(pool)
+        best_index = int(np.argmax(mean))
+        median = float(np.median(mean))
+        spread = math.sqrt(max(float(cov[best_index, best_index]), 0.0)
+                           + self._hyper[2] ** 2)
+        if spread <= 0:
+            return 1.0
+        return float(_cdf((float(mean[best_index]) - median) / (_SQRT_2 * spread)))
+
+    def status(self):
+        return {
+            # Graded duels, not observations: a quality grade adds extra
+            # observation rows, and the user counts questions answered.
+            "duels": self.duels,
+            "points": len(self.points),
+            # The PUBLIC count - basins that cleared the keeper floor. The
+            # internal list also holds unproven ones, which would make "N
+            # distinct looks" a promise the keepers then fail to keep.
+            "attractors": len(self._keepers),
+            "confidence": self.confidence(),
+            "lengthscale": self._hyper[0],
+            "theta": self._hyper[1],
+            "noise": self._hyper[2],
+        }

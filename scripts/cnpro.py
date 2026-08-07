@@ -124,33 +124,46 @@ class UnitConfigurationError(ValueError):
 WEIGHT_MASK_HUE_SPAN = 270.0
 
 
-def decode_weight_mask(weight_mask):
-    """Decode a painted weight mask into per-pixel weights in [0, 1].
+def decode_weight_mask_parts(weight_mask):
+    """Decode a painted weight mask into (weight, coverage), float32 HxW each.
 
-    The painter ships masks as GRAYSCALE on the wire (pixel value = weight,
-    alpha = paint coverage: 255 inside strokes, a partial ramp where the
-    FEATHER slider blurred the stroke edge - canvas blur runs on premultiplied
-    alpha, so the entire falloff lives in the alpha channel while the value
-    channel keeps the painted weight). Alpha therefore multiplies the weight:
-    binarizing it (the original decode) threw the feather ramp away and every
-    mask edge came out hard. Unpainted pixels (alpha 0) stay weight 0. The
-    rainbow hue is display-only on the JS side; a chromatic mask (the legacy
-    rainbow wire format, still produced by old sessions and possible from API
-    callers) falls back to the hue decode: (1 - hue / 270), red = 1 down to
-    violet = 0.
-    Returns a float32 HxW array, or None when nothing is painted.
+    TWO CHANNELS, TWO QUESTIONS, AND THEY MUST STAY APART UNTIL THE CONSUMER
+    ASKS. `weight` is WHAT was painted - the value channel, one number per
+    stroke. `coverage` is HOW MUCH of each pixel that paint covers: 1 inside a
+    stroke, a partial ramp along every edge, because the canvas anti-aliases
+    fills unconditionally and the FEATHER slider widens the same ramp on
+    purpose (canvas blur runs on premultiplied alpha, so the whole falloff
+    lands in that channel and the value channel keeps the painted weight).
+
+    Their PRODUCT is the per-pixel weight, which is what a gate or a mask
+    tensor wants - see decode_weight_mask. A REDUCTION over the paint must take
+    the parts instead: along every stroke edge the product sweeps from ~0 up to
+    the painted value, so a mask painted with a single weight looks like a
+    gradient to anything that reduces it (external_code.input_mask_share, which
+    is the reason this split exists).
+
+    `weight` is meaningful ONLY where `coverage > 0`. Unpainted pixels are
+    transparent black, and the legacy hue decode reads black as 1.0, so every
+    consumer has to select on coverage before it looks at a value.
+
+    The painter ships GRAYSCALE on the wire (pixel value = weight, alpha =
+    coverage); the rainbow hue is display-only on the JS side. A chromatic mask
+    (the legacy rainbow wire format, still produced by old sessions and
+    possible from API callers) falls back to the hue decode: (1 - hue / 270),
+    red = 1 down to violet = 0.
+    Returns (None, None) when nothing is painted.
     """
     if weight_mask is None:
-        return None
+        return None, None
     if weight_mask.ndim != 3 or weight_mask.shape[2] < 4:
         # API callers must send RGBA; a mask without alpha cannot mark painted
         # pixels and silently dropping it would be confusing
         logger.warning("ControlNet weight mask ignored: expected an RGBA image "
                        f"(alpha marks painted pixels), got shape {getattr(weight_mask, 'shape', None)}.")
-        return None
+        return None, None
     alpha = weight_mask[:, :, 3].astype(np.float32) / 255.0
     if not (alpha > 0.0).any():
-        return None
+        return None, None
     rgb = weight_mask[:, :, :3]
     # classify by the solidly painted core (a feather ramp dilutes chroma)
     core = weight_mask[:, :, 3] >= 128
@@ -163,6 +176,26 @@ def decode_weight_mask(weight_mask):
     else:
         hue = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2HSV)[:, :, 0].astype(np.float32) * 2.0
         values = np.clip(1.0 - hue / WEIGHT_MASK_HUE_SPAN, 0.0, 1.0)
+    return values.astype(np.float32), alpha
+
+
+def decode_weight_mask(weight_mask):
+    """Decode a painted weight mask into per-pixel weights in [0, 1].
+
+    Coverage multiplies the weight: binarizing it (the original decode) threw
+    the feather ramp away and every mask edge came out hard. Unpainted pixels
+    (coverage 0) stay weight 0.
+
+    This is the SPATIAL reading - a gate, a mask tensor, the coverage panel's
+    prediction of one - where a half-covered pixel really does carry half the
+    weight. Anything that reduces the paint to one number takes
+    decode_weight_mask_parts instead, and that distinction is not cosmetic:
+    see input_mask_share.
+    Returns a float32 HxW array, or None when nothing is painted.
+    """
+    values, alpha = decode_weight_mask_parts(weight_mask)
+    if values is None:
+        return None
     return (values * alpha).astype(np.float32)
 
 
@@ -506,27 +539,38 @@ class ControlNetForForgeOfficial(scripts.Script):
         # selection runs on C/M/F. See external_code.masks_in_force.
         band_selected = external_code.band_mode_active(unit.weight_profile)
 
-        def decode_slot_mask(slot_index):
-            """The decoded G mask of one input slot, or None.
+        def decode_slot_parts(slot_index):
+            """The decoded G mask of one input slot, as (weight, coverage).
 
             Memoized: the same slot is decoded for the input gate, for its
             scalar share and again for the mask tensor - cv2 work on full-res
-            masks, once is enough.
+            masks, once is enough. The PARTS are what is cached, because the
+            share must not see them multiplied together (see
+            decode_weight_mask_parts); rebuilding the product is one
+            elementwise pass and was never what this memo was about.
             """
             if slot_index not in decoded_slot_cache:
-                decoded_slot_cache[slot_index] = decode_weight_mask(
+                decoded_slot_cache[slot_index] = decode_weight_mask_parts(
                     unit.input_weight_mask(slot_index))
             return decoded_slot_cache[slot_index]
+
+        def decode_slot_mask(slot_index):
+            """Per-pixel weight of one input slot's G mask, or None."""
+            values, alpha = decode_slot_parts(slot_index)
+            return None if values is None else values * alpha
 
         # This input's share of the unit, from the painted VALUE of its G mask.
         # Painting a whole input at 0.5 and another at 1.0 is how "count this
         # reference half as much" is said; the shape is a separate matter and
-        # is handled by the gate and the mask tensor.
+        # is handled by the gate and the mask tensor - which is why this reads
+        # the two channels apart rather than the per-pixel weight they multiply
+        # into (external_code.input_mask_share).
         input_share_cache = {}
 
         def input_share_for(slot_index):
             if slot_index not in input_share_cache:
-                share, graded = external_code.input_mask_share(decode_slot_mask(slot_index))
+                share, graded = external_code.input_mask_share(
+                    *decode_slot_parts(slot_index))
                 if graded:
                     # A gradient on an input mask has no per-region consumer -
                     # not for an embedding preprocessor (CLIP emits one token

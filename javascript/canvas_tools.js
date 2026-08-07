@@ -450,7 +450,7 @@
             button: {id: 'wmaskButton', icon: 'G', control: 'wmask', gap: true,
                      scope: '.cnet-input-image-group, .cnet-output-mask-group',
                      cls: 'forge-wmask-slot forge-wmask-slot-global',
-                     title: 'Global weight mask (G). On an INPUT: which part of this input is read at all - the painted region gates what the control model (or CLIP) is shown of it, and the painted VALUE is averaged into this input\'s share of the unit. On the OUTPUT mask: where the MAIN profile\'s control lands, applied while the main (or depth) selector is pressed in the profile editor. Pick weight and brush size below, click outside the image to exit'},
+                     title: 'Global weight mask (G). On an INPUT: which part of this input is read at all - the painted region gates what the control model (or CLIP) is shown of it, and the painted VALUE becomes this input\'s share of the unit - one weight per input, whatever shape you paint it in (paint two and they are averaged, with a warning). On the OUTPUT mask: where the MAIN profile\'s control lands, applied while the main (or depth) selector is pressed in the profile editor. Pick weight and brush size below, click outside the image to exit'},
             menu: {
                 id: 'wmaskBox',
                 rows: [

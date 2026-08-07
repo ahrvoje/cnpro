@@ -724,7 +724,7 @@ def band_mode_active(profile) -> bool:
                for segment in profile.split('#')[1:])
 
 
-def input_mask_share(values):
+def input_mask_share(weight, coverage=None):
     """(scalar weight, is_graded) of one input's G mask, or (None, False).
 
     AN INPUT MASK IS A BINARY SHAPE PLUS ONE NUMBER. Its shape says which part
@@ -733,22 +733,77 @@ def input_mask_share(values):
     and has nowhere to put a per-region weight. Its VALUE is how much this
     input counts in the sum of the unit's inputs, which is a scalar.
 
-    So the value is reduced here, over the PAINTED pixels only: unpainted area
-    means "not part of this input", not "this input at weight 0", and averaging
-    over it would make a small bright patch read as a weak input. `is_graded`
-    reports whether the paint actually holds more than one value, so the caller
-    can say out loud that a gradient was flattened rather than let it look
-    like it did something.
+    TAKES THE TWO CHANNELS APART, and must. `weight` is WHAT was painted,
+    `coverage` is HOW MUCH of each pixel the paint covers - the two halves of
+    `decode_weight_mask_parts`, whose product is the per-pixel weight a mask
+    TENSOR wants. Reducing that product, which this used to do, reads the shape
+    as if it were value: the canvas anti-aliases every fill, so a stroke's edge
+    pixels carry the painted value scaled by a fractional coverage, and the
+    product therefore runs from ~0 up to the painted weight along every stroke.
+    A mask painted with ONE weight reported `is_graded` and warned about a
+    gradient nobody painted, and its share came out below the value painted by
+    roughly the stroke's perimeter-to-area ratio - 0.98 for a blob, 0.86 for a
+    thin line, and further with the feather slider up. Coverage belongs in this
+    average as a WEIGHT (a half-covered pixel is half a vote for its value) and
+    nowhere else, which is what leaves a single-weight mask reducing to exactly
+    the number that was painted, whatever its shape.
+
+    The average runs over the pixels that carry paint AND a non-zero value:
+    unpainted area means "not part of this input", not "this input at weight
+    0", and averaging over it would make a small bright patch read as a weak
+    input. An explicitly painted 0 is how a region is excluded from what the
+    input contributes, so it is excluded from the average too, rather than
+    dragging the share of everything else down with it.
+
+    BOTH ANSWERS COME OFF THE WELL-COVERED PAINT, because a barely covered
+    pixel does not carry a reliable value at all. The canvas stores colours
+    PREMULTIPLIED in 8 bits and un-premultiplies them on readback, so a value
+    recovered at coverage c carries the half-unit rounding of the stored
+    product divided by c, plus the rounding of the division itself: at c = 1
+    that is a quarter of a percent, at c = 0.004 (one alpha step, the outermost
+    pixel of any anti-aliased edge) it is the entire scale, and paint at 0.5
+    can read back as 1.0 - the stored product rounds up to one level, and one
+    level of coverage divided back out is the whole scale. Reducing that fringe
+    in would bias the share and let `is_graded` report a gradient made of
+    arithmetic. The cut is half coverage - the same "solidly painted core" the
+    decode classifies chroma on - or, for a mask so feathered that nothing
+    reaches half, wherever the coverage is best, which is all the evidence
+    about the painted value that such a mask has.
+
+    `is_graded` reports whether the paint actually holds more than one value,
+    so the caller can say out loud that a gradient was flattened rather than
+    let it look like it did something. Its threshold is that same rounding,
+    evaluated at the least-covered value that was trusted, rather than a
+    constant: it is the wire format's own noise floor, and the smallest
+    gradient the painter can express - its weight slider steps in hundredths -
+    stays an order above it.
     """
-    if values is None:
+    if weight is None:
         return None, False
-    painted = values > 0
+    if coverage is None:
+        # a caller with no coverage channel (API-side, or a mask already
+        # reduced to per-pixel weights) means "every painted pixel is whole"
+        coverage = np.ones_like(weight)
+    painted = (weight > 0) & (coverage > 0)
     if not painted.any():
         return None, False
-    kept = values[painted]
-    lo = float(kept.min())
-    hi = float(kept.max())
-    return float(kept.mean()), (hi - lo) > 5e-3
+    values = weight[painted]
+    covered = coverage[painted]
+    best = float(covered.max())
+    trusted = covered >= (0.5 if best >= 0.5 else best)
+    values = values[trusted]
+    covered = covered[trusted]
+    share = float((values * covered).sum() / covered.sum())
+    least = float(covered.min())
+    # The rounding above, in 8-bit levels, at the least covered value trusted:
+    # half a level going into the stored product, magnified by the division
+    # back out of it, and half a level coming out - none of which exists at
+    # full coverage, where the product IS the value. Twice that is the widest
+    # gap it can open between two pixels painted alike, and one level is the
+    # floor under that - still an order below the hundredth the painter's
+    # weight slider steps in, which is the smallest real gradient there can be.
+    rounding = 0.0 if least >= 1.0 else (0.5 / least + 0.5)
+    return share, float(values.max() - values.min()) > max(1.0, 2.0 * rounding) / 255.0
 
 
 def masks_in_force(global_mask, band_masks, band_selected: bool):

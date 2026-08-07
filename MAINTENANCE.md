@@ -414,7 +414,9 @@ pieces would move.
   runs on premultiplied alpha, so the FEATHER falloff lives entirely in the
   alpha channel; the original binarize-at-128 decode threw the ramp away and
   every feathered edge came out hard. Unpainted (alpha 0) stays weight 0; a
-  hue fallback covers legacy chromatic masks.
+  hue fallback covers legacy chromatic masks. `decode_weight_mask_parts`
+  returns the two channels unmultiplied for the one reader that must not see
+  them combined — the scalar share (invariant 5).
   ONE slot per input (`weight_mask[_<n>]`, 5 channels for 5 inputs) plus FOUR
   output slots (`output_mask[_coarse|_mid|_fine]`) — see invariant 6 for why
   the bands are output-side. Each input is an independent control, so its mask
@@ -1111,8 +1113,9 @@ hidden gr.Textbox  ─────────────  hidden LogicalImage 
                                                                   ▼
                                                    ControlNetUnit (gr.State)
                                                                   ▼
-scripts/controlnet.py: parse_weight_profile → points; decode_weight_mask →
-float mask; knowledge gate; params.model.{weight_profile,balance_profile,
+scripts/controlnet.py: parse_weight_profile → points; decode_weight_mask_parts
+→ (value, coverage) → their product = float mask, the pair = input_shares
+(invariant 5); knowledge gate; params.model.{weight_profile,balance_profile,
 region_masks(tensor|band-dict),strength/start/end derived}
                                                                   ▼
 patcher type:  ControlNetPatcher → apply_controlnet_advanced → ControlBase
@@ -1351,6 +1354,26 @@ support) keep patchers that only understand constant weight behaving sanely.
    binarized alpha discards it); `decode_weight_mask` decides by chroma
    (achromatic = grayscale) and keeps
    the hue decode only as a LEGACY fallback for old sessions / API callers.
+
+   **A REDUCTION MUST TAKE THE TWO CHANNELS APART** (2026-08-04).
+   `decode_weight_mask_parts` returns them unmultiplied and
+   `decode_weight_mask` is its product; every SPATIAL reader (gate, mask
+   tensor, coverage panel) wants the product, and everything that reduces the
+   paint to one number — today `external_code.input_mask_share` — must take
+   the parts. The canvas anti-aliases every fill it draws and cannot be asked
+   not to, so the product sweeps from ~0 up to the painted value along the
+   edge of every stroke: reducing it read a mask painted with ONE weight as a
+   gradient (the user was warned their values had been averaged, about paint
+   that held a single value) and returned a share BELOW what was painted, by
+   the stroke's perimeter-to-area ratio — 0.98 for a blob, 0.86 for a thin
+   line, **0.65 for a feathered disc painted at 1.0**. Two inputs painted at
+   the same weight then split the unit unevenly, purely by stroke shape.
+   Coverage belongs in such a reduction as a WEIGHT and nowhere else, and the
+   value is only trustworthy where coverage is at least half (8-bit
+   premultiplied storage: at one alpha step, paint at 0.5 reads back as 1.0 —
+   which is where that function's noise floor comes from, derived, not a
+   constant). `tests/test_input_mask_share.py` pins it, including that the
+   generation path still passes the parts.
    The hue span 270° therefore still exists in two places — `weight_mask.js`
    (`HUE_SPAN`, display + import recolor) and `scripts/controlnet.py`
    (`WEIGHT_MASK_HUE_SPAN`, legacy decode) — change together, but new code

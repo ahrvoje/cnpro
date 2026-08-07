@@ -2813,3 +2813,419 @@
 .cnet-coverage-swatch-over {
     border-top-color: #ff1744;   /* ...and every 0.25 above it */
 }
+
+/* ---------------------------------------------------------------------------
+   CNPro X/Y panel (scripts/CNPro_XY.py)
+   --------------------------------------------------------------------------- */
+
+/* The refresh and dice buttons share one flex line with a three-line LoRA
+   textbox, and the host's own `.gradio-button.tool` rule ends `align-self: end`
+   - so they were bottom-aligned to the TALLEST thing in the row and sat a whole
+   textbox below the picker they belong to. Top-anchor them instead, then push
+   them down by exactly the header of the labelled control beside them, so the
+   glyph is level with that control's input box rather than with its label.
+
+   The offset is derived, not eyeballed: the label is a
+   `[data-testid=block-info]` span with no padding of its own
+   (--block-title-padding is 0), so its line is font-size x line-height = 19.6px
+   on gradio 4.40. The literal fallbacks keep a theme that drops a variable from
+   invalidating the calc() and dumping the buttons back up beside the label text.
+
+   THIS VALUE IS THE NO-JS CASE, and it is deliberately the smaller of the two
+   that occur. A single-select Dropdown adds `margin-bottom: var(--spacing-lg)`
+   under its label and a multiselect one does not, so the neighbour's header is
+   27.6px in LoRA mode and 19.6px in Model mode - no constant is right in both.
+   javascript/cnpro_xy.js measures the actual neighbour and overrides this with
+   an inline `!important`; see the long note there. What is left here is what
+   the panel looks like with that file unloaded: 8px high in LoRA mode, exact in
+   Model mode, and in neither case stranded at the bottom of the textbox.
+
+   !important on BOTH, and for two different reasons. `align-self` fights the
+   host's `.gradio-button.tool`. `margin-top` fights gradio's own reset,
+   `.gradio-container-4-40-0 button, ... { margin: 0 }` - class + type is
+   specificity 0,1,1 and a bare class here is 0,1,0, so the reset wins by one
+   step and does it silently: the declaration is in the sheet, it matches the
+   button, and the computed value is still 0. A plain <div> given this class in
+   the same row picks up the margin; the <button> does not, which is the whole
+   tell. */
+.cnpro-xy-tool {
+    align-self: flex-start !important;
+    margin-top: calc(var(--block-title-text-size, 14px)
+                     * var(--line-sm, 1.4)) !important;
+}
+
+/* ---------------------------------------------------------------------------
+   CNPro A/B panel (scripts/CNPro_AB.py)
+   --------------------------------------------------------------------------- */
+
+/* The grade row is the one piece of chrome in this extension that is used
+   dozens of times in a row, so it is laid out for AIM rather than for looks:
+   eleven equal targets in one unbroken strip, wrapping only when the panel is
+   genuinely too narrow to hold them. `flex-wrap: wrap` rather than a scroll -
+   a grade button that has scrolled out of reach is a grade the user cannot
+   give, and there is no eleventh-button-shaped hint that it happened. */
+/* The strip is CENTRED ON THE SEAM BETWEEN A AND B. The two images split the
+   row in half, so the row's own midpoint is the seam, and a scale whose 5 sits
+   under it reads as "left image / right image" without a legend.
+
+   The symmetric padding is what makes that exact rather than approximate.
+   STOP is taken out of the flow and pinned right, so centring the buttons in
+   the remaining space would put them half of STOP's width to the left of the
+   seam; reserving that width on BOTH sides keeps the content box concentric
+   with the row. It also means the buttons can never run underneath STOP when
+   the panel is narrow enough to wrap them - which is the failure the obvious
+   `margin-left: auto` version has, and it only shows up at small widths. */
+.cnpro-ab-grades {
+    position: relative;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    /* Both sides padded so the scale stays centred; the right side holds
+       TWO parked buttons per row (GOOD+STOP above, BAD+skip below). */
+    padding-left: 176px;
+    padding-right: 176px;
+}
+
+/* min-width beats the flex basis gradio gives a Button, which sizes to the
+   label - so "10" would be wider than "0" and the strip would read as a
+   ragged ruler. Equal targets also mean the muscle memory built over twenty
+   duels keeps working. */
+.cnpro-ab-grades button.cnpro-ab-grade {
+    min-width: 34px !important;
+    flex: 0 0 34px;
+    padding-left: 0;
+    padding-right: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 5 is not a refusal, it is the "these are worth the same" answer, and it is
+   the one grade a user reaches for while unsure. Marking the middle of the
+   strip makes the scale readable at a glance in a way eleven identical
+   buttons are not - and it is an outline rather than a fill so that it does
+   not read as "selected".
+
+   As an INSET SHADOW, not a border, and that is measured rather than a
+   preference: the host renders these buttons with `border-width: 0`, so
+   `border-color` on its own is a declaration that matches, computes, and
+   paints absolutely nothing (checked in the running app - the tie button's
+   border-top-color was the accent and its border-top-width was 0px). Adding
+   a width instead would also work and would put this rule at the mercy of
+   the host's next button restyle; a shadow cannot be zeroed out by one. */
+.cnpro-ab-grades button.cnpro-ab-grade-tie {
+    box-shadow: inset 0 0 0 1px var(--color-accent, #ff7c00);
+}
+
+/* STOP sits at the far end, away from the grades. It ends the search, the
+   grade buttons continue it, and the two must not be neighbours that a fast
+   hand can confuse - the whole row is being clicked at speed.
+
+   Absolutely positioned, in the padding the row reserves for it above, so
+   that it is out of the flow the buttons are centred in. `flex` and `margin`
+   still carry !important because gradio writes flex properties onto every
+   block in a Row, and a STOP allowed to grow fills the leftover width. */
+.cnpro-ab-grades button.cnpro-ab-stop {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    flex: 0 0 auto !important;
+    margin-left: 0 !important;
+}
+
+/* The dislike row: the SAME scale as the row above - one click grades the
+   duel from either row, and this row's meaning is "and I dislike both".
+   Same geometry so the two read as one instrument; dimmed and red-ringed so
+   which row is the exceptional one is legible without reading the legend.
+   Full strength on hover, so "these are live buttons" stays discoverable. */
+.cnpro-ab-dislike button.cnpro-ab-grade {
+    opacity: 0.65;
+    box-shadow: inset 0 0 0 1px rgba(206, 68, 68, 0.45);
+}
+
+.cnpro-ab-dislike button.cnpro-ab-grade:hover {
+    opacity: 1;
+}
+
+/* skip lives where STOP lives one row up - in the padding the row reserves -
+   and for the same reason: it is not a grade, and a fast hand working the
+   scale must not be able to hit it by overshooting a 10. */
+.cnpro-ab-grades button.cnpro-ab-skip {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    flex: 0 0 auto !important;
+    margin-left: 0 !important;
+}
+
+/* GOOD and BAD park inboard of STOP and skip: on-demand samples from the
+   two ends of the solver's belief - pure inference, so they sit with the
+   controls that are not grades, away from the scale a fast hand works. */
+.cnpro-ab-grades button.cnpro-ab-demo {
+    position: absolute;
+    right: 88px;
+    top: 50%;
+    transform: translateY(-50%);
+    flex: 0 0 auto !important;
+    margin-left: 0 !important;
+    opacity: 0.85;
+}
+
+/* The interesting toggles: one under each image half, dim because they are
+   the exceptional gesture, not the routine one. Their state lives in the
+   session and is echoed by the status line - the button itself stays
+   stateless, which is what lets a toggle be a plain gradio Button. */
+.cnpro-ab-interesting {
+    gap: 4px;
+}
+
+.cnpro-ab-interesting button.cnpro-ab-mark {
+    opacity: 0.6;
+    font-size: 0.85em;
+    /* The fill pseudo-element below is clipped to the button. */
+    position: relative;
+    overflow: hidden;
+}
+
+.cnpro-ab-interesting button.cnpro-ab-mark:hover {
+    opacity: 1;
+}
+
+/* The interesting toggles double as PER-SIDE inference progress: while a
+   side's image renders, the tick's phase CSS (CNPro_AB._phase_css) sets
+   --cnpro-ab-fill on that side's button, and this pseudo-element wears it
+   as a left-to-right fill behind the label - the button stays a button,
+   the fill cannot be clicked, and while B renders A holds a full bar so
+   the pair reads as "A done, B under way". When nothing renders the var
+   unsets and the width transition sweeps the bar away instead of
+   snapping. */
+.cnpro-ab-interesting button.cnpro-ab-mark::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: var(--cnpro-ab-fill, 0%);
+    background: color-mix(in srgb,
+                          var(--color-accent, #ff7c00) 45%, transparent);
+    transition: width 0.5s linear;
+    pointer-events: none;
+}
+
+/* "Grade here" - the it-is-your-turn nudge. Generation ends, the panel goes
+   quiet, and nothing used to say the next move is the user's. It lives in
+   the LEFT padding the grade row reserves for seam symmetry (see
+   .cnpro-ab-grades above), positioned out of the flow like STOP in the
+   right one, on the seam between the two rows so it points at both - and
+   only its OPACITY ever changes (from the tick's phase CSS, exactly while
+   a duel awaits its grade), so its appearing cannot move a pixel of the
+   rows it points at. Red like the dislike ring, dim because it is a nudge,
+   not an alarm. */
+.cnpro-ab-grades .cnpro-ab-grade-hint-wrap {
+    position: absolute;
+    left: 0;
+    top: calc(100% + 2px);
+    transform: translateY(-50%);
+    width: auto !important;
+    min-width: 0 !important;
+    flex: 0 0 auto !important;
+}
+
+.cnpro-ab-grade-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    color: rgba(206, 68, 68, 0.85);
+    font-size: 12px;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+/* A small travel toward the scale, always running - with the hint at
+   opacity 0 it animates nothing anyone can see, and gating the animation
+   on the phase would restart it mid-stride on every repaint. */
+.cnpro-ab-grade-hint-arrow {
+    display: inline-block;
+    animation: cnpro-ab-nudge 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes cnpro-ab-nudge {
+    from { transform: translateX(0); }
+    to { transform: translateX(5px); }
+}
+
+/* The tick's style channel: an HTML component whose only content is a
+   <style> element. Style elements apply from inside a hidden box, so the
+   wrapper contributes no geometry anywhere on the page. */
+.cnpro-ab-phase-css {
+    display: none !important;
+}
+
+/* THIS BLOCK MUST NOT CHANGE HEIGHT. Everything below it - the recipe box,
+   Set, the trace - moves when it does, and it is rewritten on every poll for
+   the whole length of a search. Measured before the fix: it swung between 61
+   and 96px about twice a second, which is the "Configuration jumping down up
+   down" that was reported. Two separate causes, and both had to go:
+
+   1. WHAT IS IN IT changed with the phase - the scale legend and the
+      best-so-far appeared only while waiting for a grade. Fixed in
+      _status_markdown: always three lines, always one line each.
+   2. GRADIO BLANKS AN OUTPUT WHILE ITS CALL IS PENDING, so even an unchanged
+      value empties the block for a frame. Only a floor can cover that, and
+      the floor has to be bigger than the content - which is why the content
+      is pinned here rather than left to the prose styles.
+
+   The margin reset is the load-bearing part. Markdown output lands inside
+   gradio's prose wrapper, whose block children carry margins: three lines
+   that measure 3 x 16.8 = 50px of text rendered as a 96px block, so a floor
+   sized from the text alone never bridged the collapse. With the margins
+   gone, full and empty are the same height and nothing below can move. */
+/* A FIXED height, not a floor. A floor covers the block being emptied while
+   its call is pending; it does not cover the block being briefly TALLER,
+   which is what a value swap does - measured at 61px settled and 96px for a
+   frame, four times over four duels, which is precisely the jump that was
+   reported as still happening after the floor went in. Whatever gradio
+   renders mid-swap now happens inside a box of constant height, and nothing
+   below it can move for any reason at all.
+
+   In em, so it follows the block's own font size (14px here, not the 12px
+   --text-sm suggests) rather than pinning a pixel count that a theme change
+   would clip. */
+/* ONE variable for the line box, and the container is three of them. The
+   first attempt derived the height from `em` on the container, which is a
+   different font size from the one the LINES render at - gradio's prose
+   wrapper sets its own - so the box came out 52px around 61px of text and
+   clipped the bottom line. Deriving both from the same number is the only
+   way those two cannot drift apart again. */
+.cnpro-ab-status {
+    --cnpro-ab-line: 1.3rem;
+    line-height: var(--cnpro-ab-line);
+    opacity: 0.85;
+    height: calc(3 * var(--cnpro-ab-line) + 4px);
+    overflow: hidden;
+}
+
+.cnpro-ab-status > *,
+.cnpro-ab-status p {
+    margin: 0 !important;
+}
+
+.cnpro-ab-status .cnpro-ab-line {
+    height: var(--cnpro-ab-line);
+    line-height: var(--cnpro-ab-line);
+    margin: 0 !important;
+    padding: 0;
+}
+
+.cnpro-ab-status .cnpro-ab-dim {
+    opacity: 0.8;
+}
+
+/* The best-so-far names a model, a factor and a LoRA weight, and wraps to two
+   lines the moment any of them is long - which would move the panel exactly
+   as the old phase-dependent lines did. One line, ellipsis, whole thing on
+   hover; the complete recipe is in the box directly below. */
+.cnpro-ab-status .cnpro-ab-clip {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* The duel images are the point of the panel, so they get ALL of the width:
+   two halves, back to back, no gap and no padding. Everything gradio puts
+   around an image block - padding, border, the row's gap - is picture the
+   user does not get, and the whole job here is examining detail.
+
+   `width: 100%` rather than `max-width`: the pane is filled. A generation
+   larger than the pane (the normal case at any panel width - 512 and up
+   against a half-panel of a few hundred px) is scaled DOWN to fit, which is
+   the "fit to width" half; one smaller than the pane is scaled up, which is
+   the price of not leaving a gap beside it.
+
+   max-height keeps the pair from pushing the grade buttons off the bottom of
+   the window on a portrait aspect - the buttons have to stay reachable or
+   the images cannot be graded at all. */
+.cnpro-ab-duel {
+    gap: 4px;
+}
+
+.cnpro-ab-images {
+    gap: 0 !important;
+    flex-wrap: nowrap;
+}
+
+.cnpro-ab-images .cnpro-ab-image {
+    padding: 0 !important;
+    border-width: 0 !important;
+    min-width: 0 !important;
+}
+
+.cnpro-ab-image img {
+    width: 100% !important;
+    height: auto !important;
+    max-height: 76vh;
+    object-fit: contain;
+    display: block;
+}
+
+/* Gradio sizes the image's own wrapper, and its default keeps the old fixed
+   height around the picture - which would letterbox exactly the space this
+   rule set is trying to reclaim. */
+.cnpro-ab-image .image-container,
+.cnpro-ab-image .image-frame,
+.cnpro-ab-image > div {
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* Rows are dense on purpose - up to ten of them stack above the duel, and the
+   panel is already inside an accordion inside a tab. */
+.cnpro-ab-row {
+    align-items: flex-start;
+}
+
+/* The duel lightbox (javascript/cnpro_ab.js).
+   z-index above the host's own #lightboxModal (1001) so the two can never
+   argue about which is on top - and they never appear together, because this
+   one exists precisely so the host's is not used here. */
+.cnpro-ab-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 1002;
+    background: rgba(0, 0, 0, 0.88);
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    cursor: zoom-in;
+}
+
+.cnpro-ab-modal.cnpro-ab-modal-open {
+    display: flex;
+}
+
+/* Fit the window by default: the first question a duel asks is about the
+   whole frame. object-fit is not used - the image is scaled by its own box so
+   that switching to 1:1 below is a change of size rather than of cropping. */
+.cnpro-ab-modal-image {
+    max-width: 96vw;
+    max-height: 96vh;
+    margin: auto;
+    cursor: zoom-in;
+}
+
+/* 1:1, which is what a judgement about detail actually needs. The overlay
+   scrolls; `margin: auto` keeps a small image centred and a large one from
+   being pinned to a corner. */
+.cnpro-ab-modal-zoom {
+    cursor: zoom-out;
+}
+
+.cnpro-ab-modal-zoom .cnpro-ab-modal-image {
+    max-width: none;
+    max-height: none;
+    cursor: zoom-out;
+}
