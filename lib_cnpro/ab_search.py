@@ -218,6 +218,57 @@ its interior, and what gives `portfolio(good=False)` an address for "bad"
 - with comparisons alone the posterior is translation-invariant and no
 region is ever anywhere.
 
+THE THIRD ROW: WHAT A COMPARISON CANNOT SAY
+-------------------------------------------
+A graded duel encodes a DIFFERENCE in utility. It cannot encode a DISTANCE -
+"these two are the same image" and "these two are equally good" are not the
+same statement, and no amount of grading produces the first. So the panel's
+three grade rows partition the answer differently: the top row is "these are
+rather distinct, and we are on track", the middle is "rather SIMILAR, and we
+are on track", the bottom is "I will rate them but both are bad". One click
+still answers, whichever row it lands on.
+
+The middle row is the new channel, and it is the cheapest click in the panel:
+"do these look alike" is a first-glance impression that costs no deliberation
+at all, and because the top two rows PARTITION the on-track case, every
+graded duel yields a similarity label rather than only the ones somebody
+bothered to mark. That density is what makes the label worth fitting on.
+
+WHAT IT BUYS. Separation - "how far apart are two configurations" - was a
+hand-written prior: a differing category counts 1, a range dimension counts
+the fraction of its span. It is what decides whether a duel is worth asking
+(MIN_DUEL_SEPARATION), how different the frontier's keepers have to be
+(FRONTIER_SEPARATION), which configurations a collage may hold together
+(`population`) and how many distinct good answers the space has (`capacity`).
+All eighteen of those tests call one function, so making that function
+LEARNED upgrades every one of them at once: `Space.weights` scales each
+dimension's contribution, fitted from the similarity labels by
+`_fit_metric`, shrunk toward the old constants so that a session with no
+labels behaves exactly as before.
+
+The model is noisy-OR: each dimension independently has some rate of
+producing a visible change, distance is the sum of those rates, and
+P(distinct) = 1 - exp(-distance). Concave in the distance, linear in the
+weights, ~one parameter per row - so it fits from a handful of labels and
+cannot overfit into anything exotic.
+
+TWO HONEST LIMITS. The metric is LINEAR IN THE DIMENSIONS, so it cannot say
+"these two models look alike at LoRA 0.2 and not at 1.0"; that is a real
+loss and interaction terms are the escape hatch if it ever bites. And the
+labels are CENSORED: every duel path filters on separation, so a dimension
+the metric has shrunk stops being asked about and can never be un-shrunk by
+ordinary play - the estimate would be self-confirming. `_probe_duel` is the
+answer to that, and the reason it exists: at a fixed mean rate it asks
+exactly the duel the learned metric now refuses and the prior would have
+allowed, so a wrongly-shrunk dimension gets the one question that can
+restore it. The weights are also floored (METRIC_MIN) so nothing can vanish
+outright.
+
+A similarity label pays a dividend on the UTILITY side too: two
+configurations that look the same must be worth the same, which is a
+stronger statement than a graded 5 (a noisy soft label). So the middle row
+also records an extra tie observation, pinning the pair together.
+
 "INTERESTING" IS NOT A GRADE
 ----------------------------
 The panel's per-image toggle marks a sample whose OVERALL quality is
@@ -229,6 +280,24 @@ every candidate pool is hybrids that transplant a few of the donor's
 coordinates into an attractor - the tempting characteristic, tried inside a
 good configuration - and the hybrids then earn their place through ordinary
 duels or vanish. See mark_interesting / _hybrid / INTERESTING_SHARE.
+
+THE SEARCH IS ALSO A GENERATOR
+------------------------------
+A converged solver is not one recipe, it is a REGION - and a region has a
+size. `capacity()` estimates it: how many mutually distinguishable
+configurations the posterior currently believes are good, over the whole
+space rather than over the handful the frontier has room to name. It is a
+Monte Carlo estimate of a volume divided by a collision count (see
+CAPACITY_BATCH), it starts at the keeper count and grows as evidence
+accumulates, and it is the number the panel offers before spending
+generations. `population(n)` is the matching extractor: n configurations
+that all clear the same quality floor and are all visibly different from
+each other, ranked by a fresh posterior DRAW so that asking twice gives two
+different samples of the same taste rather than the same list. Between them
+they are what makes "show me everything good you have learned" a question
+the model can answer, and `capacity` is deliberately allowed to answer with
+a number far larger than anybody will render - the honest size of the
+region is more useful than a comfortable one.
 
 Nothing in this module imports gradio, the host, or the rest of CNPro. It is
 numpy and stdlib, so `tests/test_ab_search.py` runs it directly.
@@ -459,6 +528,126 @@ FRONTIER_SEPARATION = 0.5
 KEEP_VS_CHAMPION = 0.25
 KEEP_VS_PAR = 0.35
 
+#: HOW MANY GOOD ANSWERS ARE THERE? - the capacity estimate, and the one
+#: number the frontier deliberately cannot give. The frontier answers "which
+#: few configurations should I keep", capped at FRONTIER_SIZE because a STOP
+#: report a human reads has to be short. `capacity` answers the other
+#: question: of the WHOLE space, how many mutually distinguishable
+#: configurations does the model currently believe are good? That is not four
+#: - a taste that likes one model at any prompt has as many good answers as
+#: there are prompts - and it is the number the N-GOOD button spends
+#: generations on, so it is estimated rather than guessed.
+#:
+#: Estimated by Monte Carlo, because the space is combinatorial and the good
+#: region is not a shape anything here can integrate: CAPACITY_BATCH uniform
+#: draws are scored, the share that clears the quality floor is the share of
+#: the SPACE that is good, and the collision rate among those draws says how
+#: many of them are the same answer twice (see `capacity` for the arithmetic).
+#: Uniform rather than pool draws on purpose - the pool is deliberately
+#: concentrated near the attractors, which is the correct bias for choosing a
+#: duel and exactly the wrong one for measuring a fraction of the space.
+CAPACITY_BATCH = 512
+
+#: What counts as good, and how sure the model has to be of it: a
+#: configuration is good when its POSTERIOR puts it within QUALITY_MARGIN
+#: judgement noises of the champion with probability at least
+#: CAPACITY_CONFIDENCE.
+#:
+#: MEASURED AGAINST THE CHAMPION, IN NOISE UNITS, and both halves of that are
+#: load-bearing. An absolute threshold ("utility above 0.5") means nothing
+#: here: with few dislike anchors the whole posterior compresses toward 0 -
+#: measured at a champion of 0.065 after fifty duels of a taste the model had
+#: correctly learned - so any fixed number silently becomes "everything" or
+#: "nothing" depending on how the session was graded. The margin is the gap
+#: KEEP_VS_CHAMPION already implies (Phi^-1(0.25)*sqrt(2) = 0.95 noises), so
+#: "good" means the same thing here as it does on the frontier.
+#:
+#: The probability is over the POSTERIOR ALONE, not the judgement noise, and
+#: that is what makes this a confidence test rather than a preference one: a
+#: configuration nobody has evidence about sits at the prior, its probability
+#: is near a half however tempting its mean, and it counts for nothing until
+#: the search has actually learned something about its neighbourhood.
+#:
+#: THE THRESHOLD IS DERIVED, NOT TUNED. k(x, x) = 1, so an unexplored point
+#: sits at mean 0 with variance 1 - and at the very start the champion is 0
+#: too, which makes its test value exactly Phi(QUALITY_MARGIN * s). With the
+#: largest s the hyperparameter grid offers (NOISES[-1] = 0.9) that is 0.816,
+#: so any threshold at or below it lets the WHOLE SPACE pass at duel one:
+#: measured, and it reported 56 to 155 good configurations before a single
+#: comparison had been graded. 0.85 clears it for every noise on the grid,
+#: which is the property to preserve if either constant is ever moved.
+QUALITY_MARGIN = 1.0
+CAPACITY_CONFIDENCE = 0.85
+
+#: The largest capacity ever reported. A space can hold more good
+#: configurations than anybody will ever render, and past a few thousand the
+#: exact number stops being information - it is "more than you will use".
+#: The cap keeps the panel's box narrow and the estimate honest about its own
+#: resolution.
+CAPACITY_MAX = 9999
+
+#: `population` oversamples: candidates drawn per configuration asked for,
+#: and the pool it is allowed to grow to. The pool is what the diverse pick
+#: chooses from, so it has to hold several times the wanted count for the
+#: separation filter to have anything to reject - and it is capped because
+#: the pick prices a pool x pool posterior draw.
+POPULATION_OVERSAMPLE = 8
+POPULATION_POOL_MAX = 1024
+
+#: THE LEARNED SEPARATION METRIC - see THE THIRD ROW in the module docstring.
+#: One weight per dimension, scaling its contribution to `Space.separation`.
+#:
+#: SHRUNK TOWARD 1, which is the old hand-written metric exactly: with no
+#: similarity labels every weight sits at the prior and nothing in the engine
+#: behaves differently than it did before the row existed. METRIC_SHRINK is
+#: the strength of that pull in the fit; the data outgrows it naturally, since
+#: the likelihood grows with the label count and the penalty does not.
+#:
+#: FLOORED AND CAPPED, and the floor is the load-bearing half. A weight at 0
+#: is a dimension the search has gone blind to - it would stop asking about
+#: it, therefore stop being told about it, and could never recover (see
+#: _probe_duel for the other half of that defence). 0.05 still means "four
+#: differing categories here are worth one elsewhere", which is as inert as
+#: anything needs to be. The cap is only there to stop one emphatic label
+#: from making a single row dominate the whole metric.
+METRIC_SHRINK = 2.0
+METRIC_MIN = 0.05
+METRIC_MAX = 3.0
+
+#: Gradient steps and step size for that fit. The objective is smooth, tiny
+#: (one parameter per row), warm-started from the previous fit and re-run only
+#: when a label arrives, so this is a rounding error next to one generation.
+METRIC_STEPS = 60
+METRIC_RATE = 0.15
+
+#: How much a "distinct" label is worth against a "similar" one. The top row
+#: is the DEFAULT answer - the one an idle hand parks on - while the middle
+#: row is the exceptional claim somebody had to mean. Weighting them equally
+#: would let a habit of never leaving row one read as evidence that every
+#: dimension is vividly visible. At 0.35 a distinct label still counts, but
+#: three of them are needed to answer one deliberate "these are the same".
+#:
+#: THE DISCOUNT DOES NOT APPLY TO A PROBE'S ANSWER. A probe duel (see
+#: _probe_duel) is shown precisely BECAUSE the metric expects it to look
+#: identical, so "distinct" there is not an idle hand parking on the default
+#: row - it is the model being contradicted on a question it asked. Measured:
+#: discounted, ten such answers moved a wrongly-shrunk weight from 0.134 to
+#: 0.170, and since probes arrive once in PROBE_MEAN duels that is a recovery
+#: path of several hundred duels, i.e. none at all. At full weight the same
+#: ten answers clear the gate.
+DISTINCT_WEIGHT = 0.35
+
+#: Mean period of the censoring probe - the duel the LEARNED metric refuses
+#: and the PRIOR metric would have allowed. Rarer than the other tactics
+#: because it deliberately asks a question that may be unanswerable ("these
+#: two look identical"), which is a real cost to the user; often enough that
+#: a dimension shrunk by a few early labels gets re-examined within a session
+#: rather than being written off for good. Inert until the metric has
+#: actually moved: with every weight at its prior there is no pair that one
+#: gate refuses and the other allows, so the tactic finds nothing and falls
+#: through to Thompson like any other coin.
+PROBE_MEAN = 16
+
 #: Candidates drawn per space-filling pick during the seed duels.
 SEED_BATCH = 64
 
@@ -684,6 +873,11 @@ class Space:
     def __init__(self, dimensions):
         self.dimensions = list(dimensions)
         self._numeric = np.array([d.numeric for d in self.dimensions], dtype=bool)
+        # How much each dimension counts toward `separation`, LEARNED from
+        # the panel's similarity row - see METRIC_SHRINK and _fit_metric.
+        # All ones is the hand-written metric this started as, and is what a
+        # session with no similarity labels keeps.
+        self.weights = [1.0] * len(self.dimensions)
         # (weight dim index, pick dim index) for every conditional weight -
         # resolved by IDENTITY, because the parent is the instance the caller
         # paired it with, not any dimension that happens to look alike.
@@ -750,23 +944,73 @@ class Space:
             int(v) if d.kind == Dimension.CHOICE else round(float(v), 6)
             for d, v in zip(self.dimensions, point))
 
-    def separation(self, a, b):
-        """How far apart two configurations are, in "visible change" units.
+    def deltas(self, a, b):
+        """The UNWEIGHTED per-dimension distances between two points.
 
         A differing category counts 1 - two models are either the same model
         or a different one, there is no half. A range dimension counts the
         fraction of its own span that separates the two values, so the number
-        means the same thing whether the knob runs 0..1 or 0.5..1.5. See
-        MIN_DUEL_SEPARATION for what it is for.
+        means the same thing whether the knob runs 0..1 or 0.5..1.5.
+
+        These are also the FEATURES the similarity fit runs on (see
+        _fit_metric): "which rows differ between the two images the user just
+        called the same, and by how much" is exactly this vector.
         """
-        total = 0.0
+        values = []
         for dimension, x, y in zip(self.dimensions, a, b):
             if dimension.kind == Dimension.CHOICE:
-                total += 0.0 if int(x) == int(y) else 1.0
+                values.append(0.0 if int(x) == int(y) else 1.0)
+            else:
+                span = dimension.high - dimension.low
+                values.append(abs(float(x) - float(y)) / span if span > 0 else 0.0)
+        return values
+
+    def separation(self, a, b):
+        """How far apart two configurations are, in "visible change" units -
+        the per-dimension distances above, each scaled by what the similarity
+        row has taught about that dimension.
+
+        THE ONE FUNCTION EVERY DISTANCE TEST CALLS. Whether a duel is worth
+        asking, how different a keeper has to be, what a collage may hold
+        together and how many distinct good answers the space has are all
+        this number against a threshold - so `weights` moving is the whole of
+        how a learned metric reaches them. See MIN_DUEL_SEPARATION.
+        """
+        total = 0.0
+        for weight, delta in zip(self.weights, self.deltas(a, b)):
+            total += weight * delta
+        return total
+
+    def raw_separation(self, a, b):
+        """`separation` under the PRIOR weights - the metric as it was before
+        any similarity label. Only _probe_duel wants this: the pair worth
+        probing is the one these two disagree about."""
+        return sum(self.deltas(a, b))
+
+    def separations(self, points):
+        """`separation` for a whole batch at once: the pairwise matrix.
+
+        Same arithmetic as the scalar version, in numpy - the capacity
+        estimate asks about every pair of a few hundred draws, which is tens
+        of thousands of calls per graded duel, and that is a tenth of a
+        second of Python for a number nobody would wait for.
+        """
+        if not points:
+            return np.zeros((0, 0))
+        values = np.asarray(points, dtype=float)
+        total = np.zeros((len(points), len(points)))
+        for index, dimension in enumerate(self.dimensions):
+            weight = self.weights[index]
+            column = values[:, index]
+            delta = np.abs(column[:, None] - column[None, :])
+            if dimension.kind == Dimension.CHOICE:
+                # An index is an exact small integer in a float array, so the
+                # tolerance is only there to say "not the same category".
+                total += weight * (delta > 1e-9).astype(float)
             else:
                 span = dimension.high - dimension.low
                 if span > 0:
-                    total += abs(float(x) - float(y)) / span
+                    total += weight * delta / span
         return total
 
     def encode(self, points):
@@ -813,6 +1057,17 @@ class PreferenceSearch:
         # a verdict's statement about index_b against the prior mean.
         self.observations = []
         self.duels = 0              # graded duels + verdicts, NOT len(observations)
+        # (point_a, point_b, distinct, mass) from the panel's top two rows -
+        # see THE THIRD ROW. BY VALUE, not by index into self.points: these
+        # outlive the observation cap (_forget_oldest rebuilds the point
+        # list, which would silently reindex them), and what they are about
+        # is a pair of CONFIGURATIONS, not a pair of graded duels. `mass` is
+        # how much the fit believes each one - see DISTINCT_WEIGHT.
+        self.similarities = []
+        # Pairs the censoring probe asked about, by unordered key. An answer
+        # to one of these is worth full weight however it lands: the model
+        # asked, so it does not get to discount the reply.
+        self._probed = set()
 
         self._asked = {}            # unordered pair key -> times asked
         self._shown = []            # every point ever put in front of the user
@@ -829,6 +1084,12 @@ class PreferenceSearch:
         # is already made and reusable". None (the default, and what every
         # test without a host runs under) means every side costs a
         # generation - the cost-blind behaviour. See THE PRICE OF A QUESTION.
+        # Which tactic produced the duel on screen, when that is something
+        # the user needs told. Only the censoring probe sets it: that duel
+        # is SUPPOSED to look like the same image twice, which without a
+        # word of explanation reads as the search having broken.
+        self.last_tactic = None
+
         self.reuse_probe = None
         self._reuse_streak = 0      # consecutive duels with both sides cached
         self._probe_memo = {}       # this duel's probe answers, by point key
@@ -871,10 +1132,27 @@ class PreferenceSearch:
             del self._interesting[0]
 
     def observe(self, point_a, point_b, grade, disliked=False,
-                interesting_a=False, interesting_b=False):
+                interesting_a=False, interesting_b=False, similar=None):
         """Record one graded duel. `grade` is 0..10, 0 = A far better.
 
-        `disliked` is the panel's second row: the SAME 0..10 comparison,
+        `similar` is which of the panel's top two rows the click landed on -
+        True for "rather SIMILAR samples, and we are on track", False for
+        "rather distinct", None when the answer carries no such verdict (the
+        dislike row, or any caller that does not ask the question). It is not
+        a grade and it never touches the ordering: it trains the SEPARATION
+        METRIC - see THE THIRD ROW in the module docstring and _fit_metric -
+        which is what decides whether a duel is worth asking at all, how
+        different a keeper has to be, and what a collage may hold together.
+
+        `similar=True` also records an extra TIE observation on the pair, and
+        that is not double-counting: two configurations that look the same
+        must be worth the same, which is a stronger and more reliable claim
+        than the grade beside it (a soft label a person assigns loosely). If
+        the grade on that row says one side is slightly ahead, both
+        statements are on the record and the posterior settles between them,
+        which is the honest outcome.
+
+        `disliked` is the panel's bottom row: the SAME 0..10 comparison,
         clicked there instead of the normal row when the user dislikes BOTH
         sides. That is a feeling a person has the moment a pair appears and
         can report at no extra cost - the click that grades the duel simply
@@ -918,6 +1196,18 @@ class PreferenceSearch:
         if disliked:
             for index in (index_a, index_b):
                 self.observations.append((None, index, DISLIKED_P))
+        if similar is not None:
+            mass = 1.0
+            if not similar and self._pair_key(point_a, point_b) not in self._probed:
+                mass = DISTINCT_WEIGHT
+            self.similarities.append(
+                (tuple(point_a), tuple(point_b), not bool(similar), mass))
+            if similar:
+                # "The same image" implies "worth the same" - see the
+                # docstring. Recorded as a second tie on the pair, which is
+                # the vocabulary the likelihood already speaks.
+                self.observations.append((index_a, index_b, 0.5))
+            self._fit_metric()
         if interesting_a:
             self.mark_interesting(point_a)
         if interesting_b:
@@ -948,6 +1238,71 @@ class PreferenceSearch:
             rebuilt.append((None if a is None else self._row(old_points[a]),
                             self._row(old_points[b]), p))
         self.observations = rebuilt
+
+    # -- the separation metric -------------------------------------------
+
+    def _fit_metric(self):
+        """Refit `space.weights` from the similarity labels.
+
+        THE MODEL IS NOISY-OR. Each dimension independently has some rate of
+        producing a visible change; the distance between two configurations
+        is the sum of the rates of the dimensions that differ (scaled, for a
+        range dimension, by how far); and
+
+            P(the pair looks distinct) = 1 - exp(-distance)
+
+        which is just "distinct unless every differing dimension happened to
+        be invisible". It is the right shape for the question - a difference
+        somewhere is enough, and differences accumulate rather than average -
+        and it has ONE PARAMETER PER ROW, so a dozen labels are already
+        informative and there is nothing exotic for it to overfit into.
+
+        The log-likelihood is concave in the distance and the distance is
+        linear in the weights, so the objective is smooth and well behaved;
+        weights are optimized in the log so they stay positive, warm-started
+        from the previous fit, and pulled toward 1 - the hand-written metric
+        - by METRIC_SHRINK. With no labels every weight IS 1 and every
+        distance test in the engine behaves exactly as it did before this
+        existed, which is the property that makes the feature safe to ship.
+
+        The clamps at the end are not cosmetic: see METRIC_MIN for why a
+        dimension must never be allowed to reach zero.
+        """
+        if not self.similarities:
+            self.space.weights = [1.0] * len(self.space.dimensions)
+            return
+        features = np.array(
+            [self.space.deltas(a, b) for a, b, _d, _m in self.similarities],
+            dtype=float)
+        distinct = np.array([1.0 if d else 0.0
+                             for _a, _b, d, _m in self.similarities])
+        # Assigned when the label was recorded - see DISTINCT_WEIGHT: the top
+        # row is where an idle hand parks, so an undirected "distinct" label
+        # is worth less than a deliberate "similar" one, while an answer to a
+        # duel the probe ASKED counts in full.
+        mass = np.array([m for _a, _b, _d, m in self.similarities])
+
+        v = np.log(np.clip(np.array(self.space.weights, dtype=float),
+                           METRIC_MIN, METRIC_MAX))
+        for _ in range(METRIC_STEPS):
+            weights = np.exp(v)
+            distance = np.maximum(features @ weights, 1e-6)
+            # d/d(distance) of the log-likelihood: the distinct term wants
+            # distance LARGER (its derivative is the inverse odds of having
+            # been visible), the similar term wants it smaller, flatly.
+            survival = np.exp(-distance)
+            slope = mass * (distinct * survival / np.maximum(1.0 - survival, 1e-12)
+                            - (1.0 - distinct))
+            # Chain through distance = features @ exp(v), plus the shrinkage
+            # pull toward v = 0 (weight 1).
+            gradient = (slope @ features) * weights - 2.0 * METRIC_SHRINK * v
+            step = METRIC_RATE * gradient / max(len(self.similarities), 1)
+            # A hard cap per step rather than a line search: the objective is
+            # tiny and re-fitted every label, so a slightly slow climb costs
+            # nothing and an overshoot on one emphatic label costs a metric.
+            v = v + np.clip(step, -0.25, 0.25)
+            v = np.clip(v, math.log(METRIC_MIN), math.log(METRIC_MAX))
+        self.space.weights = [float(w) for w in np.exp(v)]
 
     # -- the model -------------------------------------------------------
 
@@ -1557,6 +1912,44 @@ class PreferenceSearch:
             return a, b
         return None
 
+    def _probe_duel(self):
+        """A pair the LEARNED metric refuses and the PRIOR metric would have
+        allowed - or None when the two agree, which is most of the time.
+
+        THE ANSWER TO CENSORED FEEDBACK, and the reason the learned metric is
+        safe to act on. Every duel path in this class filters on separation,
+        the bluff included, so the moment a dimension's weight drops below
+        the gate the search stops asking about it - and therefore stops being
+        TOLD about it. The estimate would confirm itself forever, on however
+        few labels shrank it, and a dimension wrongly written off in the
+        first ten duels would stay written off for the session.
+
+        So this asks exactly that question and nothing else: a pair differing
+        in the shrunk directions, one the user would have been shown before
+        the metric moved. A "distinct" answer pulls the weight back up; a
+        "similar" answer confirms it and costs the one duel. Inert by
+        construction while the weights are at their prior - the two gates
+        then agree everywhere and there is no such pair to find.
+        """
+        for _ in range(64):
+            a = self.space.sample(self.rng)
+            b = self.space.perturb(a, self.rng, count=int(self.rng.integers(1, 3)))
+            if self.space.key(a) == self.space.key(b):
+                continue
+            if self.space.separation(a, b) >= MIN_DUEL_SEPARATION:
+                continue          # the learned metric would ask this anyway
+            if self.space.raw_separation(a, b) < MIN_DUEL_SEPARATION:
+                continue          # both metrics refuse it - genuinely too alike
+            if self._times_asked(a, b) >= MAX_PAIR_REPEATS:
+                continue
+            # Remembered so that the answer counts in full - see
+            # DISTINCT_WEIGHT. Without this the probe asks a question whose
+            # reply it then discounts, and the recovery path it exists to
+            # provide is hundreds of duels long.
+            self._probed.add(self._pair_key(a, b))
+            return a, b
+        return None
+
     def _void_duel(self):
         """A pair from the unvisited reaches of the space, or None.
 
@@ -1632,6 +2025,7 @@ class PreferenceSearch:
         # changes between duels (this duel's own renders enter it), never
         # during one selection.
         self._probe_memo = {}
+        self.last_tactic = None
         if self.duels < self.seed_duels:
             return self._remember(*self._seed_duel())
 
@@ -1692,19 +2086,24 @@ class PreferenceSearch:
             if duel is not None:
                 return self._remember(*duel)
 
-        # The stochastic tactics - see BLUFF_MEAN / VOID_MEAN / RIVAL_MEAN.
-        # One roll, three bands, so each fires with exactly its own rate and
-        # at most one per duel. Below the surprise follow-up and the dislike
-        # redirect (a hot trail and "this is not going well" both outrank a
-        # coin), above the Thompson draw - whose share the coins dilute,
-        # which is the point: Thompson is the mechanism that locks in.
+        # The stochastic tactics - see BLUFF_MEAN / VOID_MEAN / RIVAL_MEAN /
+        # PROBE_MEAN. One roll, four bands, so each fires with exactly its
+        # own rate and at most one per duel. Below the surprise follow-up and
+        # the dislike redirect (a hot trail and "this is not going well" both
+        # outrank a coin), above the Thompson draw - whose share the coins
+        # dilute, which is the point: Thompson is the mechanism that locks in.
         roll = self.rng.random()
-        if roll < 1.0 / BLUFF_MEAN:
+        edge = 1.0 / BLUFF_MEAN
+        if roll < edge:
             duel = self._bluff_duel()
-        elif roll < 1.0 / BLUFF_MEAN + 1.0 / VOID_MEAN:
+        elif roll < (edge := edge + 1.0 / VOID_MEAN):
             duel = self._void_duel()
-        elif roll < 1.0 / BLUFF_MEAN + 1.0 / VOID_MEAN + 1.0 / RIVAL_MEAN:
+        elif roll < (edge := edge + 1.0 / RIVAL_MEAN):
             duel = self._rival_duel(attractors)
+        elif roll < edge + 1.0 / PROBE_MEAN:
+            duel = self._probe_duel()
+            # The one tactic the panel has to announce - see last_tactic.
+            self.last_tactic = "probe" if duel is not None else None
         else:
             duel = None
         if duel is not None:
@@ -1850,9 +2249,15 @@ class PreferenceSearch:
         keepers = self.frontier()
         return keepers[0] if keepers else self.space.baseline()
 
-    def _candidates(self, centers, per_center=24):
+    def _candidates(self, centers, per_center=24, pool=POOL_SIZE):
         """A candidate set for frontier/portfolio: everything observed, the
-        neighbourhoods of `centers`, and uniform draws up to POOL_SIZE."""
+        neighbourhoods of `centers`, and uniform draws up to `pool`.
+
+        `pool` and `per_center` are arguments rather than constants because
+        `population` asks for as many diverse answers as the user typed into
+        the N box: a set sized for choosing ONE duel cannot hold sixty
+        configurations that are all different from each other.
+        """
         candidates, keys = [], set()
 
         def add(point):
@@ -1867,8 +2272,8 @@ class PreferenceSearch:
             for _ in range(per_center):
                 add(self.space.perturb(center, self.rng,
                                        count=int(self.rng.integers(1, 3))))
-        for _ in range(POOL_SIZE * 4):
-            if len(candidates) >= POOL_SIZE:
+        for _ in range(pool * 4):
+            if len(candidates) >= pool:
                 break
             add(self.space.sample(self.rng))
         return candidates
@@ -2031,6 +2436,148 @@ class PreferenceSearch:
         return self._diverse_top(candidates, means, count, min_separation,
                                  best_first=good)
 
+    # -- how many good answers are there, and what are they ----------------
+    #
+    # The frontier answers "which few should I keep". These two answer the
+    # other half of the same question - how many good answers this taste has
+    # in it at all, and give me that many - which is what turns a search into
+    # a generator: a converged solver is not one recipe, it is a REGION, and
+    # the size of that region is a thing the model can be asked about rather
+    # than a number the user has to guess.
+
+    def _quality(self, means, variances, champion):
+        """Which candidates the model is CONFIDENT are within a judgement
+        noise of the champion - see QUALITY_MARGIN / CAPACITY_CONFIDENCE.
+
+        The marginal posterior variance is used rather than the variance of
+        the difference from the champion, which is what the test is really
+        about. The two differ by the covariance between the point and the
+        champion, which is positive wherever it matters (a candidate near
+        the champion is correlated with it), so ignoring it OVERSTATES the
+        uncertainty and the test is conservative in the safe direction: it
+        can refuse to count a good configuration, never invent one.
+        """
+        margin = QUALITY_MARGIN * max(self._hyper[2], 1e-3)
+        deviation = np.sqrt(np.maximum(variances, 1e-12))
+        return _cdf((means - champion + margin) / deviation) >= CAPACITY_CONFIDENCE
+
+    def _champion_score(self, means):
+        """The utility the quality floor is measured against.
+
+        The best posterior mean anywhere it has been evaluated - the observed
+        points included, because a batch of uniform draws in a large space
+        will usually miss the basin the search spent its duels proving, and a
+        floor set from the draws alone would drift down with them.
+        """
+        observed = float(self.f.max()) if len(self.f) else 0.0
+        return max(observed, float(means.max()) if len(means) else 0.0)
+
+    def capacity(self, min_separation=MIN_DUEL_SEPARATION):
+        """How many DISTINCTLY DIFFERENT good configurations the model
+        believes the space holds, as one integer.
+
+        The estimate, in three steps - see CAPACITY_BATCH:
+
+        1. `q`, the share of CAPACITY_BATCH uniform draws that clear the
+           quality floor. The space is huge and the good region is not a
+           shape that can be integrated, so its volume is measured the way
+           volumes of awkward regions are always measured: by sampling. The
+           number of good POINTS is then `G = q * |space|`.
+        2. `v`, how many of those good draws are the same answer twice: the
+           mean count of good draws within `min_separation` of a good draw,
+           itself included. With m good draws out of G good points, a
+           separation ball holding `b` good points shows up as
+           `v = 1 + (m - 1)(b - 1)/G`, which is solved for `b`.
+        3. `G / b` - the good points, divided by how many of them are
+           indistinguishable from each other. That is the number of good
+           samples a person could actually TELL APART.
+
+        Both limits behave: with no collisions among the draws (`v = 1`) the
+        answer is G, the most the sample can support; with the draws
+        saturating a small good region (`G ~ m`) it is `m / v`, the packing
+        count measured directly. The floor is the keeper count - the frontier
+        has already proved those are good and different - so a converged
+        search never reports fewer answers than it is holding.
+        """
+        if not self.observations:
+            return 0
+        self._fit()
+        # The same floor `population` is guaranteed to reach: the frontier
+        # has already proved these are good and different, so a capacity
+        # under the keeper count would be the model contradicting itself.
+        floor = max(1, len(self._keepers or self.frontier()))
+        size = self.space.size
+        if size is None:
+            # A continuous dimension with no step grid: the space has no
+            # point count, so neither has this. "More than you will use" is
+            # the honest reading, and it is what the cap says.
+            return CAPACITY_MAX
+        # NOT deduplicated. A repeated draw is a collision, and collisions
+        # are exactly what step 2 measures - dropping them would make a tiny
+        # space look like an inexhaustible one.
+        draws = [self.space.sample(self.rng) for _ in range(CAPACITY_BATCH)]
+        means, cov = self._posterior(draws)
+        good = self._quality(means, np.diag(cov), self._champion_score(means))
+        count = int(np.count_nonzero(good))
+        if not count:
+            return floor
+        total = count / float(len(draws)) * size
+        separations = self.space.separations(
+            [point for point, keep in zip(draws, good) if keep])
+        neighbours = float(np.mean(
+            np.count_nonzero(separations < min_separation, axis=1)))
+        ball = 1.0 + (neighbours - 1.0) * total / max(count - 1, 1)
+        estimate = total / max(ball, 1.0)
+        return int(min(max(round(estimate), floor), CAPACITY_MAX))
+
+    def population(self, count, min_separation=MIN_DUEL_SEPARATION):
+        """Up to `count` high-quality configurations, all visibly different
+        from each other - the extraction interface behind N-GOOD.
+
+        FEWER THAN ASKED IS AN ANSWER. Nothing here relaxes the quality floor
+        or the separation to fill a quota: a collage padded with mediocre or
+        near-duplicate entries would misreport the model's own belief, and
+        the number that was asked for came from `capacity`, which is an
+        estimate. The caller says how many it got.
+
+        VARIED PER CALL, and that is what makes pressing again worth
+        anything: the candidates are ranked by a DRAW from the posterior
+        rather than by its mean (the same Thompson logic the duels are
+        chosen by), so each press ranks the good region differently while
+        every entry still has to clear the same floor. Two collages from one
+        solver state are two different samples of one taste, not the same
+        list twice.
+
+        THE KEEPERS ARE ALWAYS ELIGIBLE. Everything else has to clear the
+        quality floor, which carries the posterior uncertainty and therefore
+        admits nothing at all early in a search - but the frontier has
+        already proved the keepers are good and different, by its own floor,
+        so an early press returns them rather than an empty collage. It is
+        also what keeps this function's answer consistent with `capacity`'s,
+        which floors at the same list.
+        """
+        count = max(int(count), 1)
+        if not self.observations:
+            return []
+        self._fit()
+        keepers = list(self._keepers or self.frontier())
+        centers = self._diverse_centers(self.f, FRONTIER_SIZE)
+        seen = {self.space.key(point) for point in keepers}
+        candidates = keepers + [
+            point for point in self._candidates(
+                centers,
+                per_center=int(min(max(24, count * 4), POPULATION_POOL_MAX)),
+                pool=int(min(max(POOL_SIZE, count * POPULATION_OVERSAMPLE),
+                             POPULATION_POOL_MAX)))
+            if self.space.key(point) not in seen]
+        means, cov = self._posterior(candidates)
+        good = self._quality(means, np.diag(cov), self._champion_score(means))
+        good[:len(keepers)] = True
+        draw = self._sample(means, cov, 1)[0]
+        keep = np.flatnonzero(good)
+        return self._diverse_top([candidates[int(i)] for i in keep],
+                                 draw[keep], count, min_separation)
+
     def confidence(self):
         """How sure the model is that `best()` beats a typical rival, 0..1.
 
@@ -2062,7 +2609,15 @@ class PreferenceSearch:
             # internal list also holds unproven ones, which would make "N
             # distinct looks" a promise the keepers then fail to keep.
             "attractors": len(self._keepers),
+            # How many good answers the space holds, not how many the
+            # frontier keeps - see `capacity`. This is what the panel's N box
+            # shows and what N-GOOD spends generations on.
+            "capacity": self.capacity(),
             "confidence": self.confidence(),
+            # What the similarity row has taught about each row's visibility
+            # - all ones until it has been used. See _fit_metric.
+            "metric": list(self.space.weights),
+            "similarities": len(self.similarities),
             "lengthscale": self._hyper[0],
             "theta": self._hyper[1],
             "noise": self._hyper[2],

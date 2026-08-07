@@ -618,6 +618,245 @@ def test_search(search, numpy):
           "of range")
 
 
+def test_similarity_metric(search, numpy):
+    """The third row: what a comparison cannot say.
+
+    Separation decides whether a duel is worth asking, how different a
+    keeper has to be, and what a collage may hold together - and it used to
+    be a hand-written constant. The similarity row makes it LEARNED, so what
+    is tested is the whole loop, in the order it can break:
+
+    * NOTHING CHANGES WITHOUT LABELS. Every weight sits at the prior, so a
+      session that never uses the row is bit-identical to one from before
+      the row existed. This is the property that makes the feature safe, and
+      it is the first thing a bad fit would break.
+    * The fit SEPARATES an inert dimension from a vivid one, and leaves
+      dimensions nobody labelled alone.
+    * A "similar" mark also ties the pair on the UTILITY side - two images
+      that look the same are worth the same, which is a stronger claim than
+      the soft grade beside it.
+    * THE CENSORING DEFENCE HOLDS. Once a weight drops under the gate the
+      search stops asking about that dimension and would never hear about it
+      again - the estimate would confirm itself forever. The probe asks
+      exactly the duel the learned metric now refuses, its answers count in
+      full, and it goes quiet again once the weight recovers.
+    """
+    space = build_space(search)          # model, factor, prompt, lora
+    fresh = search.PreferenceSearch(space, seed=1)
+    check(list(fresh.space.weights) == [1.0] * len(space.dimensions),
+          "a fresh space did not start at the hand-written metric (%r) - "
+          "every distance threshold in the engine is calibrated against "
+          "'one differing category counts 1', so anything else silently "
+          "recalibrates all of them" % (list(fresh.space.weights),))
+
+    rng = numpy.random.default_rng(0)
+    engine = search.PreferenceSearch(build_space(search), seed=3)
+    for _ in range(6):
+        a = engine.space.sample(rng)
+        engine.observe(a, engine.space.perturb(a, rng), 6)
+    check(list(engine.space.weights) == [1.0] * len(space.dimensions),
+          "six graded duels with no similarity verdict moved the separation "
+          "metric to %r. A session that never touches the new row has to "
+          "behave exactly as it did before the row existed"
+          % (list(engine.space.weights),))
+
+    # Teach it that the prompt row is visually inert and the model row is not.
+    def label(engine, index, similar, grade=5, count=20):
+        for _ in range(count):
+            a = engine.space.sample(rng)
+            b = list(a)
+            b[index] = (int(a[index]) + 1) % len(space.dimensions[index].labels)
+            engine.observe(a, tuple(b), grade, similar=similar)
+
+    label(engine, 2, True)               # prompt: same image every time
+    label(engine, 0, False)              # model: always tells them apart
+    weights = engine.space.weights
+    check(weights[2] < 0.5 * weights[0],
+          "after twenty 'these look the same' labels on the prompt row and "
+          "twenty 'distinct' on the model row, the metric weighs them %.3f "
+          "and %.3f. The whole point of the row is that the search stops "
+          "spending two generations a question on a knob the user has said "
+          "does nothing" % (weights[2], weights[0]))
+    check(abs(weights[1] - 1.0) < 1e-6 and abs(weights[3] - 1.0) < 1e-6,
+          "dimensions nobody labelled drifted to %r - the fit is shrunk to "
+          "the prior precisely so that evidence about one row cannot "
+          "silently restate the others" % ([weights[1], weights[3]],))
+
+    # The utility dividend: a "similar" mark records a tie of its own.
+    tied = search.PreferenceSearch(build_space(search), seed=7)
+    a = tied.space.baseline()
+    b = tied.space.perturb(a, numpy.random.default_rng(2))
+    before = len(tied.observations)
+    tied.observe(a, b, 7, similar=True)
+    check(len(tied.observations) == before + 2,
+          "a 'similar' verdict added %d observation(s), not two. Two images "
+          "that look the same are worth the same, which is a stronger claim "
+          "than the loosely-assigned grade beside it - dropping it throws "
+          "away the more reliable half of the answer"
+          % (len(tied.observations) - before))
+
+    # The censoring defence, end to end.
+    blind = search.PreferenceSearch(build_space(search), seed=5)
+    check(blind._probe_duel() is None,
+          "the censoring probe found a pair to ask about while the metric "
+          "was still at its prior. It exists to ask what the LEARNED metric "
+          "refuses and the prior allows - with the two identical there is no "
+          "such pair, and firing anyway spends duels on nothing")
+    label(blind, 2, True, count=40)
+    gate = search.MIN_DUEL_SEPARATION
+    shrunk = blind.space.separation((0, 0, 0, 0.5), (0, 0, 1, 0.5))
+    check(shrunk < gate,
+          "forty 'these look the same' labels left the prompt row at %.3f, "
+          "still above the %.2f gate - the metric is not actually reaching "
+          "the decision it is supposed to inform" % (shrunk, gate))
+    probed = blind._probe_duel()
+    check(probed is not None
+          and blind.space.separation(*probed) < gate <= blind.space.raw_separation(*probed),
+          "with the prompt row shrunk under the gate the probe did not "
+          "produce the one duel that can un-shrink it (%r). Every duel path "
+          "filters on separation, so without this the search never asks "
+          "again, never hears otherwise, and the estimate confirms itself "
+          "for the rest of the session" % (probed,))
+    for _ in range(6):
+        pair = blind._probe_duel()
+        if pair is None:
+            break
+        blind.observe(pair[0], pair[1], 8, similar=False)
+    check(blind.space.separation((0, 0, 0, 0.5), (0, 0, 1, 0.5)) >= gate,
+          "six probe answers of 'actually these are distinct' did not lift "
+          "the prompt row back over the gate (%.3f). Probes arrive once in "
+          "PROBE_MEAN duels, so a recovery needing more than a handful of "
+          "them is a recovery path hundreds of duels long - which is none"
+          % blind.space.separation((0, 0, 0, 0.5), (0, 0, 1, 0.5)))
+    check(blind._probe_duel() is None,
+          "the probe kept firing after the weight it was defending had "
+          "recovered - it asks deliberately hard-to-answer duels, so it has "
+          "to go quiet the moment the two metrics agree again")
+
+
+def test_capacity(search, numpy):
+    """HOW MANY good answers are there, and can they be extracted?
+
+    `capacity` is the number the panel's N box shows and the number N-GOOD
+    spends generations on, so what is tested is that it MEANS something:
+
+    * it is bounded below by the keepers - the frontier has already proved
+      those are good and different, so a capacity under their count would
+      be the model contradicting itself, and N-GOOD would be offered fewer
+      samples than STOP is about to print recipes for;
+    * it TRACKS THE TASTE. A taste with one sharp optimum has a handful of
+      good answers and a taste where only the model matters has a whole
+      subspace of them. This is the test with teeth: a "capacity" that
+      reported the same number for both would be reporting the search's
+      length, or the space's size, or a constant - all of which are easier
+      to compute and none of which is the question;
+    * it does not run ahead of the evidence. Before the model can tell a
+      champion from a typical configuration there is no meaningful count,
+      and reporting the space's size at duel one would send the user off to
+      render a thousand images of nothing.
+
+    And `population(n)` is the extractor that has to agree with it: every
+    entry mutually distinguishable (the SAME MIN_DUEL_SEPARATION bar that
+    decides a duel is worth asking - a collage of near-duplicates is the
+    one failure that wastes a GPU-hour and looks like success), never more
+    than asked, and DIFFERENT between presses, which is the whole reason
+    the button can be pressed twice.
+    """
+    space = build_space(search)
+
+    #: Only the model matters - so every combination of factor, prompt and
+    #: weight on the right model is equally good, and there are hundreds.
+    def broad(point):
+        return {0: -0.6, 1: 1.0, 2: -0.6, 3: -0.6}[int(point[0])]
+
+    def session(taste, duels, seed=5):
+        rng = numpy.random.default_rng(1000 + seed)
+        engine = search.PreferenceSearch(build_space(search), seed=seed)
+        for _ in range(duels):
+            a, b = engine.next_duel()
+            gap = taste(b) - taste(a) + rng.normal(0, 0.3)
+            engine.observe(a, b, round(min(max(5 + 5 * gap / 1.2, 0), 10)),
+                           disliked=(taste(a) < 0 and taste(b) < 0))
+        engine.frontier()
+        return engine
+
+    fresh = search.PreferenceSearch(space, seed=1)
+    check(fresh.capacity() == 0,
+          "a solver with no observations claimed %d good configurations - it "
+          "has not been told anything, so the honest answer is none and the "
+          "N box must not offer to spend generations on it"
+          % fresh.capacity())
+
+    # Over several seeds, because one search is one sample of a stochastic
+    # process and the claim is about the ESTIMATOR, not about a run.
+    narrows, broads = [], []
+    for seed in (5, 6, 7):
+        one, other = session(taste, 50, seed), session(broad, 50, seed)
+        for engine, counts, name in ((one, narrows, "one sharp optimum"),
+                                     (other, broads, "a good subspace")):
+            count = engine.capacity()
+            counts.append(count)
+            check(count >= len(engine._keepers),
+                  "capacity reported %d good configurations under a taste "
+                  "with %s while the frontier was holding %d keepers it had "
+                  "already proved were good AND different - the model "
+                  "contradicting itself, and N-GOOD offering less than STOP "
+                  "is about to print" % (count, name, len(engine._keepers)))
+    narrows.sort()
+    broads.sort()
+    check(broads[1] > narrows[1],
+          "capacity's median over three seeds was %r for a taste with ONE "
+          "optimum and %r for a taste where three whole dimensions are free "
+          "- the second space genuinely holds hundreds of good answers and "
+          "the first holds a handful, so a number that does not separate "
+          "them is not measuring the good region at all" % (narrows, broads))
+
+    early = session(broad, 1)
+    space_size = build_space(search).size
+    check(early.capacity() * 20 <= space_size,
+          "after ONE graded duel capacity claimed %d of the space's %d "
+          "configurations were good. Nothing is known yet - every unexplored "
+          "point sits at the prior - so a number like that is the flat "
+          "posterior being counted rather than a taste, and it invites the "
+          "user to spend a GPU-hour on it (measured at 56-155 before the "
+          "quality floor was made to clear the prior; see "
+          "CAPACITY_CONFIDENCE)" % (early.capacity(), space_size))
+
+    broadly = session(broad, 50)
+    wanted = min(broadly.capacity(), 24)
+    picks = broadly.population(wanted)
+    check(0 < len(picks) <= wanted,
+          "population(%d) returned %d configurations - it must never return "
+          "more than asked (the count is a GPU budget) and never nothing "
+          "when the capacity it agrees with says there are answers"
+          % (wanted, len(picks)))
+    for index, one in enumerate(picks):
+        for other in picks[index + 1:]:
+            gap = broadly.space.separation(one, other)
+            check(gap >= search.MIN_DUEL_SEPARATION - 1e-9,
+                  "two entries of a collage are %.3f apart, under the %.2f it "
+                  "takes to SEE a difference - the button promises distinctly "
+                  "different samples, and a grid of the same image rendered "
+                  "twenty times costs a GPU-hour to discover"
+                  % (gap, search.MIN_DUEL_SEPARATION))
+
+    again = broadly.population(wanted)
+    keys = {broadly.space.key(point) for point in picks}
+    repeat = {broadly.space.key(point) for point in again}
+    check(keys != repeat,
+          "two presses of N-GOOD produced the identical set of %d "
+          "configurations - the button exists to be pressed again, and a "
+          "second collage that is the first one re-rendered is a second "
+          "GPU-hour spent on nothing" % len(keys))
+
+    status = broadly.status()
+    check(status.get("capacity") == broadly.capacity() or
+          abs(status["capacity"] - broadly.capacity()) <= 2,
+          "status() reported a capacity of %r against capacity()'s %r - the "
+          "panel reads the first and the button spends the second"
+          % (status.get("capacity"), broadly.capacity()))
+
+
 def test_stochastic_tactics(search, numpy):
     """The three coin-fired tactics: they fire at their mean rates, and each
     one asks the question it claims to ask.
@@ -1003,26 +1242,26 @@ def test_recipe(dna, search):
         # Both characters the encoding has to survive, in one prompt: `[a|b]`
         # is prompt-editing syntax and `100%` is English, so neither is exotic.
         Gene(Gene.KIND_PROMPT, 2, values=["a house | a 100% shed", "a barn"],
-             prompt_mode=dna.PROMPT_REPLACE, weight_low=0.5, weight_high=1.5,
-             weight_step=0.05),
+             prompt_mode=dna.PROMPT_REPLACE, weights=[0.5, 1.0, 1.5]),
         Gene(Gene.KIND_PROMPT, 3, values=["golden hour", "moonlight"],
-             prompt_mode=dna.PROMPT_APPEND, weight_low=0.5, weight_high=1.5,
-             weight_step=0.05),
+             prompt_mode=dna.PROMPT_APPEND, weights=[0.8, 1.2]),
         Gene(Gene.KIND_LORA, 4, loras=["add_detail", "film_grain"],
-             weight_low=0.0, weight_high=1.0, weight_step=0.05),
+             weights=[0.0, 0.6, 1.0]),
         Gene(Gene.KIND_LORA, 5, loras=["sharpen"],
-             weight_low=0.0, weight_high=1.0, weight_step=0.05),
+             weights=[0.0, 0.6, 1.0]),
     ], search)
 
     space = dna._space(genes, search)
     check(len(space) == 10,
           "six rows declared %d dimensions, not 10. A LoRA row and a Prompt "
           "row are TWO parameters each - which one, and how strongly - and "
-          "the Setting and Profile rows are one each" % len(space))
+          "the Model and Profile rows are one each" % len(space))
 
     # model=depth, factor x1.5, prompt 0 at weight 1 (the one with the
     # separator in it), 'moonlight' at 1.2, film_grain at 0.6, sharpen off.
-    point = (1, 2, 0, 1.0, 1, 1.2, 1, 0.6, 0, 0.0)
+    # The weight entries are INDICES into each row's own weight list - the
+    # weight dimension is an ordered choice now, not a continuous range.
+    point = (1, 2, 0, 1, 1, 1, 1, 1, 0, 0)
 
     prompt = dna._compose_prompt(genes, point, "BASE")
     check(prompt.startswith("a house | a 100% shed, (moonlight:1.2)"),
@@ -1125,26 +1364,51 @@ def test_recipe(dna, search):
               "value that Export cannot read and Set cannot apply" % name)
 
     # -- reading the panel back -------------------------------------------
-    args = [1] + [None] * (dna.MAX_ROWS * dna.ROW_ARGS) + [0, False, True, 0.05]
-    args[1:1 + dna.ROW_ARGS] = ["Unit 0", dna.MODE_PROFILE, "Model", [],
+    # Row slots: target, mode, choices, line, values, prompt_mode, loras,
+    # weights, points - see ROW_ARGS.
+    args = [1] + [None] * (dna.MAX_ROWS * dna.ROW_ARGS) + [False, True]
+    args[1:1 + dna.ROW_ARGS] = ["Unit 0", dna.MODE_PROFILE, [],
                                 "Main", "0.5:1.5:3", dna.PROMPT_REPLACE, "",
-                                0.0, 1.0]
-    rows = dna._read_rows(args, 1, 0.05)
+                                "", "0"]
+    rows = dna._read_rows(args, 1)
     check(len(rows) == 1 and rows[0].kind == Gene.KIND_PROFILE,
           "a Profile row did not read back as one: %r" % (rows,))
     check([round(v, 4) for v in rows[0].values] == [0.5, 1.0, 1.5],
           "'0.5:1.5:3' expanded to %r" % (rows[0].values,))
 
-    args[1:1 + dna.ROW_ARGS] = ["LoRA", dna.MODE_SETTING, "Model", [], "Main",
+    args[1:1 + dna.ROW_ARGS] = ["Unit 0", dna.MODE_MODEL,
+                                ["canny_xl", "depth_xl"], "Main", "",
+                                dna.PROMPT_REPLACE, "", "", "0"]
+    rows = dna._read_rows(args, 1)
+    check(len(rows) == 1 and rows[0].kind == Gene.KIND_SETTING
+          and rows[0].field == "model"
+          and rows[0].values == ["canny_xl", "depth_xl"],
+          "a Model row did not read back as a model gene: %r" % (rows,))
+
+    args[1:1 + dna.ROW_ARGS] = ["LoRA", dna.MODE_MODEL, [], "Main",
                                 "", dna.PROMPT_REPLACE,
-                                "<lora:add_detail:0.8>\nfilm_grain", 0.2, 0.9]
-    rows = dna._read_rows(args, 1, 0.05)
+                                "<lora:add_detail:0.8>\nfilm_grain",
+                                "0.2, 0.9", "0"]
+    rows = dna._read_rows(args, 1)
     check(len(rows) == 1 and rows[0].loras == ["add_detail", "film_grain"],
           "a pasted LoRA tag did not reduce to its name: %r"
           % (rows[0].loras if rows else None,))
-    check(rows and (rows[0].weight_low, rows[0].weight_high) == (0.2, 0.9),
-          "the row's weight range was not read: %r"
-          % ((rows[0].weight_low, rows[0].weight_high) if rows else None,))
+    check(rows and rows[0].weights == [0.2, 0.9],
+          "the row's weight list was not read: %r"
+          % (rows[0].weights if rows else None,))
+
+    # The weights box takes the same interval notation as every other
+    # numeric list, and an EMPTY box means the kind's default grid.
+    args[8] = "0.2:1:5"
+    rows = dna._read_rows(args, 1)
+    check(rows and [round(w, 4) for w in rows[0].weights]
+          == [0.2, 0.4, 0.6, 0.8, 1.0],
+          "'0.2:1:5' expanded to %r" % (rows[0].weights if rows else None,))
+    args[8] = ""
+    rows = dna._read_rows(args, 1)
+    check(rows and rows[0].weights == list(dna.LORA_WEIGHTS),
+          "an empty weights box did not fall back to the default grid: %r"
+          % (rows[0].weights if rows else None,))
 
     # -- two Replace rows are refused -------------------------------------
     try:
@@ -1195,10 +1459,9 @@ def test_recipe(dna, search):
     # -- prompt weights are written in the host's own syntax ---------------
     weighted = dna._build_genes([
         Gene(Gene.KIND_PROMPT, 0, values=["a (round) house"],
-             prompt_mode=dna.PROMPT_APPEND, weight_low=0.5, weight_high=1.5,
-             weight_step=0.05),
+             prompt_mode=dna.PROMPT_APPEND, weights=[0.5, 1.3, 1.5]),
     ], search)
-    text = dna._compose_prompt(weighted, (0, 1.3), "BASE")
+    text = dna._compose_prompt(weighted, (0, 1), "BASE")
     check(text == "BASE, (a \\(round\\) house:1.3)",
           "a weighted prompt came out as %r. Parentheses inside the text have "
           "to be escaped or they close the weight early and turn the rest of "
@@ -1228,9 +1491,9 @@ def test_recipe(dna, search):
           "which value each row landed on is the whole point of it" % line)
     long_prompt = dna._build_genes([
         Gene(Gene.KIND_PROMPT, 0, values=["z" * 400], prompt_mode=dna.PROMPT_APPEND,
-             weight_low=0.5, weight_high=1.5, weight_step=0.05),
+             weights=[0.5, 1.0, 1.5]),
     ], search)
-    trace_line = dna._choices_line(long_prompt, (0, 1.0))
+    trace_line = dna._choices_line(long_prompt, (0, 1))
     check(len(trace_line) < 120,
           "a 400-character prompt produced a %d-character trace line - prompts "
           "have to be cut to %d characters there, or one row's choice fills "
@@ -1246,13 +1509,12 @@ def test_recipe(dna, search):
     payload = {
         "app": dna.WHO, "version": dna.EXPORT_VERSION, "tab": "txt2img",
         "row_count": 2,
-        "rows": [{"target": "LoRA", "mode": "Setting", "field": "Model",
+        "rows": [{"target": "LoRA", "mode": "Model",
                   "choices": [], "line": "Main",
                   "values": "a house | 100% </script> shed",
                   "prompt_mode": "Replace", "loras": "add_detail",
-                  "weight_low": 0.2, "weight_high": 1.0}],
-        "tail": {"vary_seed": False, "render_winner": True,
-                 "weight_step": 0.4},
+                  "weights": "0.2, 0.6, 1", "points": "0"}],
+        "tail": {"vary_seed": False, "resume": True},
         "settings": {"prompt": "</script><script>alert(1)</script>",
                      "u0.enabled": True, "u0.model": "depth_xl [4567ef01]"},
         "canvases": {},
@@ -1312,20 +1574,27 @@ def test_recipe(dna, search):
           "starting fresh")
 
     # -- the default weighted-channel grids -------------------------------
-    check((dna.LORA_WEIGHT_MIN, dna.LORA_WEIGHT_MAX,
-           dna.LORA_WEIGHT_STEP) == (0.2, 1.0, 0.4),
+    check(dna.LORA_WEIGHTS == [0.2, 0.6, 1.0],
           "the default LoRA weight grid is %r, not the three states "
           "0.2 / 0.6 / 1.0. Coarse is the contract: three visible steps per "
           "LoRA keeps a five-LoRA search at 3^5 weight combinations instead "
           "of 21^5, and the 0.2 floor avoids the weight-0 degeneracy where "
-          "every LoRA in a slot is the same image"
-          % ((dna.LORA_WEIGHT_MIN, dna.LORA_WEIGHT_MAX,
-              dna.LORA_WEIGHT_STEP),))
-    check((dna.PROMPT_WEIGHT_MIN, dna.PROMPT_WEIGHT_MAX) == (0.4, 1.2),
-          "the default prompt weight range is %r, not 0.4..1.2 - with the "
-          "0.4 step that is the three states 0.4 / 0.8 / 1.2, straddling 1 "
-          "because de-emphasis and emphasis both live near it"
-          % ((dna.PROMPT_WEIGHT_MIN, dna.PROMPT_WEIGHT_MAX),))
+          "every LoRA in a slot is the same image" % (dna.LORA_WEIGHTS,))
+    check(dna.PROMPT_WEIGHTS == [0.4, 0.8, 1.2],
+          "the default prompt weight grid is %r, not 0.4 / 0.8 / 1.2 - "
+          "straddling 1 because de-emphasis and emphasis both live near it"
+          % (dna.PROMPT_WEIGHTS,))
+    # An ordered choice, not a bag of categories: the weight labels are
+    # numbers, so evidence still transfers between neighbouring weights.
+    lora_dims = Gene(Gene.KIND_LORA, 0, loras=["a", "b"]).dimensions(search)
+    check(len(lora_dims) == 2 and lora_dims[1].numeric
+          and lora_dims[1].parent is lora_dims[0],
+          "a LoRA row's weight list is not an ordered, pick-conditional "
+          "dimension (numeric=%r, parent ok=%r) - either the metric was "
+          "lost (no transfer between 0.5 and 0.6) or the weight is shared "
+          "across picks (the false-transfer the parent link prevents)"
+          % (lora_dims[1].numeric if len(lora_dims) == 2 else None,
+             len(lora_dims) == 2 and lora_dims[1].parent is lora_dims[0]))
 
     # -- the checkbox coercion --------------------------------------------
     check(dna._coerce("u0.enabled", "False") is False,
@@ -1337,7 +1606,7 @@ def test_recipe(dna, search):
 
 
 def test_demo_session(dna):
-    """GOOD/BAD outlive the search - the session and staging mechanics.
+    """GOOD/N-GOOD outlive the search - the session and staging mechanics.
 
     The buttons are the USE of a trained solver, and three behaviours make
     that true rather than aspirational:
@@ -1352,61 +1621,87 @@ def test_demo_session(dna):
     * a staged idle request is served one per run and a stale one is
       dropped, so a press that never became a run cannot turn a later,
       unrelated Generate into a sample render nobody asked for.
+
+    A request carries WHAT WAS ASKED FOR, not merely that something was: the
+    two buttons differ only in the count, and a queue that forgot it would
+    serve a 12-sample collage as one sample.
     """
     import time as _time
 
     session = dna._Session()
-    check(not session.request_demo(True),
+    check(not session.request_demo(),
           "a session with no loop alive accepted a GOOD request - the panel "
           "then never takes the idle path, and pressing the button while "
           "idle does nothing at all")
 
     session.start()
-    check(session.request_demo(True) and session.request_demo(False),
-          "a running session refused a GOOD/BAD press that did not land "
+    check(session.request_demo() and session.request_demo(12),
+          "a running session refused a GOOD/N-GOOD press that did not land "
           "exactly while a duel was awaiting a grade - a press during a "
           "render is a request, not a mistimed click")
-    check(session.await_grade(1) == "demo_good"
-          and session.await_grade(1) == "demo_bad",
-          "queued GOOD/BAD requests did not come back in arrival order")
+    first, second = session.await_grade(), session.await_grade()
+    check(isinstance(first, dna._Demo) and first.count is None,
+          "the first queued press did not come back as the single GOOD "
+          "sample it was (%r)" % (first,))
+    check(isinstance(second, dna._Demo) and second.count == 12,
+          "an N-GOOD press for 12 samples came back as %r - the count is "
+          "what the whole button is, and a queue that drops it renders one "
+          "image where a collage was asked for" % (second,))
 
     session.publish(1, None, None, "waiting")
-    session.request_demo(True)
-    session.grade(7)
-    first = session.await_grade(1)
+    session.request_demo()
+    session.grade(7, similar=True)
+    first = session.await_grade()
     check(isinstance(first, tuple) and first[0] == 7.0,
           "a grade and a queued demo raced and the demo won (%r) - the "
           "grade answers the question on screen and must be served first"
           % (first,))
-    check(session.await_grade(1) == "demo_good",
+    check(first[1] is False and first[2] is True,
+          "the grade came back as %r - the ROW is the verdict, so which one "
+          "the click landed on has to survive the trip to run(): a similar "
+          "click arriving as a plain one silently drops the only signal a "
+          "comparison cannot carry" % (first,))
+    check(isinstance(session.await_grade(), dna._Demo),
           "the queued demo was lost once a grade overtook it")
 
-    session.request_demo(False)
+    session.request_demo()
     session.start()
     check(not session.pending_demos,
           "start() carried a stale demo request into the new search - the "
           "first duel would be interrupted by a sample nobody asked this "
           "session for")
     session.finish("done")
-    check(not session.request_demo(True),
+    check(not session.request_demo(),
           "a finished session still accepted a demo request onto its dead "
           "queue - nothing will ever serve it, and the idle path (which "
           "would) is never taken")
 
     script = dna.Script()
     staged = dna._PENDING_DEMO["txt2img"]
-    staged[:] = [(True, _time.time() - dna.DEMO_STALE_SECONDS - 1),
-                 (False, _time.time())]
-    check(script._pop_demo_request() is False,
+    fresh = dna._Demo(4)
+    staged[:] = [(dna._Demo(), _time.time() - dna.DEMO_STALE_SECONDS - 1),
+                 (fresh, _time.time())]
+    check(script._pop_demo_request() is fresh,
           "the staged queue served a stale entry (or lost the fresh one "
           "behind it) - a press that never became a run must not hijack a "
           "later Generate")
     check(script._pop_demo_request() is None and not staged,
           "the staged queue was not drained one-per-run")
 
+    # The N box is free text beside a button, and the press has already
+    # happened by the time it is read.
+    for text, wanted in (("12", 12), ("  7 ", 7), ("", dna.CAPACITY_DEFAULT),
+                         ("twelve", dna.CAPACITY_DEFAULT), ("-3", 1),
+                         ("0", 1), ("100000", dna.COLLAGE_MAX)):
+        got = dna._collage_count(text)
+        check(got == wanted,
+              "the N box read %r as %r rather than %r - it is free text next "
+              "to a button that spends GPU minutes, so every reading of it "
+              "has to be a number in range" % (text, got, wanted))
+
 
 def test_point_gene(dna, search):
-    """The Profile-point row, at the gene level.
+    """The Profile-points row, at the gene level.
 
     Three things make it a search dimension rather than a gimmick: the
     offsets are an ORDERED choice (evidence transfers between neighbouring
@@ -1418,7 +1713,7 @@ def test_point_gene(dna, search):
                                  enabled=True, weight=1.0,
                                  guidance_start=0.0, guidance_end=1.0)
     gene = dna.Gene(dna.Gene.KIND_POINT, 0, unit_index=0, line="Main",
-                    values=[-0.5, 0.0, 0.5], point_index=1)
+                    values=[-0.5, 0.0, 0.5], point_indices=[1])
     dims = gene.dimensions(search)
     check(len(dims) == 1 and dims[0].numeric,
           "a point row's offsets are not an ordered dimension - the search "
@@ -1440,23 +1735,57 @@ def test_point_gene(dna, search):
           "the trace line does not say which offset a duel chose: %r / %r"
           % (gene.describe((1,)), gene.describe((2,))))
 
+    # A LIST of indices moves as a GROUP: one offset, every listed knot -
+    # that is what edits a profile interval instead of a single point.
+    group = dna.Gene(dna.Gene.KIND_POINT, 0, unit_index=0, line="Main",
+                     values=[-0.5, 0.0, 0.5], point_indices=[0, 1])
+    together = dna._config_string([group], (2,), {0: unit}, "prompt", seed=1,
+                                  extras={})
+    check("0@0.25" in together and "0.5@0.75" in together,
+          "offsetting points [0, 1] by +0.5 did not move BOTH knots "
+          "(%r) - the group is the feature: the listed points shift "
+          "together, or the row is just the old single-point edit with a "
+          "longer label" % (together,))
+
+    # The index-list parser: the box's own grammar.
+    check(dna._point_indices("0, 2, -1", 0) == [0, 2, -1]
+          and dna._point_indices("", 0) == [0]
+          and dna._point_indices("  1  3 ", 0) == [1, 3],
+          "the points box does not parse comma/whitespace index lists "
+          "(with empty meaning [0], the box's initial value)")
+    for bad in ("1.5", "one", "0, 0"):
+        try:
+            dna._point_indices(bad, 0)
+            fail("%r was accepted as a point-index list - garbage or a "
+                 "repeated index has to be refused before it silently "
+                 "becomes a double-moved knot or a dropped row" % (bad,))
+        except ValueError:
+            pass
+
 
 def test_persistence(dna):
-    """Nothing ends a search irrecoverably - the fix for "A/B and GOOD/BAD
-    stop working" after an idle timeout, a STOP or an Interrupt.
+    """Nothing ends a search irrecoverably - the fix for "A/B and GOOD/N-GOOD
+    stop working" after a STOP or an Interrupt.
 
-    Three properties carry it:
+    Four properties carry it:
 
     * start() KEEPS the retained solver state - clearing it there meant that
       starting a search and interrupting it before the first grade destroyed
-      the PREVIOUS search's learned taste, and GOOD/BAD then reported "no
+      the PREVIOUS search's learned taste, and GOOD/N-GOOD then reported "no
       solver state" about work that had cost dozens of duels;
-    * the idle timeout is a PAUSE, not an end: it marks the session
-      timed_out, which is what lets run() say "Generate resumes" instead of
-      "stopped";
+    * a RESUMED start keeps the RECORD too - the Tried lines, the
+      recommendation and the summary describe the very duels the resumed
+      observations came from, and wiping them left a record that began
+      mid-session while the first line of it claimed to be resuming 51
+      observations;
+    * a FRESH start still clears all of it, or a search on new rows would
+      open showing another search's history;
     * the state is mirrored to disk and read back, and the retained-state
       lookup prefers the explicit sources over the mirror: staged import
       first, then the session's own state, then the disk.
+
+    There is no timeout to test: a duel waits for its grade indefinitely -
+    see _Session.await_grade.
     """
     session = dna._Session()
     session.solver_state = {"observations": [[None, [0], 0.5]], "duels": 1}
@@ -1464,17 +1793,29 @@ def test_persistence(dna):
     check(session.solver_state is not None,
           "start() cleared the retained solver state - interrupting a fresh "
           "search before its first grade then destroys the previous search's "
-          "learned taste, and GOOD/BAD go dead with it")
+          "learned taste, and GOOD/N-GOOD go dead with it")
 
-    check(not session.timed_out,
-          "a fresh session already reads as timed out")
-    session.publish(1, None, None, "waiting")
-    check(session.await_grade(0.001) is None and session.timed_out,
-          "the idle timeout did not mark the session as PAUSED - run() then "
-          "reports a stop, and nothing tells the user that Generate resumes")
+    session.record("A", "u0.model=x")
+    session.record("B", "u0.model=y")
+    session.set_result("u0.model=x", "2 graded, confidence 40%")
+    session.start(resumed=True)
+    check(len(session.trace) == 2,
+          "a RESUMED start wiped the Tried record (%d lines left). The "
+          "observations it is resuming from are the very duels those lines "
+          "describe, so the panel comes back claiming to resume dozens of "
+          "duels above an empty history - which is how a stop-and-continue "
+          "silently costs the session's whole record"
+          % len(session.trace))
+    check(session.result and session.summary,
+          "a RESUMED start cleared the recommendation it is about to "
+          "recompute from the very same state - the panel blinks back to "
+          "'nothing graded yet' over a search that knows dozens of duels")
+
     session.start()
-    check(not session.timed_out,
-          "start() carried a stale timed_out mark into the new search")
+    check(not session.trace and not session.result and not session.summary,
+          "a FRESH start kept the previous search's record - these rows have "
+          "never been tried, so a Tried box full of another space's recipes "
+          "is worse than an empty one")
 
     tab = "persistence-test"
     payload = {"observations": [[None, [1], 0.9]], "duels": 3,
@@ -1627,6 +1968,8 @@ def main():
     from lib_cnpro import ab_search
 
     test_search(ab_search, numpy)
+    test_similarity_metric(ab_search, numpy)
+    test_capacity(ab_search, numpy)
     test_stochastic_tactics(ab_search, numpy)
     test_reuse_and_trend(ab_search, numpy)
     try:

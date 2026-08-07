@@ -1087,10 +1087,16 @@ Core-side (would need monkey-patching or shipping-with the addon):
   The container flashes green/red for 450ms (`.cnpro-copied` /
   `.cnpro-copy-failed`) because a clipboard write is otherwise invisible.
   Also hosts the 1-click Topaz tools
-  (`topaz_tools.py` + `x2`/`DN` toolbar buttons): Photo AI `tpai.exe` CLI
-  behind `/forge-canvas/topaz/process`, buttons availability-gated at
-  runtime — general canvas tools, not ControlNet-specific, optional for any
-  addon.
+  (`cnpro_host/optional/topaz.py` + `1M`/`HQ`/`DN` toolbar buttons): Photo AI
+  `tpai.exe` CLI behind `/forge-canvas/topaz/process`, buttons
+  availability-gated at runtime — general canvas tools, not
+  ControlNet-specific, optional for any addon. The gate is a shared prober
+  (`onTopazAvailable` in canvas_extra.js), not a one-shot fetch: the status
+  route registers from `on_app_started` AFTER the page is already served, so
+  the first ask can 404 by startup timing alone. "Could not ask" is retried
+  with backoff and never cached as "unavailable"; a definitive server "no" is
+  re-asked when the tab regains visibility, matching the server's per-call
+  `find_tpai()` so the tool can appear without a restart.
 
 NOT part of the feature (personal fork preferences, exclude from any addon):
 `modules/ui.py` (1024 defaults, batch rows hidden, seed row move,

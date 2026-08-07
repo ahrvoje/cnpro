@@ -287,6 +287,28 @@ def main():
         fail("canvas_nodes.js has no self-check; a malformed registry would only "
              "show up as a blank toolbar with no explanation")
 
+    # 7. the Topaz probe must never cache a failure as an answer. The status
+    #    route is registered from on_app_started, AFTER the page is already
+    #    being served: the first probe can 404 by pure startup timing, and the
+    #    old one-shot promise cached that miss as unavailable for the whole
+    #    session - the buttons showed or not on the SAME machine and config
+    #    depending on a millisecond race, and only a reload rolled the dice
+    #    again. Checked against CODE (comments stripped above): the comments
+    #    documenting the bug quote the very patterns banned here.
+    if "onTopazAvailable" not in code:
+        fail("canvas_extra.js no longer routes the Topaz reveal through "
+             "onTopazAvailable - a one-shot status fetch reintroduces the "
+             "startup race where a 404 before route registration hides the "
+             "tools until the next full reload")
+    if not re.search(r"setTimeout\(\s*topazProbeRun", code):
+        fail("the Topaz probe does not reschedule itself after a failed status "
+             "fetch - a transient failure (404 during on_app_started, server "
+             "busy) becomes a permanent 'unavailable'")
+    if re.search(r"catch\b[^}]*available:\s*false", code, re.S):
+        fail("the Topaz status .catch coerces failure to {available:false} - "
+             "'could not ask' must stay distinct from 'server said no'; "
+             "conflating them is the exact cache-the-race bug")
+
     # --- the part that actually runs the code ---
     data = run_harness()
     if data is not None:

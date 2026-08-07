@@ -26,67 +26,113 @@ One row is one thing that is allowed to vary. Add and remove them with the
 buttons at the top - the row count is the shape of the search space, so it is
 the first thing the panel asks. Four kinds:
 
-* **Setting** - a CNPro unit field, and a LIST of values it may take. Models,
-  preprocessors, whole weight-profile strings, resolutions, per-input mutes:
-  anything the unit carries. Categorical throughout, exactly as typed - DNA
-  picks one of the listed values, never something between them. A list of
-  numbers is recognised as ordered, so `768, 1024, 1280` tells the search that
-  1024 sits between the other two and evidence transfers accordingly.
+* **Model** - the unit's model, and a LIST of candidates the search may pick
+  from. Categorical, exactly as listed - DNA picks one of them, never
+  something between. (Recipes and Set can still name every unit field -
+  see UNIT_FIELDS - but a row only ever varies the model: the other fields
+  proved to be noise dimensions in practice, and a chooser full of them
+  buried the one that matters.)
 * **Profile** - one of the unit's six profile lines, scaled by a factor from
   the row's list. See `lib_cnpro/profile_scale.py`: the factor multiplies the
   curve, so 1 is untouched, 0 switches the line off, 2 is twice the control.
-* **Profile point** - ONE drawn point of one of those lines, moved vertically
-  by an offset from the row's list: 0 is the profile exactly as drawn, +0.1
-  is that point 0.1 higher in the plot's own axis units, negative moves it
-  down - the same edit dragging the point in the editor would make. Point
-  indices count drawn points left to right from 0, negative from the end
-  (-1 = rightmost). Offsets are numbers, so the search knows they are
-  ordered and evidence transfers between neighbouring values.
+* **Profile points** - a GROUP of drawn points of one of those lines, moved
+  vertically TOGETHER by an offset from the row's list: 0 is the profile
+  exactly as drawn, +0.1 is every listed point 0.1 higher in the plot's own
+  axis units, negative moves them down - the same edit dragging each point
+  in the editor would make. Point indices count drawn points left to right
+  from 0, negative from the end (-1 = rightmost); listing several indices is
+  what turns the offset into an edit of a whole profile INTERVAL rather than
+  of one knot. Offsets are numbers, so the search knows they are ordered and
+  evidence transfers between neighbouring values.
 * **Prompt** - one prompt per line, one of which is picked, either REPLACING
   the prompt or being prepended/appended to it. Several Prompt rows compose
   (subject in one, lighting in another), which is why at most one of them may
   Replace.
 * **LoRA** - one LoRA per line, of which the search picks ONE, and its weight
-  is a CONTINUOUS parameter searched over the row's range. This is the one
-  place DNA is not categorical, and deliberately: a LoRA weight is a number
-  where 0.55 genuinely tells you something about 0.60, and pinning a LoRA to a
-  weight you guessed is how a good LoRA gets rejected. Two LoRAs at once means
-  two rows - a row is one LoRA slot, and its list is the candidates for that
-  slot.
+  is picked from the row's own weight list (interval notation welcome:
+  `0.2:1:5`). The weights are numbers, so the search knows they are ordered
+  and evidence transfers between neighbours - and pinning a LoRA to one
+  guessed weight is how a good LoRA gets rejected, which is why the list is
+  a row control and not a constant. Two LoRAs at once means two rows - a row
+  is one LoRA slot, and its list is the candidates for that slot.
 
 WHAT AN ANSWER IS
 -----------------
-Each round shows image A and image B and the SAME 0..10 scale twice. One
-click answers, whichever row it lands on. The scale is the comparison: 0
+Each round shows image A and image B and the SAME 0..10 scale THREE times.
+One click answers, whichever row it lands on. The scale is the comparison: 0
 means A is much better, 10 means B is much better, 5 means you cannot pick
 between them - and 5 is a real answer, not a refusal: it says the two
 configurations are worth the same, which is as informative as any other
-grade. The ROW is the verdict about the pair itself: the top row is the
-normal answer, the bottom row says "and I dislike BOTH of these". That is
-the one thing a person feels instantly when a pair appears and a comparison
-cannot carry ("both are great" and "both are awful" are the same statement
-about the DIFFERENCE) - and it asks for no memory of any reference and no
-absolute number, both of which people answer differently every time. A
-bottom-row grade still steers (which side is LESS bad is information); what
-the row adds is that the whole region sinks below par and the search changes
-the subject - the next duel explores, and a streak of dislikes rolls the
-candidate pool back toward broad exploration. skip, beside the lower row, is
-the third kind of answer: this pair could not be judged at all - a broken
-render, an unreadable duel - and records nothing, which is NOT what 5
-records.
+grade.
 
-GOOD and BAD, parked beside STOP and skip, are not answers either: each
-renders ONE fresh sample drawn from the corresponding end of the solver's
-current belief - varied per press, pure inference, no observation recorded -
-prints its full recipe into the trace, and, during a search, returns to the
-same duel. They are the "show me what you think I want (or hate)" probes,
-and the images join the gallery at stop.
+The ROW is the verdict about the pair itself - the things a person feels
+instantly when a pair appears and a comparison cannot carry, each asking for
+no memory of any reference and no absolute number:
+
+* **Distinct samples** - the normal answer. These two look rather different,
+  and we are on track.
+* **Similar samples** - ...rather ALIKE. This is the cheapest click in the
+  panel and among the most informative: "do these look the same" is a
+  first-glance impression that costs no deliberation, and because the top
+  two rows PARTITION the on-track case, every graded duel yields a
+  similarity verdict rather than only the ones somebody bothered to mark.
+  That is what trains the SEPARATION METRIC (`lib_cnpro/ab_search.py`,
+  `_fit_metric`) - the thing that decides whether a duel is worth asking at
+  all, how different the STOP keepers have to be, and what an N-GOOD collage
+  may hold together. It was a hand-written constant until this row existed.
+  It also pins the two configurations together in the utility model: two
+  images that look the same are worth the same, which is a stronger claim
+  than the grade beside it.
+* **Bad samples** - I will rate them, but both are bad. The grade still
+  steers (which side is LESS bad is information); what the row adds is that
+  the whole region sinks below par and the search changes the subject - the
+  next duel explores, and a streak of dislikes rolls the candidate pool back
+  toward broad exploration. It carries no similarity verdict: both at once
+  would need a fourth row, and a bad region is the cheapest place to lack
+  that data.
+
+Once in a while the search will show a pair that looks like the same image
+twice, and say so in the status line. That is deliberate - it is re-checking
+a difference you called invisible, because every duel is filtered by the
+learned metric and a dimension wrongly written off would otherwise never get
+asked about again. Grade the row you actually see.
+
+skip, beside the bottom row, is the last kind of answer: this pair could not
+be judged at all - a broken render, an unreadable duel - and records
+nothing, which is NOT what 5 records.
+
+GOOD and N-GOOD, parked beside STOP and skip, are not answers either: each
+renders fresh samples drawn from the good end of the solver's current
+belief - varied per press, pure inference, no observation recorded - prints
+their full recipes into the trace, and, during a search, returns to the same
+duel. They are the "show me what you think I want" probes, and the images
+join the gallery at stop.
+
+    GOOD    one sample.
+    N-GOOD  a COLLAGE of N samples that are all good AND all visibly
+            different from each other, laid out as one grid image.
+
+N IS THE SOLVER'S OWN ESTIMATE, in the editable box to the left of the
+button: how many mutually distinguishable configurations it currently
+believes are good, over the WHOLE space rather than over the handful the
+frontier has room to name (`ab_search.capacity`). It is recomputed after
+every graded duel and written into the box, so the number is a live reading
+of what the search has learned - it starts at the keeper count, stays there
+while the model still cannot tell a champion from a typical configuration,
+and grows as the good region is mapped. It can honestly reach the thousands,
+which is why the box is EDITABLE and why the estimate is not simply spent:
+the solver reports the size of the region, the person decides how much of it
+is worth a GPU-hour. Whatever the box says at the moment of the press is
+what gets rendered, capped at COLLAGE_MAX. Press again for another collage:
+the entries are ranked by a fresh draw from the posterior each time, so two
+presses are two different samples of one taste rather than the same list
+twice.
 
 THE BUTTONS DO NOT DIE WITH THE SEARCH, and that is the point of them: a
 finished search is a reached state, not a spent one. With no search running
-- after STOP, or right after an Import staged a solver - a GOOD/BAD press
+- after STOP, or right after an Import staged a solver - a GOOD/N-GOOD press
 starts a generation ITSELF (it stages the request and clicks Generate
-client-side), and run() serves it by rendering that one sample from the
+client-side), and run() serves it by rendering those samples from the
 retained solver state instead of opening duels: nothing is asked, nothing
 is observed, the state is left exactly as it was. Everything the rows do
 not own - prompt, canvases, resolution, seed - is read fresh from the UI by
@@ -124,9 +170,11 @@ whole FRONTIER into the trace: up to four keeper configurations, each polished,
 each visibly different from the others, best first (★1, ★2, ...), each a full
 recipe that can be copied out and pasted back. Taste is not unimodal, and the
 search deliberately holds every strong basin it finds rather than the single
-one that was ahead at STOP; with "Render the winner on stop" ticked, all the
-keepers are rendered into the gallery, so a stop ends with the diverse answers
-in view rather than one of them. Set applies a recipe string to the whole
+one that was ahead at STOP. Nothing is rendered at stop: the keepers are
+recipes, and rendering them is one paste-and-Generate away when it is wanted -
+a stop used to trigger up to four unasked generations, which made STOP the
+one button that cost more GPU time than it saved. Set applies a recipe
+string to the whole
 Forge Neo configuration - unit fields, prompt and negative prompt, LoRAs,
 sampler settings, seed. It is plain text
 and can be saved, pasted back into that box, or handed to somebody else, which
@@ -148,22 +196,31 @@ the loop possible at all. Two consequences worth knowing:
 
 * Interrupt (the host's own button) ends the search wherever it is, and the
   recommendation from the answers so far is still printed.
-* A search nobody answers does not wedge the tab forever - it PAUSES after
-  the idle timeout in Settings > CNPro: the loop ends exactly as STOP would
-  end it, and everything it learned stays behind.
+* NOTHING ELSE ENDS IT. A duel waits for its grade for as long as it takes -
+  there is no idle timeout, and there is deliberately no setting for one. A
+  pair on screen is a question that has already cost two generations, and a
+  clock that expires it only ever means walking away from the desk costs the
+  answer. STOP and Interrupt are the two ways out, and both are things the
+  user meant to do.
 
 NOTHING ENDS A SEARCH IRRECOVERABLY. Every graded duel refreshes the retained
 solver state - on the session, and mirrored to a small JSON file that
 survives a UI restart - and the next Generate on the same rows RESUMES from
 it. "Resume search" (on by default, in the loop controls) is the way out:
-untick it to start over. So an idle timeout, a STOP, an Interrupt, a page
-reload or a restarted server cost nothing but the interruption itself: press
-Generate and the search continues where it left off, or press GOOD/BAD and
-sample from whatever it had learned. State learned on DIFFERENT rows never
-resumes - the signature check refuses it - so changing the rows is also a
-fresh start, with a log line saying so. The reloaded page finds its way back
-too: the poll timer runs once at page load and repaints whatever the
-server-side session is doing, then switches itself off if that is nothing.
+untick it to start over. So a STOP, an Interrupt, a page reload or a
+restarted server cost nothing but the interruption itself: press Generate and
+the search continues where it left off, or press GOOD/N-GOOD and sample from
+whatever it had learned. State learned on DIFFERENT rows never resumes - the
+signature check refuses it - so changing the rows is also a fresh start, with
+a log line saying so. The reloaded page finds its way back too: the poll
+timer runs once at page load and repaints whatever the server-side session is
+doing, then switches itself off if that is nothing.
+
+A RESUMED SEARCH KEEPS ITS RECORD. Tried, the recommendation and the summary
+survive a stop-and-continue exactly as the learned state does - they describe
+the very duels the resumed observations came from, so clearing them would
+leave a record that starts mid-session. Only a search that is genuinely fresh
+- new rows, or "Resume search" unticked - opens a new record.
 
 WHAT IS DELIBERATELY NOT DONE HERE
 ----------------------------------
@@ -181,6 +238,7 @@ import html
 import io
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -192,7 +250,7 @@ import time
 import gradio as gr
 
 import modules.scripts as scripts
-from modules import errors, processing, script_callbacks, shared
+from modules import errors, processing, script_callbacks
 from modules.processing import Processed, process_images
 from modules.shared import state
 from modules.ui_components import ToolButton
@@ -220,17 +278,18 @@ TARGET_PROMPT = "Prompt"
 TARGET_LORA = "LoRA"
 GLOBAL_TARGETS = [TARGET_PROMPT, TARGET_LORA]
 
-MODE_SETTING = "Setting"
+MODE_MODEL = "Model"
 MODE_PROFILE = "Profile"
-MODE_POINT = "Profile point"
-MODES = [MODE_SETTING, MODE_PROFILE, MODE_POINT]
+MODE_POINTS = "Profile points"
+MODES = [MODE_MODEL, MODE_PROFILE, MODE_POINTS]
 
 PROMPT_REPLACE = "Replace"
 PROMPT_PREPEND = "Prepend"
 PROMPT_APPEND = "Append"
 PROMPT_MODES = [PROMPT_REPLACE, PROMPT_PREPEND, PROMPT_APPEND]
 
-#: Default LoRA weight range and grid: three states, 0.2 / 0.6 / 1.0.
+#: Default LoRA weight list: three states, 0.2 / 0.6 / 1.0. Used when a
+#: weighted row's weights box is left empty.
 #:
 #: COARSE ON PURPOSE. Three visible steps per LoRA keeps a five-LoRA search
 #: at 3^5 weight combinations instead of 21^5 - matched to a human's duel
@@ -239,34 +298,24 @@ PROMPT_MODES = [PROMPT_REPLACE, PROMPT_PREPEND, PROMPT_APPEND]
 #: degenerate identity: every LoRA in a slot at weight 0 is the same image,
 #: while the model would hold them as different points and scatter evidence
 #: across them. "This LoRA is not helping" is still discoverable - it is the
-#: search preferring the bottom of the range - and a recommendation at 0.2
-#: is cheap to try by hand at 0. Type over the boxes for a finer or wider
-#: search; these are the DEFAULTS, not the limits.
-LORA_WEIGHT_MIN = 0.2
-LORA_WEIGHT_MAX = 1.0
-LORA_WEIGHT_STEP = 0.4
+#: search preferring the bottom of the list - and a recommendation at 0.2
+#: is cheap to try by hand at 0. The row's weights box takes any list, with
+#: interval notation (`0.2:1:5`) for the finer grids; these are the
+#: DEFAULTS, not the limits.
+LORA_WEIGHTS = [0.2, 0.6, 1.0]
 
-#: Default range for a PROMPT row's weight, written with A1111's own
-#: `(text:w)` syntax. Straddling 1 rather than starting at 0, because the two
-#: knobs mean different things: a LoRA at 0 is simply absent, while a prompt
-#: term at 0.6 is still in the prompt and still steering - de-emphasis and
-#: emphasis are both useful and both live near 1. With the default 0.4 step
-#: this is the three states 0.4 / 0.8 / 1.2, mirroring the LoRA grid: three
-#: visible steps per row is what keeps a many-row search inside a human's
-#: duel budget.
-PROMPT_WEIGHT_MIN = 0.4
-PROMPT_WEIGHT_MAX = 1.2
+#: Default weight list for a PROMPT row, written with A1111's own `(text:w)`
+#: syntax. Straddling 1 rather than starting at 0, because the two knobs
+#: mean different things: a LoRA at 0 is simply absent, while a prompt term
+#: at 0.6 is still in the prompt and still steering - de-emphasis and
+#: emphasis are both useful and both live near 1. Three states, mirroring
+#: the LoRA grid: three visible steps per row is what keeps a many-row
+#: search inside a human's duel budget.
+PROMPT_WEIGHTS = [0.4, 0.8, 1.2]
 
 #: Characters that would end the `(text:w)` wrapper early, and so have to be
 #: escaped inside it. A1111 reads a backslash before either as a literal.
 RE_PROMPT_ESCAPE = re.compile(r"([()])")
-
-#: How long the loop waits for a grade before pausing, in minutes. Overridden
-#: from Settings > CNPro. A search left open should not hold the tab hostage;
-#: the loop ends as STOP would end it - the answers so far still produce a
-#: recommendation - and the retained state means the next Generate resumes
-#: exactly where it left off, so the timeout costs nothing.
-IDLE_TIMEOUT_DEFAULT = 30
 
 #: How often the panel polls the session, in seconds. Fast enough that grading
 #: does not feel laggy, slow enough to be invisible next to a generation.
@@ -297,7 +346,11 @@ CONFIG_HEADER = "DNA1"
 #: changes; import still applies whatever fields it recognises from other
 #: versions and names what it could not, because the file's whole reason for
 #: being HTML is that a human can finish the job by hand.
-EXPORT_VERSION = 1
+#: v2: rows carry "weights" (a list as text) and "points" (index list as
+#: text) instead of v1's weight_low/weight_high/point and the panel-global
+#: weight step; the "field" key and the render_winner/weight_step tail
+#: entries are gone.
+EXPORT_VERSION = 2
 
 RE_MODEL_HASH = re.compile(r"\s*\[[0-9a-fA-F]{6,}\]\s*$")
 RE_UNIT_LABEL = re.compile(r"^Unit\s+(\d+)")
@@ -405,26 +458,28 @@ def _lora_names():
 
 
 # ---------------------------------------------------------------------------
-# The unit fields a Setting row can vary
+# The unit fields a recipe can name
 #
-# A curated table rather than "every field on the dataclass". Three kinds are
-# excluded on purpose and the exclusions are the interesting part:
+# The vocabulary of `u<N>.<field>=` tokens: _set_targets builds Set, Export
+# and Import from this table, and _coerce types values on the way back in.
+# The ROWS no longer offer these - a row varies the unit's MODEL and nothing
+# else (the "Model" mode); the chooser that offered every field here buried
+# the one that matters under two dozen that were noise dimensions in every
+# real search. The table stays curated all the same, because a recipe that
+# names a field this build cannot place has to be reported, not invented:
 #
 # * IMAGES AND MASKS - they are not values, they are megabytes, and a search
 #   over them is a search over things the user would have to paint first.
 # * weight / guidance_start / guidance_end - the weight PROFILE overrides all
-#   three, and every unit built by the editor has one. A row on them would be
-#   inert, and inert rows are the failure this whole file is trying to avoid:
-#   they produce identical images and blame nothing. Profile rows are what
-#   replaces them.
+#   three, and every unit built by the editor has one.
 # * control_mode - the UI no longer exposes it (the balance profile did), so
-#   varying it would move a field nothing reads.
+#   setting it would move a field nothing reads.
 # ---------------------------------------------------------------------------
 
-#: How a field's candidate values are entered. CHOICE fields have a known list
-#: and get a multiselect; the rest are typed, one value per line, because their
-#: interesting values are strings nobody can enumerate (profiles, prompts) or
-#: numbers the user has in mind (resolutions, thresholds).
+#: The shape of a field's value - descriptive now that rows no longer offer
+#: these fields: CHOICE comes from a known list, the rest are free text or a
+#: number. Kept on the table because a human reading a recipe token needs to
+#: know what kind of value it takes.
 KIND_CHOICE = "choice"
 KIND_TEXT = "text"
 KIND_NUMBER = "number"
@@ -534,9 +589,6 @@ UNIT_FIELDS = {
     "image_5_enabled": _Field("Use input 5", KIND_CHOICE, BOOL_CHOICES,
                               cast=lambda v: str(v) == "True"),
 }
-
-FIELD_LABELS = {field.label: name for name, field in UNIT_FIELDS.items()}
-FIELD_LABEL_LIST = [field.label for field in UNIT_FIELDS.values()]
 
 RE_INPUT_ENABLED = re.compile(r"^image_(\d+)_enabled$")
 
@@ -652,21 +704,21 @@ class Gene:
     KIND_LORA = "lora"
 
     def __init__(self, kind, row, unit_index=None, field=None, values=None,
-                 line=None, point_index=0, prompt_mode=PROMPT_REPLACE,
-                 loras=None, weight_low=LORA_WEIGHT_MIN,
-                 weight_high=LORA_WEIGHT_MAX, weight_step=LORA_WEIGHT_STEP):
+                 line=None, point_indices=None, prompt_mode=PROMPT_REPLACE,
+                 loras=None, weights=None):
         self.kind = kind
         self.row = row
         self.unit_index = unit_index
         self.field = field
         self.values = list(values or [])
         self.line = line
-        self.point_index = int(point_index or 0)
+        # The GROUP of drawn points a Profile-points row moves together -
+        # one offset, several knots, which is what edits an interval of the
+        # curve instead of one point of it.
+        self.point_indices = [int(i) for i in (point_indices or [0])]
         self.prompt_mode = prompt_mode
         self.loras = list(loras or [])
-        self.weight_low = weight_low
-        self.weight_high = weight_high
-        self.weight_step = weight_step
+        self.weights = [float(w) for w in (weights or LORA_WEIGHTS)]
         self.offset = 0        # where this gene's slice starts, set by _space
 
     @property
@@ -686,7 +738,8 @@ class Gene:
         if self.kind == Gene.KIND_PROFILE:
             return f"U{self.unit_index} {self.line}"
         if self.kind == Gene.KIND_POINT:
-            return f"U{self.unit_index} {self.line}[{self.point_index}]"
+            indices = ",".join(str(i) for i in self.point_indices)
+            return f"U{self.unit_index} {self.line}[{indices}]"
         if self.kind == Gene.KIND_PROMPT:
             return f"Prompt ({self.prompt_mode.lower()})"
         return "LoRA"
@@ -703,10 +756,13 @@ class Gene:
         if self.kind in (Gene.KIND_LORA, Gene.KIND_PROMPT):
             picks = self.loras if self.kind == Gene.KIND_LORA else self.values
             pick = ab_search.Dimension.choice(f"{self.name} pick", picks)
-            weight = ab_search.Dimension.range(f"{self.name} weight",
-                                               self.weight_low,
-                                               self.weight_high,
-                                               self.weight_step)
+            # The row's own weight LIST, as an ordered choice: the labels are
+            # numbers, so Dimension.choice keeps their metric and evidence
+            # still transfers between neighbouring weights - the search just
+            # never lands between the values the user listed, which is what a
+            # typed list means.
+            weight = ab_search.Dimension.choice(
+                f"{self.name} weight", [f"{w:g}" for w in self.weights])
             # The weight belongs to the pick: 0.6 of one LoRA says nothing
             # about 0.6 of another, and the kernel is told so - each
             # candidate learns its own weight curve from its own duels.
@@ -731,12 +787,17 @@ class Gene:
         """
         slice_ = self.take(point)
         index = int(slice_[0])
-        if self.kind == Gene.KIND_LORA:
-            name = self.loras[index] if 0 <= index < len(self.loras) else ""
-            return name, float(slice_[1])
-        if self.kind == Gene.KIND_PROMPT:
+        if self.kind in (Gene.KIND_LORA, Gene.KIND_PROMPT):
+            # The weight entry is an INDEX into the row's weight list, not
+            # the weight itself - the dimension is a choice now.
+            windex = int(slice_[1])
+            weight = (self.weights[windex]
+                      if 0 <= windex < len(self.weights) else self.weights[0])
+            if self.kind == Gene.KIND_LORA:
+                name = self.loras[index] if 0 <= index < len(self.loras) else ""
+                return name, weight
             text = self.values[index] if 0 <= index < len(self.values) else ""
-            return text, float(slice_[1])
+            return text, weight
         if self.kind == Gene.KIND_PROFILE:
             return self.values[index] if 0 <= index < len(self.values) else 1.0
         if self.kind == Gene.KIND_POINT:
@@ -774,9 +835,14 @@ class Gene:
         elif self.kind == Gene.KIND_POINT:
             module = _profile_scale()
             if module is not None:
-                unit.weight_profile = module.offset_profile_point(
-                    unit, self.unit_index, self.line, self.point_index,
-                    self.chosen(point), who=WHO)
+                # The listed points move as a GROUP: one offset, applied to
+                # each in turn. Sequential rewrites are safe because moving a
+                # point vertically never changes the point count, so the
+                # remaining indices keep naming what they named.
+                for index in self.point_indices:
+                    unit.weight_profile = module.offset_profile_point(
+                        unit, self.unit_index, self.line, index,
+                        self.chosen(point), who=WHO)
 
     def prompt_fragment(self, point):
         """What this gene contributes to the prompt, or None."""
@@ -1064,8 +1130,8 @@ RE_EXPORT_ISLAND = re.compile(
 #: share, and this must survive a session that has not started yet.
 _PENDING_SOLVER = {}
 
-#: GOOD/BAD presses made while NO search is running, per tab: a list of
-#: (wanted_good, staged_at) pairs. The press stages its request here and
+#: GOOD/N-GOOD presses made while NO search is running, per tab: a list of
+#: (_Demo, staged_at) pairs. The press stages its request here and
 #: then clicks Generate itself (see _wire_duel); the run() that click
 #: starts consumes ONE entry and renders that sample instead of starting
 #: duels. One per run because one press queues one generation - a second
@@ -1089,11 +1155,138 @@ DEMO_STALE_SECONDS = 30 * 60
 #: render the SAME "varied" sample.
 _DEMO_SERIAL = {"txt2img": 0, "img2img": 0}
 
-#: Samples one demo run will render at most, however many presses landed
-#: while it was working. Presses beyond the cap are dropped and the status
-#: line says so - a runaway "leaned on the button" burst should cost a
-#: bounded number of generations, and pressing again is one click.
+#: PRESSES one demo run will serve at most, however many landed while it was
+#: working. Presses beyond the cap are dropped and the status line says so -
+#: a runaway "leaned on the button" burst should cost a bounded number of
+#: generations, and pressing again is one click. What each press costs is
+#: its own business: one sample for GOOD, up to COLLAGE_MAX for N-GOOD.
 DEMO_BATCH_MAX = 8
+
+#: Samples ONE N-GOOD press will render, whatever the N box says. The
+#: solver's estimate is honest about the size of the good region and that
+#: region can hold thousands of configurations - which is a number worth
+#: KNOWING and not a number worth rendering unasked. Sixty-four is an 8x8
+#: collage and roughly half an hour of GPU time; a request beyond it is
+#: clamped, and the status line says by how much, so pressing again is how
+#: more is asked for rather than the first press quietly becoming an
+#: overnight job.
+COLLAGE_MAX = 64
+
+#: What the N box holds before any solver has spoken. One, because a panel
+#: that opens offering to spend eight generations on a taste it has not
+#: learned yet is offering the wrong thing.
+CAPACITY_DEFAULT = 1
+
+#: Padding between collage cells, in pixels, and the colour behind them. The
+#: gap is what makes the grid read as N separate samples rather than as one
+#: wide image - the whole point of a collage is comparing its cells.
+COLLAGE_GAP = 8
+COLLAGE_BACKGROUND = (24, 24, 27)
+
+
+class _Demo:
+    """A GOOD press: an answer that answers nothing.
+
+    Queued on the session (or staged for an idle Generate) and served by the
+    loop, which renders it and returns to the very same duel. `count` is
+    None for the single-sample GOOD button and an integer for N-GOOD, whose
+    samples are composed into one collage image.
+
+    An OBJECT rather than a flag, because the two requests differ in what
+    they cost and in what they produce, and because `await_grade` returns it
+    down the same channel a grade comes back on - where a tuple is a grade
+    and a string is "skip", so the third kind of answer has to be neither.
+    """
+
+    def __init__(self, count=None):
+        self.count = None if count is None else max(int(count), 1)
+
+    @property
+    def label(self):
+        return "GOOD" if self.count is None else f"{self.count}-GOOD"
+
+
+def _collage_count(text):
+    """The N box's contents as a number of samples to render.
+
+    Clamped rather than validated, and that is the right severity for this
+    box: it is free text next to a button, the press has already happened by
+    the time this runs, and the alternatives are a traceback in the
+    generation thread or a press that silently does nothing. An unreadable
+    box falls back to the default, which costs one generation and is
+    obviously wrong on screen - the cheapest possible way to say "that was
+    not a number".
+    """
+    try:
+        count = int(float(str(text).strip()))
+    except (TypeError, ValueError):
+        return CAPACITY_DEFAULT
+    return max(min(count, COLLAGE_MAX), 1)
+
+
+def _collage(images):
+    """`images` as ONE grid image, or None if there are none.
+
+    A collage rather than N gallery entries because the question it answers
+    is comparative - "what does the whole good region look like" - and that
+    is not a question anybody answers by clicking through a gallery. The
+    cells are laid out in the squarest grid that holds them and every cell
+    is the size of the largest image, so a row of mixed resolutions still
+    reads as a grid.
+
+    The sheet is what the gallery gets, alone: each sample was already
+    written to the output folder by the generation that made it, and
+    sixty-four gallery entries is a gallery nobody can use.
+    """
+    images = [image for image in images if image is not None]
+    if not images:
+        return None
+    try:
+        from PIL import Image
+    except Exception as exc:
+        logger.warning(f"{WHO}: could not compose the collage ({exc}) - the "
+                       f"samples are in the gallery individually.")
+        return None
+    columns = int(math.ceil(math.sqrt(len(images))))
+    rows = int(math.ceil(len(images) / columns))
+    cell_w = max(image.width for image in images)
+    cell_h = max(image.height for image in images)
+    sheet = Image.new(
+        "RGB",
+        (columns * cell_w + (columns + 1) * COLLAGE_GAP,
+         rows * cell_h + (rows + 1) * COLLAGE_GAP),
+        COLLAGE_BACKGROUND)
+    for index, image in enumerate(images):
+        column, row = index % columns, index // columns
+        # Centred in its cell: an image smaller than the largest would
+        # otherwise hang off one corner and break the grid the eye is
+        # reading the comparison across.
+        x = COLLAGE_GAP + column * (cell_w + COLLAGE_GAP) \
+            + (cell_w - image.width) // 2
+        y = COLLAGE_GAP + row * (cell_h + COLLAGE_GAP) \
+            + (cell_h - image.height) // 2
+        sheet.paste(image.convert("RGB"), (x, y))
+    return sheet
+
+
+def _save_collage(p, image, seed, info):
+    """Write the collage next to the host's own grids.
+
+    Best-effort: the individual samples were already saved by the
+    generations that made them, so a failure here costs the sheet and
+    nothing else - and it is worth attempting, because a collage that
+    exists only in the gallery is gone the moment the next job runs.
+    """
+    if image is None:
+        return
+    try:
+        from modules import images as host_images
+        host_images.save_image(image, p.outpath_grids, "cnpro_ab_collage",
+                               seed=seed, prompt=p.prompt, info=info, p=p,
+                               grid=True)
+    except Exception as exc:
+        logger.warning(f"{WHO}: the collage could not be saved to disk "
+                       f"({exc}) - it is still in the gallery.")
 
 
 def _solver_file(tab):
@@ -1138,7 +1331,7 @@ def _retained_solver(tab):
 
     Staged import first - it is the one source the user pointed at
     explicitly - then the last search's own state, then the disk mirror,
-    which is what makes GOOD/BAD and Resume outlive a restart.
+    which is what makes GOOD/N-GOOD and Resume outlive a restart.
     """
     session = _SESSIONS.get(tab)
     return (_PENDING_SOLVER.get(tab)
@@ -1231,12 +1424,24 @@ def _solver_payload(search, seed, space):
     return {
         "seed": int(seed),
         "duels": int(search.duels),
+        # A REPORT, not state: it is recomputed from the observations below
+        # and nothing replays it. It rides along so that the N box means
+        # something on a page that loaded after the search that learned it -
+        # a reload, or a restart reading the disk mirror.
+        "capacity": int(search.capacity()),
         "signature": _space_signature(space),
         "observations": [
             [None if a is None else list(search.points[a]),
              list(search.points[b]), float(p)]
             for a, b, p in search.observations],
         "interesting": [list(point) for point in search._interesting],
+        # The similarity row's labels, by value like the observations. These
+        # are what the separation metric is fitted from, and the metric
+        # decides which duels are worth asking at all - so a resumed search
+        # that dropped them would go straight back to asking the questions
+        # this session already answered.
+        "similarities": [[list(a), list(b), bool(d), float(m)]
+                         for a, b, d, m in search.similarities],
         # The hyperparameters as SELECTED, not just the data they were
         # selected from: re-selection runs every few observations, so the
         # exporting search and a replay are usually between selections -
@@ -1260,6 +1465,16 @@ def _restore_solver(search, state, space):
     search.duels = int(state.get("duels", count))
     for point in state.get("interesting", []):
         search.mark_interesting(_coerce_point(space, point))
+    # Replayed then fitted ONCE, rather than refitting per label the way
+    # observe() does: the fit is over the whole set either way, and a replay
+    # of two hundred labels would otherwise run it two hundred times.
+    for record in state.get("similarities", []):
+        point_a, point_b, distinct = record[0], record[1], record[2]
+        mass = float(record[3]) if len(record) > 3 else 1.0
+        search.similarities.append((_coerce_point(space, point_a),
+                                    _coerce_point(space, point_b),
+                                    bool(distinct), mass))
+    search._fit_metric()
     hyper = state.get("hyper")
     if hyper and len(hyper) == 3:
         search._hyper = tuple(float(v) for v in hyper)
@@ -1286,8 +1501,8 @@ def _export_html(payload):
     row_lines = []
     for index, row in enumerate(payload.get("rows", [])[:row_count]):
         parts = [f"{key} = {row.get(key)!r}" for key in (
-            "target", "mode", "field", "choices", "line", "values",
-            "prompt_mode", "loras", "weight_low", "weight_high", "point")]
+            "target", "mode", "choices", "line", "values",
+            "prompt_mode", "loras", "weights", "points")]
         row_lines.append((f"row {index + 1}", " · ".join(parts)))
     sections.append("<h2>Search rows</h2>" + table(row_lines))
     sections.append("<h2>Settings</h2>" + table(
@@ -1309,6 +1524,9 @@ def _export_html(payload):
             ("graded duels", solver.get("duels", 0)),
             ("observations", len(solver.get("observations", []))),
             ("interesting marks", len(solver.get("interesting", []))),
+            ("similarity verdicts", len(solver.get("similarities", []))),
+            ("distinctly different good samples",
+             solver.get("capacity", "not recorded")),
             ("seed", solver.get("seed")),
         ]))
     if payload.get("result"):
@@ -1429,9 +1647,8 @@ class _Session:
         self.tick_lock = threading.Lock()
         self.running = False
         self.stopping = False
-        self.timed_out = False     # the last end was the idle timeout - a pause
         self.pending_score = None
-        self.pending_demos = []    # queued GOOD/BAD requests, served in order
+        self.pending_demos = []    # queued _Demo requests, served in order
         self.interesting = [False, False]     # A, B - toggled, sent with the grade
         self.awaiting = False
         self.generating = None     # "A"/"B" while that side's image renders
@@ -1445,20 +1662,35 @@ class _Session:
         self.summary = ""
         self.trace = []
         self.solver_state = None   # refreshed after every grade, for Export
+        # The solver's capacity estimate - how many distinctly different good
+        # configurations it believes it can produce. None until a search has
+        # said; the panel then falls back to the retained state's own copy,
+        # which is what keeps the N box meaningful on a freshly loaded page.
+        self.capacity = None
 
     # -- written by run() ------------------------------------------------
 
-    def start(self):
+    def start(self, resumed=False):
         # solver_state is deliberately NOT cleared: it is the tab's learned
         # taste, not this run's scratch. Clearing it here meant that starting
         # a search and interrupting it before the first grade destroyed the
-        # PREVIOUS search's state - GOOD/BAD then reported "no solver state"
+        # PREVIOUS search's state - GOOD/N-GOOD then reported "no solver state"
         # about a taste that had cost dozens of duels to learn. A resumed or
         # graded run overwrites it; a run that learns nothing leaves it be.
+        #
+        # AND NEITHER IS THE RECORD, when this run RESUMES the last one. The
+        # trace is the answer to "what has this search actually tried", and a
+        # search that continues where it left off has tried all of it - the
+        # observations it is resuming from are the very duels those lines
+        # describe. Wiping it here meant that every STOP-and-continue (and
+        # every Interrupt, and every pause) silently threw away the record of
+        # the session it was continuing, leaving a Tried box that began at
+        # duel 42 with nothing before it. Only a genuinely FRESH search - new
+        # rows, or "Resume search" unticked, both of which arrive here as
+        # `resumed=False` - starts a new record.
         with self.condition:
             self.running = True
             self.stopping = False
-            self.timed_out = False
             self.pending_score = None
             self.pending_demos = []
             self.awaiting = False
@@ -1467,9 +1699,10 @@ class _Session:
             self.image_a = self.image_b = None
             self.duel = self.graded = 0
             self.status = "starting"
-            self.result = ""
-            self.summary = ""
-            self.trace = []
+            if not resumed:
+                self.result = ""
+                self.summary = ""
+                self.trace = []
 
     def record(self, side, recipe):
         """One generated image, in the order it was made.
@@ -1518,15 +1751,14 @@ class _Session:
     def start_demo(self, status):
         """A sample run: alive for the poller, without wiping the session.
 
-        Unlike `start`, everything the finished search left behind - the
-        recommendation, the trace, the solver state, the last images, the
+        Unlike a FRESH `start`, everything the finished search left behind -
+        the recommendation, the trace, the solver state, the last images, the
         duel counts - is KEPT: a demo run adds to that record rather than
-        opening a new one, and the next real search is what resets it.
+        opening a new one, and only a search on new rows resets it.
         """
         with self.condition:
             self.running = True
             self.stopping = False
-            self.timed_out = False
             self.pending_score = None
             self.pending_demos = []
             self.awaiting = False
@@ -1541,7 +1773,7 @@ class _Session:
 
         The slot doubles as the panel's anchor: `image_a` is what keeps the
         duel group visible once nothing is running, so after a demo run the
-        GOOD/BAD buttons stay on screen for the next press instead of
+        GOOD/N-GOOD buttons stay on screen for the next press instead of
         folding the panel away under the user's pointer.
         """
         with self.condition:
@@ -1556,16 +1788,38 @@ class _Session:
             self.result = result
             self.summary = summary
 
-    def await_grade(self, timeout_minutes):
-        """Block until the user grades, stops, interrupts, or gives up.
+    def set_capacity(self, count):
+        """The solver's latest estimate of how many good answers it holds.
+
+        Written after every graded duel and painted into the N box, which
+        OVERWRITES whatever the user had typed there - deliberately: the box
+        shows what the search currently believes, and an edit is a decision
+        about the next press, not a correction of the model. Between two
+        grades the edit stands, which is the whole window in which it is
+        made.
+        """
+        with self.condition:
+            self.capacity = int(count)
+
+    def await_grade(self):
+        """Block until the user grades, stops or interrupts. FOREVER, if that
+        is how long it takes.
+
+        THERE IS NO DEADLINE, and there used to be one: the loop paused after
+        an idle timeout (a setting, 30 minutes by default) on the theory that
+        a search nobody answers should not hold the tab. It should. A duel on
+        screen is a question that has been asked and paid for - two
+        generations - and the only thing a clock adds is that walking away
+        from it costs the answer. STOP and the host's own Interrupt already
+        end a search, both are one click, and both are things the user MEANT.
+        Coming back to a duel hours later and grading it is not an error
+        state.
 
         Returns the grade, or None for "the search is over". The wait is a
-        POLL of 0.25s rather than a plain wait, because two of the four ways
-        out do not go through this session at all: the host's Interrupt button
-        writes `shared.state`, and the idle timeout is the absence of any
-        event whatsoever. A condition variable cannot be notified by either.
+        POLL of 0.25s rather than a plain wait, because the host's Interrupt
+        button does not go through this session at all - it writes
+        `shared.state`, which a condition variable cannot be notified by.
         """
-        deadline = time.time() + max(float(timeout_minutes or 0), 0) * 60.0
         with self.condition:
             while True:
                 if self.stopping:
@@ -1575,54 +1829,60 @@ class _Session:
                     self.pending_score = None
                     self.awaiting = False
                     # Only a real answer counts as graded - not a skip, and
-                    # not a GOOD/BAD sample request, which leaves the duel
+                    # not a GOOD sample request, which leaves the duel
                     # on screen still waiting.
                     if isinstance(score, tuple):
                         self.graded += 1
                     return score
-                # After the grade, never instead of it: a queued GOOD/BAD is
-                # a side request, and a grade the user managed to land in
+                # After the grade, never instead of it: a queued GOOD press
+                # is a side request, and a grade the user managed to land in
                 # the same instant is the answer to the question on screen.
                 if self.pending_demos:
                     self.awaiting = False
-                    return ("demo_good" if self.pending_demos.pop(0)
-                            else "demo_bad")
+                    return self.pending_demos.pop(0)
                 self.condition.wait(0.25)
                 if state.interrupted or getattr(state, "stopping_generation", False):
-                    return None
-                if timeout_minutes and time.time() > deadline:
-                    logger.warning(
-                        f"{WHO}: no grade for {timeout_minutes:g} minutes - "
-                        f"pausing the search. The learned state is kept and "
-                        f"the next Generate resumes it; the timeout is in "
-                        f"Settings > CNPro.")
-                    self.stopping = True
-                    self.timed_out = True
                     return None
 
     # -- written by the panel --------------------------------------------
 
-    def grade(self, score, disliked=False):
+    def grade(self, score, disliked=False, similar=None):
         """An A-vs-B grade (0..10) or the "skip" token. ONE click, whichever
-        row it lands on: `disliked` is simply which row - the lower one says
-        "and I dislike both of these". Any interesting toggles set since the
-        duel was published ride along with it."""
+        of the three rows it lands on.
+
+        The row is the verdict the comparison itself cannot carry, and there
+        are three of them because there are two such verdicts:
+
+            similar=False   distinct samples, and we are on track
+            similar=True    SIMILAR samples, and we are on track
+            disliked=True   both are bad (and the row says nothing about
+                            whether they looked alike - see below)
+
+        The bottom row leaves `similar` as None rather than guessing it.
+        Four rows would be needed to carry both verdicts at once, which is
+        forty-four buttons, and a bad region is the cheapest place to lack
+        similarity data - the search is about to stop asking about it anyway.
+
+        Any interesting toggles set since the duel was published ride along.
+        """
         with self.condition:
             if not self.awaiting:
                 return False
             self.pending_score = (
                 "skip" if score == "skip"
-                else (float(score), bool(disliked), tuple(self.interesting)))
+                else (float(score), bool(disliked), similar,
+                      tuple(self.interesting)))
             self.interesting = [False, False]
             self.status = "recorded - working out what to ask next"
             self.condition.notify_all()
             return True
 
-    def request_demo(self, good):
-        """Ask the loop for one on-demand sample from the good or bad end.
+    def request_demo(self, count=None):
+        """Ask the loop for on-demand sample(s) from the good end - one for
+        GOOD, a collage of `count` for N-GOOD.
 
         Mechanically a grade - it wakes the blocked loop - but it answers
-        nothing: the loop renders the sample, prints its recipe to the
+        nothing: the loop renders the sample(s), prints their recipes to the
         trace, and returns to the SAME duel, still waiting.
 
         QUEUED, not gated on a duel being on screen: a press that lands
@@ -1635,12 +1895,12 @@ class _Session:
         with self.condition:
             if not self.running or self.stopping:
                 return False
-            self.pending_demos.append(bool(good))
-            end = "good" if good else "bad"
-            self.status = (f"rendering a fresh guess from the {end} end"
-                           if self.awaiting else
-                           f"queued a fresh guess from the {end} end - "
-                           f"after this render")
+            request = _Demo(count)
+            self.pending_demos.append(request)
+            what = ("a fresh guess from the good end" if count is None
+                    else f"a collage of {request.count} good samples")
+            self.status = (f"rendering {what}" if self.awaiting else
+                           f"queued {what} - after this render")
             self.condition.notify_all()
             return True
 
@@ -1679,6 +1939,7 @@ class _Session:
                 "image_b": self.image_b,
                 "duel": self.duel,
                 "graded": self.graded,
+                "capacity": self.capacity,
                 "status": self.status,
                 "result": self.result,
                 "summary": self.summary,
@@ -1786,11 +2047,11 @@ def _host_component(name, is_img2img):
 #: Components per row that run() reads. The LoRA picker and its two tool
 #: buttons are UI-only (they fill the textbox next to them and are never
 #: read), so they are not among them.
-ROW_ARGS = 11
+ROW_ARGS = 9
 
-#: Trailing controls after the rows: seed policy, winner render, weight step,
-#: and whether Generate resumes the retained solver state.
-TAIL_ARGS = 4
+#: Trailing controls after the rows: seed policy, and whether Generate
+#: resumes the retained solver state.
+TAIL_ARGS = 2
 
 ARG_COUNT = 1 + MAX_ROWS * ROW_ARGS + TAIL_ARGS
 
@@ -1831,31 +2092,20 @@ class Script(scripts.Script):
         rows = [self._row(i, eid, visible=(i == 0)) for i in range(MAX_ROWS)]
 
         # --- the loop's own controls -------------------------------------
+        #
+        # Two checkboxes, nothing more. The weight grids live on the rows
+        # themselves (each weighted row's own list), and a stop renders
+        # nothing - the keepers are recipes in the trace, one paste away.
         with gr.Row(variant="compact"):
-            # ONE grid for both weighted row kinds - LoRA weights and prompt
-            # weights - because they are the same kind of question asked
-            # about different things. Two controls would be two ways to say
-            # the same number. The default 0.4 gives each weighted row three
-            # visible states (a LoRA's 0.2 / 0.6 / 1.0), which is what keeps
-            # a many-row search inside a human's duel budget; set it finer
-            # to let the recommendation land between the values that were
-            # compared, which is what the model is for - a duel is only ever
-            # asked at MIN_DUEL_SEPARATION or more apart regardless.
-            weight_step = gr.Number(label="Weight step",
-                                    value=LORA_WEIGHT_STEP, minimum=0.01,
-                                    maximum=0.5, step=0.01, scale=2,
-                                    elem_id=f"{eid}_step")
             vary_seed = gr.Checkbox(
                 label="New seed each duel", value=False, scale=2,
                 elem_id=f"{eid}_vary_seed")
-            render_winner = gr.Checkbox(
-                label="Render the winner on stop", value=True, scale=2,
-                elem_id=f"{eid}_render_winner")
-            # ON BY DEFAULT: a search that ended - STOP, Interrupt, the idle
-            # timeout, even a restart (the state is mirrored to disk) - is a
-            # reached state, and Generate continues from it as long as the
-            # rows still match what it was learned on. Unticking is the one
-            # way to say "same rows, start over".
+            # ON BY DEFAULT: a search that ended - STOP, Interrupt, even a
+            # restart (the state is mirrored to disk) - is a reached state,
+            # and Generate continues from it as long as the rows still match
+            # what it was learned on. Unticking is the one way to say "same
+            # rows, start over", and it is also what clears the Tried record
+            # (see _Session.start) - the two are the same statement.
             resume_search = gr.Checkbox(
                 label="Resume search", value=True, scale=2,
                 elem_id=f"{eid}_resume")
@@ -1899,21 +2149,49 @@ class Script(scripts.Script):
                 interesting_b = gr.Button(value="✦ B interesting",
                                           elem_id=f"{eid}_interesting_b",
                                           elem_classes=["cnpro-ab-mark"])
+            # THE SAME 0..10 SCALE, THREE TIMES, and the ROW is the verdict
+            # the comparison itself cannot carry. One click answers, whichever
+            # row it lands on - no second gesture, no memory of a reference,
+            # no absolute number:
+            #
+            #   Distinct samples   these two look rather different, and we
+            #                      are on track
+            #   Similar samples    ...rather ALIKE. The cheapest click in the
+            #                      panel and the most informative one: it is
+            #                      a first-glance impression that costs no
+            #                      deliberation, and because the top two rows
+            #                      PARTITION the on-track case, every graded
+            #                      duel yields a similarity label rather than
+            #                      only the ones somebody bothered to mark.
+            #                      That is what trains the separation metric -
+            #                      see ab_search._fit_metric - which decides
+            #                      whether a duel is worth asking, how
+            #                      different a keeper has to be, and what a
+            #                      collage may hold together.
+            #   Bad samples        I will rate them, but both are bad.
+            #
+            # Ordered so the ANCHORS do not move: twenty duels of muscle
+            # memory say "top = normal, bottom = both bad", and the new state
+            # goes in the middle where it costs neither.
+            #
             # The scale's ends are NOT labelled here, they are labelled in the
             # status line directly underneath. A gr.HTML in this row carries
             # gradio's `.block { width: 100% }`, so each caption claims the
             # whole row as its flex base and pushes STOP onto a line of its
             # own - measured, not guessed. Two fewer components, and the
             # legend still sits against the buttons it explains.
-            with gr.Row(elem_classes=["cnpro-ab-grades"]):
-                # "Grade here", in the padding the row already reserves on
-                # its left for seam symmetry (see style.css) - absolutely
-                # positioned like STOP in the right one, so the nudge costs
-                # no layout and its appearing moves nothing. Faded in by the
-                # tick's phase CSS exactly while a grade is awaited: the one
-                # moment the panel goes quiet and the next move is the
-                # user's, which nothing used to say.
-                gr.HTML("<span class='cnpro-ab-grade-hint'>Grade here "
+            with gr.Row(elem_classes=["cnpro-ab-grades", "cnpro-ab-distinct"]):
+                # "Your turn", hugging the scale's left edge. The block is a
+                # ZERO-WIDTH flex item sitting right before the first grade
+                # button, and the text hangs off it leftward (style.css) -
+                # anchored to the strip by construction, so it stays glued
+                # to button 0 at any panel width, while the centred strip
+                # itself does not move a pixel. Faded in by the tick's phase
+                # CSS exactly while a grade is awaited: the one moment the
+                # panel goes quiet and the next move is the user's, which
+                # nothing used to say.
+                gr.HTML("<span class='cnpro-ab-grade-hint'>Your turn "
+                        "- grade "
                         "<span class='cnpro-ab-grade-hint-arrow'>➜</span>"
                         "</span>",
                         elem_classes=["cnpro-ab-grade-hint-wrap"])
@@ -1924,35 +2202,86 @@ class Script(scripts.Script):
                                            + (["cnpro-ab-grade-tie"]
                                               if score == GRADES // 2 else []))
                     for score in range(GRADES)]
+                gr.HTML("<span class='cnpro-ab-row-label'>Distinct samples"
+                        "</span>",
+                        elem_classes=["cnpro-ab-row-label-wrap"])
                 # GOOD asks the solver for one fresh sample from what it
-                # currently believes you want, BAD from what it believes you
-                # do not - pure inference, varied per press, no effect on
-                # the duel or the model. The recipe lands in Tried; the
-                # image lands in the output folder and the final gallery.
+                # currently believes you want - pure inference, varied per
+                # press, no effect on the duel or the model. The recipe
+                # lands in Tried; the image lands in the output folder and
+                # the final gallery.
                 good = gr.Button(value="GOOD", min_width=80,
                                  elem_id=f"{eid}_good",
                                  elem_classes=["cnpro-ab-demo"])
                 stop = gr.Button(value="STOP", variant="stop", min_width=80,
                                  elem_id=f"{eid}_stop",
                                  elem_classes=["cnpro-ab-stop"])
-            # The SAME scale twice, and the row is the verdict: grading on
-            # this second row says "and I dislike BOTH of these". That is a
-            # feeling the user has the moment a pair appears - no memory of
-            # any reference, no absolute number, no second click: the one
-            # click that grades the duel simply lands one row lower. The
-            # grade still matters (which side is LESS bad steers the search
-            # inside the region); the row is what lets it mark the whole
-            # region as avoid-this and change the subject - see
-            # ab_search.observe.
+            # "Rather similar, and we are on track". Same scale, same click,
+            # one row lower - and the label it adds is the one thing no
+            # amount of grading can produce: a graded duel encodes a
+            # DIFFERENCE in utility, never a DISTANCE.
+            with gr.Row(elem_classes=["cnpro-ab-grades", "cnpro-ab-similar"]):
+                # A zero-width SPACER matching the hint's wrap on the row
+                # above. It draws nothing; it exists so all three rows have
+                # the same number of flex items before button 0. Without it
+                # the hint's own flex gap shifts row one 2px right of the
+                # other two - measured - and three scales that disagree by
+                # 2px are three instruments rather than one ruler.
+                gr.HTML("", elem_classes=["cnpro-ab-grade-hint-wrap"])
+                similar_buttons = [
+                    gr.Button(value=str(score), min_width=34,
+                              elem_id=f"{eid}_similar_{score}",
+                              elem_classes=["cnpro-ab-grade"]
+                                           + (["cnpro-ab-grade-tie"]
+                                              if score == GRADES // 2 else []))
+                    for score in range(GRADES)]
+                gr.HTML("<span class='cnpro-ab-row-label'>Similar samples"
+                        "</span>",
+                        elem_classes=["cnpro-ab-row-label-wrap"])
+                # The solver's own estimate of how many distinctly different
+                # good configurations it holds, and the count the button
+                # beside it will actually render. Rewritten after every
+                # graded duel (see _Session.set_capacity) and EDITABLE in
+                # between: the estimate is honest about a good region that
+                # can hold thousands, and what it is worth spending on that
+                # region is not a question the solver can answer.
+                #
+                # A Textbox rather than a Number: gradio's Number carries a
+                # stepper and a minimum width that no amount of CSS makes
+                # small, and this has to fit in the strip of parked controls
+                # beside a scale. `container=False` drops the label frame;
+                # the "N=" in front of it is drawn by style.css, so the value
+                # stays a bare integer that both sides can parse.
+                capacity_box = gr.Textbox(
+                    value=str(CAPACITY_DEFAULT), container=False, lines=1,
+                    max_lines=1, interactive=True, show_label=False,
+                    elem_id=f"{eid}_capacity",
+                    elem_classes=["cnpro-ab-capacity"])
+                # N-GOOD: a COLLAGE of N good samples that are all visibly
+                # different from each other - the whole learned region at
+                # once rather than one draw from it. Press again for another
+                # collage; the entries are ranked by a fresh posterior draw
+                # each time. See ab_search.population.
+                n_good = gr.Button(value="N GOOD", min_width=80,
+                                   elem_id=f"{eid}_n_good",
+                                   elem_classes=["cnpro-ab-demo"])
+            # "I will rate them, but both are bad." The grade still matters
+            # (which side is LESS bad steers the search inside the region);
+            # the row is what lets it mark the whole region as avoid-this and
+            # change the subject - see ab_search.observe. It carries no
+            # similarity verdict: four rows would be needed for both, and a
+            # bad region is the cheapest place to lack that data.
             with gr.Row(elem_classes=["cnpro-ab-grades", "cnpro-ab-dislike"]):
+                gr.HTML("", elem_classes=["cnpro-ab-grade-hint-wrap"])
                 dislike_buttons = [
                     gr.Button(value=str(score), min_width=34,
                               elem_id=f"{eid}_dislike_{score}",
-                              elem_classes=["cnpro-ab-grade"])
+                              elem_classes=["cnpro-ab-grade"]
+                                           + (["cnpro-ab-grade-tie"]
+                                              if score == GRADES // 2 else []))
                     for score in range(GRADES)]
-                bad = gr.Button(value="BAD", min_width=80,
-                                elem_id=f"{eid}_bad",
-                                elem_classes=["cnpro-ab-demo"])
+                gr.HTML("<span class='cnpro-ab-row-label'>Bad samples</span>",
+                        elem_classes=["cnpro-ab-row-label-wrap"])
                 skip = gr.Button(value="skip", min_width=80,
                                  elem_id=f"{eid}_skip",
                                  elem_classes=["cnpro-ab-skip"])
@@ -2033,23 +2362,24 @@ class Script(scripts.Script):
         self._wire_rows(rows, row_count, headline, add, remove, rescan,
                         enables, type_filters, count)
         self._wire_duel(poller, seen, duel_group, image_a, image_b,
-                        status, config, trace, grade_buttons, dislike_buttons,
-                        (interesting_a, interesting_b), (good, bad), skip,
-                        stop, is_img2img)
+                        status, config, trace,
+                        (grade_buttons, similar_buttons, dislike_buttons),
+                        (interesting_a, interesting_b), (good, n_good),
+                        capacity_box, skip, stop, is_img2img)
         self._wire_set(apply_button, config, set_note, targets, unreachable)
         self._wire_io(export_button, import_button, session_file, io_note,
                       rows, row_count, headline,
-                      (vary_seed, render_winner, weight_step, resume_search),
+                      (vary_seed, resume_search),
                       targets, _canvas_targets(groups), len(groups),
                       is_img2img, duel_group, status)
 
         # Returned in the order run() unpacks them - see _read_rows.
         controls = [row_count]
         for row in rows:
-            controls.extend([row.target, row.mode, row.field, row.choices,
+            controls.extend([row.target, row.mode, row.choices,
                              row.line, row.values, row.prompt_mode, row.loras,
-                             row.weight_low, row.weight_high, row.point])
-        controls.extend([vary_seed, render_winner, weight_step, resume_search])
+                             row.weights, row.point])
+        controls.extend([vary_seed, resume_search])
         return controls
 
     # -- one row ---------------------------------------------------------
@@ -2065,27 +2395,25 @@ class Script(scripts.Script):
             # blank target the row used to open showing the unit controls,
             # which reads as "this needs a ControlNet unit" when it does not -
             # Prompt and LoRA need none.
-            # min_width fits all THREE options on one line - at the old 200
-            # the third chip wrapped and the row grew a line taller for
-            # nothing, exactly what the width was there to prevent.
-            mode = gr.Radio(
-                label="how", choices=MODES, value=MODE_SETTING, visible=False,
-                scale=2, min_width=310, elem_id=f"{rid}_mode")
-            field = gr.Dropdown(
-                label="setting", choices=list(FIELD_LABEL_LIST),
-                value=UNIT_FIELDS["model"].label, visible=False, scale=3,
-                elem_id=f"{rid}_field")
+            # A Dropdown, not a Radio: three chips needed 310px to stay on one
+            # line, a dropdown says the same thing in a label's width - and
+            # the panel is short of width, not of clicks.
+            mode = gr.Dropdown(
+                label="how", choices=MODES, value=MODE_MODEL, visible=False,
+                scale=2, elem_id=f"{rid}_mode")
             choices = gr.Dropdown(
-                label="values", choices=[], value=[], multiselect=True,
+                label="models", choices=[], value=[], multiselect=True,
                 visible=False, scale=6, elem_id=f"{rid}_choices")
             line = gr.Dropdown(
                 label="profile", choices=list(_profile_lines()), value="Main",
                 visible=False, scale=2, elem_id=f"{rid}_line")
-            # Which drawn point a "Profile point" row moves: 0-based, left to
-            # right, negative from the end (-1 = rightmost).
-            point = gr.Number(
-                label="point #", value=0, precision=0, visible=False,
-                scale=1, min_width=70, elem_id=f"{rid}_point")
+            # Which drawn points a "Profile points" row moves - a LIST, and
+            # the listed points move together by the row's offset: 0-based,
+            # left to right, negative from the end (-1 = rightmost).
+            point = gr.Textbox(
+                label="points", value="0", visible=False,
+                scale=1, min_width=70, placeholder="0, 2, -1",
+                elem_id=f"{rid}_point")
             # DECLARED BEFORE the values box, which is what puts it to the LEFT
             # of it - a hidden component takes no space, so declaration order
             # is the only thing that decides where a row's visible controls
@@ -2120,29 +2448,29 @@ class Script(scripts.Script):
                 label="LoRAs (one per line)", value="", visible=False, scale=5,
                 lines=2, max_lines=8, placeholder="add_detail\nfilm_grain",
                 elem_id=f"{rid}_loras")
-            weight_low = gr.Number(label=WEIGHT_LABELS[0], value=LORA_WEIGHT_MIN,
-                                   minimum=-2, maximum=4, step=0.05,
-                                   visible=False, scale=1, min_width=70,
-                                   elem_id=f"{rid}_wmin")
-            weight_high = gr.Number(label=WEIGHT_LABELS[1], value=LORA_WEIGHT_MAX,
-                                    minimum=-2, maximum=4, step=0.05,
-                                    visible=False, scale=1, min_width=70,
-                                    elem_id=f"{rid}_wmax")
+            # ONE box for the whole weight list, interval notation included -
+            # it replaced a min/max pair plus a panel-global step, which could
+            # only ever say "an evenly spaced grid" and said it in three
+            # places. Empty means the kind's default grid; the placeholder
+            # names it (see _row_visibility).
+            weights = gr.Textbox(
+                label="weights", value="", visible=False, scale=2,
+                min_width=110, elem_id=f"{rid}_weights")
 
-        row = _Row(container, target, mode, field, choices, line, values,
-                   prompt_mode, lora_pick, loras, weight_low, weight_high,
+        row = _Row(container, target, mode, choices, line, values,
+                   prompt_mode, lora_pick, loras, weights,
                    lora_refresh, lora_dice, point)
 
-        def visibility(target_value, mode_value, field_label, low, high):
+        def visibility(target_value, mode_value):
             return [gr.update(**props) for props in _row_visibility(
-                target_value, mode_value, field_label, low, high)]
+                target_value, mode_value)]
 
-        switches = [mode, field, choices, line, values, prompt_mode,
-                    lora_pick, loras, weight_low, weight_high,
+        switches = [mode, choices, line, values, prompt_mode,
+                    lora_pick, loras, weights,
                     lora_refresh, lora_dice, point]
-        for component in (target, mode, field):
+        for component in (target, mode):
             component.change(fn=visibility,
-                             inputs=[target, mode, field, weight_low, weight_high],
+                             inputs=[target, mode],
                              outputs=switches, show_progress=False)
 
         # THE FALLBACK PATH for the LoRA picker, not the normal one:
@@ -2214,15 +2542,11 @@ class Script(scripts.Script):
         remove.click(fn=resize(-1), inputs=[row_count], outputs=outputs,
                      show_progress=False)
 
-        def choices_update(target_value, field_label, selected, filters):
-            """The value list for one Setting row, narrowed by its unit."""
-            field_name = FIELD_LABELS.get(field_label, "model")
-            field = UNIT_FIELDS[field_name]
-            if field.kind != KIND_CHOICE:
-                return gr.update()
+        def choices_update(target_value, selected, filters):
+            """One row's model list, narrowed by its unit's Control Type."""
             index = _unit_index(target_value)
             control_type = filters[index] if index is not None and index < len(filters) else "All"
-            available = field.choices(control_type)
+            available = _models_for_type(control_type)
             return gr.update(choices=available,
                              value=[v for v in (selected or []) if v in available])
 
@@ -2236,9 +2560,8 @@ class Script(scripts.Script):
             never landed back on the Python object.
             """
             targets = list(args[0:MAX_ROWS])
-            fields = list(args[MAX_ROWS:2 * MAX_ROWS])
-            selected = list(args[2 * MAX_ROWS:3 * MAX_ROWS])
-            rest = args[3 * MAX_ROWS:]
+            selected = list(args[MAX_ROWS:2 * MAX_ROWS])
+            rest = args[2 * MAX_ROWS:]
             flags, filters = list(rest[:count]), list(rest[count:])
 
             available = _target_choices(flags)
@@ -2250,9 +2573,8 @@ class Script(scripts.Script):
                 # available. Prompt and LoRA are always in the list.
                 value = target_value if target_value in available else available[0]
                 updates.append(gr.update(choices=available, value=value))
-            for target_value, field_label, current in zip(targets, fields, selected):
-                updates.append(choices_update(target_value, field_label,
-                                              current, filters))
+            for target_value, current in zip(targets, selected):
+                updates.append(choices_update(target_value, current, filters))
             loras = _lora_names()
             updates.extend(gr.update(choices=loras) for _ in range(MAX_ROWS))
             return updates
@@ -2273,7 +2595,6 @@ class Script(scripts.Script):
             return rebuild(*args)
 
         live_inputs = ([row.target for row in rows]
-                       + [row.field for row in rows]
                        + [row.choices for row in rows]
                        + enables + type_filters)
         live_outputs = ([row.target for row in rows]
@@ -2286,29 +2607,29 @@ class Script(scripts.Script):
             subscribe(fn=handler, inputs=live_inputs, outputs=live_outputs,
                       show_progress=False)
 
-        # Per row: picking a unit or a field re-reads only THAT row's lists.
-        # The LoRA names are re-read here rather than only at build time - the
-        # panel is built once at startup and the host may not have scanned its
-        # LoRAs yet, which left every picker permanently empty on a page where
-        # nothing else happened to rebuild it.
+        # Per row: picking a unit re-reads only THAT row's lists. The LoRA
+        # names are re-read here rather than only at build time - the panel
+        # is built once at startup and the host may not have scanned its
+        # LoRAs yet, which left every picker permanently empty on a page
+        # where nothing else happened to rebuild it.
         for row in rows:
-            def on_row(target_value, field_label, selected, *values):
+            def on_row(target_value, selected, *values):
                 filters = list(values[count:])
-                return (choices_update(target_value, field_label, selected, filters),
+                return (choices_update(target_value, selected, filters),
                         gr.update(choices=_lora_names())
                         if target_value == TARGET_LORA else gr.update())
 
-            for component in (row.target, row.field):
-                component.change(
-                    fn=on_row,
-                    inputs=[row.target, row.field, row.choices] + enables + type_filters,
-                    outputs=[row.choices, row.lora_pick], show_progress=False)
+            row.target.change(
+                fn=on_row,
+                inputs=[row.target, row.choices] + enables + type_filters,
+                outputs=[row.choices, row.lora_pick], show_progress=False)
 
     def _wire_duel(self, poller, seen, duel_group, image_a, image_b,
-                   status, config, trace, grade_buttons, dislike_buttons,
-                   interesting_buttons, demo_buttons, skip, stop, is_img2img):
-        """The poll, the two grade rows, the interesting toggles, GOOD/BAD,
-        skip and STOP."""
+                   status, config, trace, grade_rows,
+                   interesting_buttons, demo_buttons, capacity_box, skip,
+                   stop, is_img2img):
+        """The poll, the three grade rows, the interesting toggles,
+        GOOD/N-GOOD and its N box, skip and STOP."""
         session = _session(is_img2img)
         tab = "img2img" if is_img2img else "txt2img"
         eid = f"cnpro_ab_{tab}"
@@ -2365,25 +2686,33 @@ class Script(scripts.Script):
         def paint(last):
             snap = session.snapshot()
             last = last if isinstance(last, dict) else {}
-            # Retained solver state keeps the group (and the GOOD/BAD
+            # Retained solver state keeps the group (and the GOOD/N-GOOD
             # buttons inside it) reachable on a page that loaded AFTER the
             # search - a reload, or a restarted server whose disk mirror
             # still holds a taste worth sampling. Checked last, so a live
             # search never pays the disk read.
+            retained = None if snap["running"] else _retained_solver(tab)
             visible = (snap["running"] or bool(snap["image_a"])
-                       or _retained_solver(tab) is not None)
+                       or retained is not None)
             if visible and not snap["running"] and not snap["status"]:
                 # Only a fresh session is this blank; say why the group is
                 # on screen at all.
                 snap["status"] = ("solver state from an earlier session is "
-                                  "available - GOOD/BAD render samples from "
-                                  "it; Generate resumes the search")
+                                  "available - GOOD/N-GOOD render samples "
+                                  "from it; Generate resumes the search")
+            # The retained state's own estimate is what keeps the N box
+            # meaningful on a page that loaded AFTER the search that learned
+            # it - a reload, or a restarted server reading its disk mirror.
+            capacity = snap["capacity"]
+            if capacity is None and isinstance(retained, dict):
+                capacity = retained.get("capacity")
             now = {
                 "generation": snap["generation"],
                 "visible": visible,
                 "status": _status_markdown(snap),
                 "result": snap["result"],
                 "trace": snap["trace"],
+                "capacity": None if capacity is None else str(int(capacity)),
                 "active": bool(snap["running"]),
                 "css": _phase_css(eid, snap, _inference_progress()),
             }
@@ -2410,6 +2739,15 @@ class Script(scripts.Script):
                 (when("result", now["result"])
                  if now["result"] or now["active"] else gr.update()),
                 when("trace", now["trace"]),
+                # The N box, and ONLY when the number the solver reports has
+                # actually changed. Every tick would fight the user for the
+                # box - this is the one output here that is interactive, and
+                # a value re-sent 1.6 times a second is a value that cannot
+                # be typed into. Changing it after a graded duel is the
+                # intended overwrite (see _Session.set_capacity); between
+                # grades nothing here touches it.
+                (when("capacity", now["capacity"])
+                 if now["capacity"] is not None else gr.update()),
                 # The timer switches ITSELF off. Nothing else knows when the
                 # loop ended: run() returns on its own thread, and a handler
                 # bound to the Generate click would have to guess whether this
@@ -2420,7 +2758,7 @@ class Script(scripts.Script):
             ]
 
         tick_outputs = [seen, duel_group, image_a, image_b, status, config,
-                        trace, poller, phase_css]
+                        trace, capacity_box, poller, phase_css]
         poller.tick(fn=tick, inputs=[seen], outputs=tick_outputs,
                     show_progress=False, queue=False)
 
@@ -2439,19 +2777,24 @@ class Script(scripts.Script):
                 f"and its images will still be saved, but the duels will not "
                 f"appear in the panel.")
 
-        def grade(score, disliked=False):
+        def grade(score, disliked=False, similar=None):
             def handler():
-                if not session.grade(score, disliked):
+                if not session.grade(score, disliked, similar):
                     return gr.update()
                 return gr.update(value=_status_markdown(session.snapshot()))
             return handler
 
-        for score, button in enumerate(grade_buttons):
-            button.click(fn=grade(score), inputs=[], outputs=[status],
-                         show_progress=False, queue=False)
-        for score, button in enumerate(dislike_buttons):
-            button.click(fn=grade(score, disliked=True), inputs=[],
-                         outputs=[status], show_progress=False, queue=False)
+        # The three rows carry the same eleven grades and differ only in the
+        # verdict the row itself is - see _Session.grade. Wired from one
+        # table so the three can never drift apart in what a click means.
+        distinct_buttons, similar_buttons, dislike_buttons = grade_rows
+        for buttons, verdict in ((distinct_buttons, {"similar": False}),
+                                 (similar_buttons, {"similar": True}),
+                                 (dislike_buttons, {"disliked": True})):
+            for score, button in enumerate(buttons):
+                button.click(fn=grade(score, **verdict), inputs=[],
+                             outputs=[status], show_progress=False,
+                             queue=False)
 
         # skip is a grade in every mechanical sense - it wakes the loop, the
         # loop moves on - it just records nothing: the duel could not be
@@ -2471,20 +2814,20 @@ class Script(scripts.Script):
             button.click(fn=toggle(side), inputs=[], outputs=[status],
                          show_progress=False, queue=False)
 
-        # GOOD/BAD press two very different machines depending on whether a
-        # loop is alive, and the user should never have to know which:
+        # GOOD/N-GOOD press two very different machines depending on whether
+        # a loop is alive, and the user should never have to know which:
         #
         # * a RUNNING search takes the request directly - queued, served at
         #   the loop's next listen, back to the duel afterwards;
         # * IDLE (search finished, or a session just Imported), the press
         #   ITSELF becomes the generation: it stages the request and clicks
         #   Generate through the hidden trigger box below, and run() sees
-        #   the staged entry and renders one sample from the retained solver
-        #   state instead of starting duels. That is what makes the solver a
-        #   GENERATOR once a good state is reached: the search ending does
-        #   not end sampling from it, and everything the rows do not own -
-        #   prompt, canvases, resolution, seed - is read fresh from the UI
-        #   at that Generate, tweakable at will between presses.
+        #   the staged entry and renders those samples from the retained
+        #   solver state instead of starting duels. That is what makes the
+        #   solver a GENERATOR once a good state is reached: the search
+        #   ending does not end sampling from it, and everything the rows do
+        #   not own - prompt, canvases, resolution, seed - is read fresh
+        #   from the UI at that Generate, tweakable at will between presses.
         #
         # The box holds a distinct token per press (a repeated value fires
         # no change event), and the click happens client-side because a
@@ -2498,34 +2841,48 @@ class Script(scripts.Script):
             js="(token) => { if (token) { const b = document.getElementById("
                f"'{tab}_generate'); if (b) b.click(); }} }}")
 
-        def demo(wanted):
-            def handler():
-                if session.request_demo(wanted):
-                    return (gr.update(value=_status_markdown(session.snapshot())),
-                            gr.update())
-                payload = _retained_solver(tab)
-                if not payload or not payload.get("observations"):
-                    with session.condition:
-                        session.status = (
-                            "no solver state to sample from - run a search "
-                            "first, or Import a session file that carries one")
-                    return (gr.update(value=_status_markdown(session.snapshot())),
-                            gr.update())
-                _DEMO_SERIAL[tab] += 1
-                _PENDING_DEMO[tab].append((bool(wanted), time.time()))
-                with session.condition:
-                    session.status = ("generating a "
-                                      + ("GOOD" if wanted else "BAD")
-                                      + " sample from the learned taste")
+        def press(request):
+            """One GOOD or N-GOOD press, down whichever of the two paths is
+            live. Both paths end with the panel saying what it did, because
+            the two look identical from the button and only one of them
+            produces an image within the second."""
+            if session.request_demo(request.count):
                 return (gr.update(value=_status_markdown(session.snapshot())),
-                        gr.update(value=f"go-{_DEMO_SERIAL[tab]}"))
-            return handler
+                        gr.update())
+            payload = _retained_solver(tab)
+            if not payload or not payload.get("observations"):
+                with session.condition:
+                    session.status = (
+                        "no solver state to sample from - run a search "
+                        "first, or Import a session file that carries one")
+                return (gr.update(value=_status_markdown(session.snapshot())),
+                        gr.update())
+            _DEMO_SERIAL[tab] += 1
+            _PENDING_DEMO[tab].append((request, time.time()))
+            with session.condition:
+                session.status = (f"generating a {request.label} sample from "
+                                  f"the learned taste" if request.count is None
+                                  else f"generating a collage of "
+                                       f"{request.count} good samples from "
+                                       f"the learned taste")
+            return (gr.update(value=_status_markdown(session.snapshot())),
+                    gr.update(value=f"go-{_DEMO_SERIAL[tab]}"))
 
-        good_button, bad_button = demo_buttons
-        good_button.click(fn=demo(True), inputs=[], outputs=[status, demo_go],
+        good_button, n_good_button = demo_buttons
+        good_button.click(fn=lambda: press(_Demo()), inputs=[],
+                          outputs=[status, demo_go],
                           show_progress=False, queue=False)
-        bad_button.click(fn=demo(False), inputs=[], outputs=[status, demo_go],
-                         show_progress=False, queue=False)
+        # The N box is an INPUT to this click, so whatever is in it at the
+        # moment of the press is what gets rendered - the user's edit wins
+        # over the solver's last estimate without either side having to
+        # notice the other. Read as text and clamped here rather than
+        # trusted: it is a free-text box, and "twelve" or "-3" or an empty
+        # box must cost a status line, not a traceback in the generation
+        # thread.
+        n_good_button.click(fn=lambda text: press(_Demo(_collage_count(text))),
+                            inputs=[capacity_box],
+                            outputs=[status, demo_go],
+                            show_progress=False, queue=False)
 
         def on_stop():
             session.request_stop()
@@ -2606,17 +2963,15 @@ class Script(scripts.Script):
         """
         tab = "img2img" if is_img2img else "txt2img"
         session = _session(is_img2img)
-        row_keys = ("target", "mode", "field", "choices", "line", "values",
-                    "prompt_mode", "loras", "weight_low", "weight_high",
-                    "point")
+        row_keys = ("target", "mode", "choices", "line", "values",
+                    "prompt_mode", "loras", "weights", "points")
 
         export_inputs = [row_count]
         for row in rows:
-            export_inputs.extend([row.target, row.mode, row.field,
+            export_inputs.extend([row.target, row.mode,
                                   row.choices, row.line, row.values,
                                   row.prompt_mode, row.loras,
-                                  row.weight_low, row.weight_high,
-                                  row.point])
+                                  row.weights, row.point])
         export_inputs.extend(tail)
         export_inputs.extend(component for _token, component in targets)
         export_inputs.extend(component for _token, component in canvas_targets)
@@ -2627,8 +2982,6 @@ class Script(scripts.Script):
             row_values = [{key: _jsonable(next(it)) for key in row_keys}
                           for _ in range(MAX_ROWS)]
             tail_values = {"vary_seed": _jsonable(next(it)),
-                           "render_winner": _jsonable(next(it)),
-                           "weight_step": _jsonable(next(it)),
                            "resume": _jsonable(next(it))}
             settings = {token: _jsonable(next(it)) for token, _c in targets}
             canvases = {}
@@ -2669,17 +3022,17 @@ class Script(scripts.Script):
         import_outputs = [note, row_count, headline]
         import_outputs.extend(row.container for row in rows)
         for row in rows:
-            import_outputs.extend([row.target, row.mode, row.field,
+            import_outputs.extend([row.target, row.mode,
                                    row.choices, row.line, row.values,
                                    row.prompt_mode, row.lora_pick, row.loras,
-                                   row.weight_low, row.weight_high,
+                                   row.weights,
                                    row.lora_refresh, row.lora_dice,
                                    row.point])
         import_outputs.extend(tail)
         import_outputs.extend(component for _token, component in targets)
         import_outputs.extend(component for _token, component in canvas_targets)
         # LAST: the duel group and its status line. An import that carries
-        # solver state reveals them, because GOOD/BAD live inside the group
+        # solver state reveals them, because GOOD/N-GOOD live inside the group
         # and "import a generator and sample from it" must not require a
         # search to run first just to make the buttons reachable.
         import_outputs.extend([duel_group, duel_status])
@@ -2725,12 +3078,16 @@ class Script(scripts.Script):
                 data = (imported_rows[index]
                         if index < len(imported_rows) else None)
                 if not isinstance(data, dict):
-                    updates.extend(gr.update() for _ in range(14))
+                    updates.extend(gr.update() for _ in range(12))
                     continue
-                props = _row_visibility(data.get("target"), data.get("mode"),
-                                        data.get("field"),
-                                        data.get("weight_low"),
-                                        data.get("weight_high"))
+                # Files from before the mode chooser slimmed down: "Setting"
+                # rows only ever varied the model in practice and "Profile
+                # point" is the singular spelling of the same mode - both
+                # map forward rather than blanking the dropdown.
+                mode_value = {"Setting": MODE_MODEL,
+                              "Profile point": MODE_POINTS}.get(
+                    data.get("mode"), data.get("mode"))
+                props = _row_visibility(data.get("target"), mode_value)
                 target_value = data.get("target")
                 choices = (available + [target_value]
                            if target_value and target_value not in available
@@ -2738,42 +3095,41 @@ class Script(scripts.Script):
                 selected = [v for v in (data.get("choices") or [])]
                 updates.append(gr.update(choices=choices, value=target_value))
                 updates.append(gr.update(**{**props[0],
-                                            "value": data.get("mode")}))
-                updates.append(gr.update(**{**props[1],
-                                            "value": data.get("field")}))
+                                            "value": mode_value}))
                 # The value list's OPTIONS live in this build's model
                 # registry; the imported selection is offered as-is so it
                 # renders even where the registry differs - rescan restores
                 # the full list.
-                updates.append(gr.update(**{**props[2], "choices": selected,
+                updates.append(gr.update(**{**props[1], "choices": selected,
                                             "value": selected}))
-                updates.append(gr.update(**{**props[3],
+                updates.append(gr.update(**{**props[2],
                                             "value": data.get("line")}))
-                updates.append(gr.update(**{**props[4],
+                updates.append(gr.update(**{**props[3],
                                             "value": data.get("values")}))
-                updates.append(gr.update(**{**props[5],
+                updates.append(gr.update(**{**props[4],
                                             "value": data.get("prompt_mode")}))
-                updates.append(gr.update(**props[6]))          # lora_pick
-                updates.append(gr.update(**{**props[7],
+                updates.append(gr.update(**props[5]))          # lora_pick
+                updates.append(gr.update(**{**props[6],
                                             "value": data.get("loras")}))
-                updates.append(gr.update(**{**props[8],
-                                            "value": data.get("weight_low")}))
-                updates.append(gr.update(**{**props[9],
-                                            "value": data.get("weight_high")}))
-                updates.append(gr.update(**props[10]))         # lora refresh
-                updates.append(gr.update(**props[11]))         # lora dice
-                # Files written before the point row existed have no "point";
-                # 0 is its neutral and the mode that reads it is not theirs.
-                updates.append(gr.update(**{**props[12],
-                                            "value": data.get("point", 0)}))
+                # A v1 file has no "weights" (it had a min/max pair and a
+                # panel-global step); the box is left as it is - empty means
+                # the default grid, which is the closest honest reading.
+                weights_value = ({"value": data["weights"]}
+                                 if isinstance(data.get("weights"), str)
+                                 else {})
+                updates.append(gr.update(**{**props[7], **weights_value}))
+                updates.append(gr.update(**props[8]))          # lora refresh
+                updates.append(gr.update(**props[9]))          # lora dice
+                # "points" (v2, a list as text) or the old single "point";
+                # files with neither predate the mode and 0 is its neutral.
+                points_value = data.get("points",
+                                        str(data.get("point", 0)))
+                updates.append(gr.update(**{**props[10],
+                                            "value": str(points_value)}))
 
             tail_values = payload.get("tail", {})
             updates.append(gr.update(value=bool(tail_values.get("vary_seed",
                                                                 False))))
-            updates.append(gr.update(value=bool(tail_values.get(
-                "render_winner", True))))
-            updates.append(gr.update(value=float(tail_values.get(
-                "weight_step", LORA_WEIGHT_STEP) or LORA_WEIGHT_STEP)))
             updates.append(gr.update(value=bool(tail_values.get("resume",
                                                                 True))))
 
@@ -2810,7 +3166,7 @@ class Script(scripts.Script):
                 note_parts.append(
                     f"Solver state ({solver.get('duels', 0)} duel(s)) is "
                     f"staged - press Generate with {WHO} to resume the "
-                    f"search, or GOOD/BAD in the panel above to render "
+                    f"search, or GOOD/N-GOOD in the panel above to render "
                     f"samples from it without searching.")
             if missing:
                 note_parts.append("**Not applied** (nothing here holds "
@@ -2824,13 +3180,13 @@ class Script(scripts.Script):
                         + (f"; could not place {missing}" if missing else ""))
             updates[0] = gr.update(value=" ".join(note_parts))
             # Imported solver state makes the duel group useful with nothing
-            # running - GOOD/BAD sample from it directly - so reveal it and
+            # running - GOOD/N-GOOD sample from it directly - so reveal it and
             # say so where those buttons are. Without state the group stays
             # as it was: revealing empty grading controls would promise a
             # duel that is not coming.
             if solver:
                 with session.condition:
-                    session.status = ("solver state imported - GOOD/BAD "
+                    session.status = ("solver state imported - GOOD/N-GOOD "
                                       "render samples from it; Generate "
                                       "resumes the search")
                 updates.append(gr.update(visible=True))
@@ -2850,15 +3206,13 @@ class Script(scripts.Script):
 
         Everything in here can raise about a misconfiguration, which is why
         run() calls it BEFORE deciding whether this Generate is a search or
-        a GOOD/BAD sample render: the two want different error handling - a
+        a GOOD/N-GOOD sample render: the two want different error handling - a
         search wants the stack trace, a sample press wants a status line -
         and both want the staged request consumed either way.
         """
         row_count = int(args[0] or 1)
-        vary_seed, render_winner, weight_step, resume_search = args[
-            1 + MAX_ROWS * ROW_ARGS:ARG_COUNT]
-        rows = _read_rows(args, row_count,
-                          float(weight_step or LORA_WEIGHT_STEP))
+        vary_seed, resume_search = args[1 + MAX_ROWS * ROW_ARGS:ARG_COUNT]
+        rows = _read_rows(args, row_count)
         genes = _build_genes(rows, ab_search)
         if not genes:
             raise RuntimeError(
@@ -2882,11 +3236,6 @@ class Script(scripts.Script):
 
         base_args = list(p.script_args)
         base_units = {}
-        # A unit that starts disabled is fine IF a row is what switches it on -
-        # "is this control worth having at all" is a legitimate thing to search
-        # over, and it is the one case where the check below would be wrong.
-        switched = {gene.unit_index for gene in genes
-                    if gene.kind == Gene.KIND_SETTING and gene.field == "enabled"}
         for gene in genes:
             if not gene.on_unit or gene.unit_index in base_units:
                 continue
@@ -2896,15 +3245,12 @@ class Script(scripts.Script):
                     f"{WHO}: row {gene.row + 1} targets unit "
                     f"{gene.unit_index}, which does not exist.")
             unit = base_args[slot]
-            if not getattr(unit, "enabled", False) \
-                    and gene.unit_index not in switched:
+            if not getattr(unit, "enabled", False):
                 raise RuntimeError(
                     f"{WHO}: row {gene.row + 1} targets unit "
-                    f"{gene.unit_index}, which is not enabled. A disabled unit "
-                    f"is dropped before the search is applied, so every duel "
-                    f"would be identical. Enable it, or give a row its "
-                    f"'{UNIT_FIELDS['enabled'].label}' setting so that the "
-                    f"search is the thing that switches it on.")
+                    f"{gene.unit_index}, which is not enabled. A disabled "
+                    f"unit is dropped before the search is applied, so every "
+                    f"duel would be identical. Enable it first.")
             base_units[gene.unit_index] = unit
         module = _profile_scale()
         for gene in genes:
@@ -2916,18 +3262,33 @@ class Script(scripts.Script):
                 # Before any duel is spent: a bad index would leave every
                 # offset falling on no point - a whole dimension of
                 # identical images, warned about once per render where
-                # nobody connects it back to the row.
+                # nobody connects it back to the row. The group moves
+                # together, so every listed index has to name an existing
+                # point, and no two may name the SAME one (0 and -N on an
+                # N-point line are the same knot spelled twice - it would
+                # move by double the offset the row promises).
                 count = module.profile_point_count(
                     base_units[gene.unit_index], gene.line)
-                if not (-count <= gene.point_index < count):
-                    raise RuntimeError(
-                        f"{WHO}: row {gene.row + 1} offsets point "
-                        f"{gene.point_index} of unit {gene.unit_index}'s "
-                        f"{gene.line} profile, which has {count} point(s) - "
-                        f"indices 0..{count - 1}, or negative from the end. "
-                        f"Pick an existing point.")
+                resolved = set()
+                for point_index in gene.point_indices:
+                    if not (-count <= point_index < count):
+                        raise RuntimeError(
+                            f"{WHO}: row {gene.row + 1} offsets point "
+                            f"{point_index} of unit {gene.unit_index}'s "
+                            f"{gene.line} profile, which has {count} "
+                            f"point(s) - indices 0..{count - 1}, or negative "
+                            f"from the end. Pick existing points.")
+                    knot = point_index if point_index >= 0 \
+                        else point_index + count
+                    if knot in resolved:
+                        raise RuntimeError(
+                            f"{WHO}: row {gene.row + 1} names the same drawn "
+                            f"point twice ({point_index} aliases an index "
+                            f"already listed on this {count}-point line) - "
+                            f"it would move by double the offset.")
+                    resolved.add(knot)
         return (genes, space, cnpro, base_args, base_units,
-                bool(vary_seed), bool(render_winner), bool(resume_search))
+                bool(vary_seed), bool(resume_search))
 
     def run(self, p, *args):
         if len(args) < ARG_COUNT:
@@ -2943,7 +3304,7 @@ class Script(scripts.Script):
 
         session = _session(self.is_img2img)
         tab = "img2img" if self.is_img2img else "txt2img"
-        # A GOOD/BAD press with no search running started THIS generation
+        # A GOOD/N-GOOD press with no search running started THIS generation
         # itself (see _wire_duel). Its staged request is consumed FIRST,
         # before the rows are even looked at: an entry left behind by a run
         # that died in validation used to hijack a later, unrelated Generate
@@ -2952,8 +3313,7 @@ class Script(scripts.Script):
         demo = self._pop_demo_request()
         try:
             (genes, space, cnpro, base_args, base_units,
-             vary_seed, render_winner, resume_search) = \
-                self._setup(p, args, ab_search)
+             vary_seed, resume_search) = self._setup(p, args, ab_search)
         except Exception as exc:
             if demo is None:
                 raise
@@ -2961,10 +3321,10 @@ class Script(scripts.Script):
             # do not validate - or no rows at all, on a freshly started UI -
             # mean the solver's space cannot be rebuilt here.
             session.start_demo("")
-            session.finish(f"sample refused - {exc} GOOD/BAD need the rows "
+            session.finish(f"sample refused - {exc} GOOD/N-GOOD need the rows "
                            f"the solver was trained on: recreate them, or "
                            f"Import the session file that carries them.")
-            logger.warning(f"{WHO}: a GOOD/BAD sample was requested but the "
+            logger.warning(f"{WHO}: a GOOD/N-GOOD sample was requested but the "
                            f"rows did not validate ({exc})")
             return Processed(p, [])
 
@@ -2976,10 +3336,10 @@ class Script(scripts.Script):
         base_prompt = p.prompt
         base_extras = _generation_extras(p)
 
-        # A GOOD/BAD press with no search running: render that sample from
-        # the retained solver state. The search does not restart, nothing is
-        # asked, and the state is left exactly as it was - for the next
-        # press, or for the next real search.
+        # A GOOD/N-GOOD press with no search running: render those samples
+        # from the retained solver state. The search does not restart,
+        # nothing is asked, and the state is left exactly as it was - for the
+        # next press, or for the next real search.
         if demo is not None:
             return self._demo_run(demo, p, ab_search, space, genes, base_args,
                                   cnpro, base_units, base_prompt, base_seed,
@@ -3021,8 +3381,6 @@ class Script(scripts.Script):
                 logger.info(f"{WHO}: resumed the {source} search - "
                             f"{restored} observation(s), "
                             f"{search.duels} graded duel(s).")
-        idle = float(shared.opts.data.get("cnpro_ab_idle_timeout",
-                                          IDLE_TIMEOUT_DEFAULT) or 0)
 
         p.extra_generation_params["Script"] = self.title()
         # THE SEARCH HAS NO LENGTH, so this number is a placeholder and the
@@ -3043,12 +3401,16 @@ class Script(scripts.Script):
         stopped = "stopped"
         duel = 0
         renders = {}     # recipe -> Processed; see RENDER_CACHE
-        demos = []       # GOOD/BAD samples rendered on demand, last 8 kept
+        demos = []       # GOOD samples rendered on demand, last 8 kept
         # LAST, so that nothing between here and the loop can raise with the
         # session marked running: the panel polls while it is, and a session
         # that is never finished is a panel that polls until the page is
         # reloaded. Every exit below goes through `finish`.
-        session.start()
+        #
+        # `resumed` is also what decides whether the panel's RECORD survives:
+        # a search continuing from retained observations keeps the Tried list
+        # that describes them - see _Session.start.
+        session.start(resumed=bool(resumed))
         if resumed:
             # A resumed search already knows things: say so before the first
             # duel, or the panel opens looking like a fresh start.
@@ -3062,6 +3424,7 @@ class Script(scripts.Script):
             payload = _solver_payload(search, base_seed, space)
             with session.condition:
                 session.solver_state = payload
+            session.set_capacity(payload["capacity"])
             _store_solver(tab, payload)
         try:
             while True:
@@ -3111,39 +3474,46 @@ class Script(scripts.Script):
                     break
 
                 last = (processed_a, processed_b)
-                session.publish(duel, processed_a.images[0], processed_b.images[0],
-                                "waiting for your grade")
-                answer = session.await_grade(idle)
-                # GOOD/BAD are not answers: render one fresh guess from the
-                # asked-for end of the solver's belief - pure inference, no
+                # The censoring probe SHOWS a pair it expects to look
+                # identical - that is the whole question it is asking (see
+                # ab_search._probe_duel). Unannounced it reads as the search
+                # having rendered the same image twice, which is a bug
+                # report, so the one duel that needs a word gets one.
+                session.publish(
+                    duel, processed_a.images[0], processed_b.images[0],
+                    "waiting for your grade"
+                    if search.last_tactic != "probe" else
+                    "waiting for your grade - these two are MEANT to look "
+                    "alike: it is re-checking a difference you called "
+                    "invisible, so grade the row you actually see")
+                answer = session.await_grade()
+                # GOOD/N-GOOD are not answers: render fresh guesses from the
+                # good end of the solver's belief - pure inference, no
                 # observation, no effect on the duel - then return to the
-                # SAME duel, still waiting. The full recipe goes to the
-                # trace; the image goes to the output folder now and the
+                # SAME duel, still waiting. The full recipes go to the
+                # trace; the images go to the output folder now and the
                 # gallery at stop.
-                while answer in ("demo_good", "demo_bad"):
-                    wanted = answer == "demo_good"
-                    guess = search.suggest(good=wanted)
-                    tag = "GOOD" if wanted else "BAD"
-                    recipe = _config_string(genes, guess, base_units,
-                                            base_prompt, base_seed,
-                                            extras=base_extras)
-                    session.record(f"?{tag}", recipe)
-                    state.job = f"DNA {tag} sample"
-                    shown = self._render(p, base_args, cnpro, genes, guess,
-                                         base_units, base_prompt, base_seed,
-                                         session=session, cache=renders,
-                                         extras=base_extras)
-                    if shown.images:
-                        demos.append(shown)
-                        del demos[:-8]
+                #
+                # THE DUEL STAYS ON SCREEN, which is why nothing is
+                # published here: the question is still unanswered, and
+                # painting a collage over it would cost the user the pair
+                # they were in the middle of judging. A press mid-search is
+                # a look at the model, not a change of subject.
+                while isinstance(answer, _Demo):
+                    made, note = self._samples(
+                        answer, search, p, base_args, cnpro, genes,
+                        base_units, base_prompt, base_seed, session,
+                        base_extras, cache=renders)
+                    demos.extend(made)
+                    del demos[:-8]
                     if session.stopping or state.interrupted:
                         break
                     session.publish(duel, processed_a.images[0],
                                     processed_b.images[0],
-                                    f"{tag} sample rendered (recipe in Tried, "
-                                    f"image in the output folder) - back to "
-                                    f"the duel, waiting for your grade")
-                    answer = session.await_grade(idle)
+                                    f"{note} (recipes in Tried, images in the "
+                                    f"output folder) - back to the duel, "
+                                    f"waiting for your grade")
+                    answer = session.await_grade()
                 if answer is None:
                     break
                 if answer == "skip":
@@ -3152,9 +3522,10 @@ class Script(scripts.Script):
                     # says nothing about either configuration.
                     continue
 
-                score, disliked, (mark_a, mark_b) = answer
+                score, disliked, similar, (mark_a, mark_b) = answer
                 search.observe(point_a, point_b, score, disliked=disliked,
-                               interesting_a=mark_a, interesting_b=mark_b)
+                               interesting_a=mark_a, interesting_b=mark_b,
+                               similar=similar)
                 best = search.best()
                 # base_seed even when the seed varies per duel: the winner is
                 # rendered on it, so it is the seed that reproduces the image
@@ -3164,11 +3535,15 @@ class Script(scripts.Script):
                 session.set_result(result, _summary(genes, best, search))
                 # Every grade lands in the retained state AND its disk
                 # mirror, so nothing that can end this loop - STOP, an
-                # Interrupt, the idle timeout, a crash, even a restart -
-                # costs more than the interruption itself.
+                # Interrupt, a crash, even a restart - costs more than the
+                # interruption itself.
                 payload = _solver_payload(search, base_seed, space)
                 with session.condition:
                     session.solver_state = payload
+                # AFTER every answer, which is what makes the N box a live
+                # reading of the search rather than a number typed once: the
+                # good region is exactly what each grade redraws.
+                session.set_capacity(payload["capacity"])
                 _store_solver(tab, payload)
         except Exception as exc:
             errors.display(exc, "running the CNPro A/B search")
@@ -3177,12 +3552,6 @@ class Script(scripts.Script):
         interrupted = state.interrupted or getattr(state, "stopping_generation", False)
         if interrupted:
             stopped = "interrupted - Generate resumes the search"
-        if session.timed_out:
-            # Not an ending, a pause: the state this search reached is
-            # retained (and mirrored to disk), so coming back hours later
-            # costs nothing but pressing Generate.
-            stopped = (f"paused - no grade for {idle:g} min; "
-                       f"Generate resumes where it left off")
         graded = len(search.observations)
         ending = f"{stopped}, {graded} graded duel{'' if graded == 1 else 's'}"
 
@@ -3205,7 +3574,9 @@ class Script(scripts.Script):
         # away every basin except the one that happened to be ahead at STOP.
         # Each keeper goes into the trace as a full recipe - the box the
         # frontier members' recipes can be COPIED out of, since all but the
-        # champion appear nowhere else.
+        # champion appear nowhere else. RECIPES, not renders: a stop renders
+        # nothing (it used to trigger up to four unasked generations), and
+        # any keeper is one Set-and-Generate away when it is wanted.
         keepers = search.frontier()
         for rank, keeper in enumerate(keepers, 1):
             recipe = _config_string(genes, keeper, base_units, base_prompt,
@@ -3213,40 +3584,7 @@ class Script(scripts.Script):
             session.record(f"★{rank}", recipe)
             logger.info(f"{WHO}: keeper {rank}: {recipe}")
 
-        # The keepers are rendered LAST and only on a deliberate stop: an
-        # Interrupt is the user asking for no more generations, and honouring
-        # it by starting more would be the opposite of what they pressed.
-        # `finish` comes after, so the panel keeps polling and says what is
-        # happening instead of going quiet for the whole render.
-        if render_winner and not interrupted:
-            rendered = []
-            for rank, keeper in enumerate(keepers, 1):
-                # STOP already happened - that is how this path is reached -
-                # so the abort signal DURING the keeper renders is the host's
-                # Interrupt, and it is honoured between generations.
-                if state.interrupted or getattr(state, "stopping_generation",
-                                                False):
-                    break
-                state.job = f"DNA keeper {rank}"
-                session.say(f"rendering keeper {rank} of {len(keepers)}")
-                rendered.append(self._render(
-                    p, base_args, cnpro, genes, keeper, base_units,
-                    base_prompt, base_seed, side=f"★{rank}",
-                    session=session, cache=renders, extras=base_extras))
-            rendered = [r for r in rendered if r.images]
-            plural = "" if len(rendered) == 1 else "s"
-            session.finish(f"{ending}; {len(rendered)} keeper{plural} in the "
-                           f"gallery")
-            rendered.extend(demos)
-            if rendered:
-                merged = copy.copy(rendered[0])
-                merged.images = [r.images[0] for r in rendered]
-                merged.infotexts = [r.infotexts[0] for r in rendered]
-                merged.all_prompts = [r.all_prompts[0] for r in rendered]
-                merged.all_seeds = [r.all_seeds[0] for r in rendered]
-                return merged
-        else:
-            session.finish(ending)
+        session.finish(ending)
 
         # Nothing new was rendered, so the last duel is what the gallery gets -
         # a search that ends with an empty gallery looks like a search that
@@ -3263,7 +3601,7 @@ class Script(scripts.Script):
         return merged
 
     def _pop_demo_request(self):
-        """The oldest fresh staged GOOD/BAD request for this tab, or None.
+        """The oldest fresh staged GOOD/N-GOOD request for this tab, or None.
 
         Stale entries are dropped with a log line - see DEMO_STALE_SECONDS:
         a press stages its entry and clicks Generate in the same instant, so
@@ -3273,18 +3611,99 @@ class Script(scripts.Script):
         """
         staged = _PENDING_DEMO["img2img" if self.is_img2img else "txt2img"]
         while staged:
-            wanted, when = staged.pop(0)
+            request, when = staged.pop(0)
             if time.time() - when <= DEMO_STALE_SECONDS:
-                return wanted
+                return request
             logger.warning(
-                f"{WHO}: dropped a stale GOOD/BAD request - the press that "
+                f"{WHO}: dropped a stale GOOD request - the press that "
                 f"staged it never became a run, so this Generate is treated "
                 f"as the search it looks like.")
         return None
 
-    def _demo_run(self, wanted, p, ab_search, space, genes, base_args, cnpro,
+    def _samples(self, request, search, p, base_args, cnpro, genes,
+                 base_units, base_prompt, base_seed, session, extras,
+                 cache=None, publish=None):
+        """The images ONE press of GOOD or N-GOOD asks for.
+
+        Returns `(made, note)`: the Processed objects the caller should carry
+        into its gallery, and one line saying what came back. Shared by the
+        two paths a press can take - queued into a running search's loop, or
+        an idle Generate that the press started itself - because the only
+        thing that differs between them is where the images are painted,
+        which is what `publish` is for.
+
+        FEWER SAMPLES THAN ASKED FOR IS A RESULT, not an error. `population`
+        will not pad a collage with near-duplicates or with configurations
+        it does not believe in (see ab_search.population), so a request for
+        forty against a solver that knows six good answers comes back with
+        six - and the note says so, because the difference between "six is
+        all there is" and "something went wrong" is the whole value of the
+        number in the box.
+        """
+        wanted = None if request.count is None else min(request.count,
+                                                        COLLAGE_MAX)
+        if wanted is None:
+            points = [search.suggest(good=True)]
+        else:
+            # Clamped HERE, where the generations are actually spent, and not
+            # only in the box's parser: this is the one place that knows a
+            # number is about to become GPU minutes.
+            points = search.population(wanted)
+            # A collage is not worth the render cache: sixty-four entries
+            # would evict every duel image in it (RENDER_CACHE is 32), and
+            # the cache is what the engine's reuse economy trades on. The
+            # entries are distinct by construction anyway, so there is
+            # nothing here for a cache to hit.
+            cache = None
+        made = []
+        for index, point in enumerate(points, 1):
+            if session.stopping or state.interrupted \
+                    or getattr(state, "stopping_generation", False):
+                break
+            recipe = _config_string(genes, point, base_units, base_prompt,
+                                    base_seed, extras=extras)
+            session.record(f"?{request.label}", recipe)
+            state.job = (f"DNA {request.label} sample" if wanted is None
+                         else f"DNA collage {index}/{len(points)}")
+            shown = self._render(p, base_args, cnpro, genes, point,
+                                 base_units, base_prompt, base_seed,
+                                 session=session, cache=cache, extras=extras)
+            if not shown.images:
+                continue
+            made.append(shown)
+            if publish is not None:
+                publish(index, len(points), shown.images[0])
+
+        if not made:
+            return [], (f"nothing rendered - the solver has no good "
+                        f"configuration to offer yet")
+        if wanted is None:
+            return made, "GOOD sample rendered"
+
+        # The collage replaces its components in the gallery - see _collage.
+        sheet = _collage([shown.images[0] for shown in made])
+        if sheet is None:
+            return made, f"{len(made)} good sample(s) rendered"
+        _save_collage(p, sheet, base_seed, made[0].infotexts[0])
+        collage = copy.copy(made[0])
+        collage.images = [sheet]
+        collage.infotexts = [made[0].infotexts[0]]
+        # A short collage has two very different causes and they must not
+        # read alike: the solver honestly having fewer distinct good answers
+        # than were asked for, and the run having been cut off part way.
+        if len(made) >= wanted:
+            short = ""
+        elif len(points) < wanted:
+            short = (f" - {wanted} were asked for, and that is all the "
+                     f"distinctly different good configurations the solver "
+                     f"has")
+        else:
+            short = f" - stopped after {len(made)} of {wanted}"
+        return [collage], (f"collage of {len(made)} good samples{short}")
+
+    def _demo_run(self, request, p, ab_search, space, genes, base_args, cnpro,
                   base_units, base_prompt, base_seed, session):
-        """GOOD/BAD with no search running: render sample(s) from the
+        """GOOD/N-GOOD with no search running: render sample(s) from the
         retained solver state, and touch nothing else.
 
         The state comes from an Imported session, the last search on this
@@ -3304,7 +3723,7 @@ class Script(scripts.Script):
         """
         tab = "img2img" if self.is_img2img else "txt2img"
         payload = _retained_solver(tab)
-        label = "GOOD" if wanted else "BAD"
+        label = request.label
         if not payload or not payload.get("observations"):
             session.start_demo("")
             session.finish("no solver state to sample from - run a search "
@@ -3318,7 +3737,7 @@ class Script(scripts.Script):
         if _restore_solver(search, payload, space) is None:
             session.start_demo("")
             session.finish(
-                f"{label} sample refused - the solver state was learned on a "
+                f"{label} refused - the solver state was learned on a "
                 f"DIFFERENT set of rows, so its knowledge does not fit them. "
                 f"Recreate the rows it names (readable in the session file), "
                 f"or run a fresh search on these.")
@@ -3327,38 +3746,45 @@ class Script(scripts.Script):
                            f"for them.")
             return Processed(p, [])
 
-        session.start_demo(f"rendering a {label} sample from the learned "
-                           f"taste")
+        session.start_demo(f"rendering {label} from the learned taste")
         p.extra_generation_params["Script"] = self.title()
         extras = _generation_extras(p)
-        made = []
-        queue = [wanted]
+        # The A slot is this run's viewport: each sample lands there as it
+        # finishes, and the collage replaces them all at the end. A collage
+        # of sixty-four is twenty minutes of GPU, and a panel that shows
+        # nothing until it is done is a panel nobody trusts halfway through.
+        def publish(index, total, image):
+            session.publish_demo(
+                image, (f"{label}: sample {index} of {total} - the collage "
+                        f"is composed when they are all in"
+                        if total > 1 else
+                        f"GOOD sample rendered - press again for another, "
+                        f"varied per press; the solver state is kept"))
+
+        # Presses that landed while this one was rendering queued themselves
+        # on the session (request_demo sees a live run) - served here rather
+        # than costing one host job each.
+        made, notes = [], []
+        queue = [request]
+        spent = 0
         try:
-            while queue and len(made) < DEMO_BATCH_MAX:
+            while queue and len(notes) < DEMO_BATCH_MAX:
                 if session.stopping or state.interrupted \
                         or getattr(state, "stopping_generation", False):
                     break
-                good = queue.pop(0)
-                tag = "GOOD" if good else "BAD"
-                guess = search.suggest(good=good)
-                recipe = _config_string(genes, guess, base_units, base_prompt,
-                                        base_seed, extras=extras)
-                session.record(f"?{tag}", recipe)
-                p.extra_generation_params["CNPro DNA"] = recipe
-                state.job = f"DNA {tag} sample"
-                state.job_count = len(made) + len(queue) + 1
-                shown = self._render(p, base_args, cnpro, genes, guess,
-                                     base_units, base_prompt, base_seed,
-                                     session=session, extras=extras)
-                if shown.images:
-                    made.append(shown)
-                    session.publish_demo(
-                        shown.images[0],
-                        f"{tag} sample rendered - GOOD/BAD render more, "
-                        f"varied per press; the solver state is kept")
-                # Presses that landed while rendering queued themselves on
-                # the session (request_demo sees a live run) - serve them
-                # here rather than costing one host job per press.
+                served = queue.pop(0)
+                # The host's progress bar divides by this, so it is the
+                # number of GENERATIONS this run still owes - which for a
+                # collage is its whole count, not one job per press.
+                state.job_count = spent + (served.count or 1) + sum(
+                    item.count or 1 for item in queue)
+                spent += served.count or 1
+                batch, note = self._samples(
+                    served, search, p, base_args, cnpro, genes,
+                    base_units, base_prompt, base_seed, session, extras,
+                    publish=publish)
+                made.extend(batch)
+                notes.append(note)
                 with session.condition:
                     queue.extend(session.pending_demos)
                     session.pending_demos = []
@@ -3369,10 +3795,13 @@ class Script(scripts.Script):
 
         dropped = (f" ({len(queue)} press(es) beyond the cap dropped - "
                    f"press again)" if queue else "")
-        session.finish(f"{len(made)} sample(s) rendered{dropped} - the "
-                       f"solver state is kept: GOOD/BAD keep working, and "
-                       f"the rest of the UI can be changed freely between "
-                       f"presses")
+        if made:
+            # The collage is the artifact - it goes on screen last, over the
+            # individual samples the publish callback painted on the way.
+            session.publish_demo(made[-1].images[0], notes[-1])
+        session.finish(f"{'; '.join(notes)}{dropped} - the solver state is "
+                       f"kept: GOOD/N-GOOD keep working, and the rest of the "
+                       f"UI can be changed freely between presses")
         if not made:
             return Processed(p, [])
         final = made[0]
@@ -3467,21 +3896,19 @@ class Script(scripts.Script):
 class _Row:
     """The components of one row, by name rather than by position."""
 
-    def __init__(self, container, target, mode, field, choices, line, values,
-                 prompt_mode, lora_pick, loras, weight_low, weight_high,
+    def __init__(self, container, target, mode, choices, line, values,
+                 prompt_mode, lora_pick, loras, weights,
                  lora_refresh, lora_dice, point):
         self.container = container
         self.target = target
         self.mode = mode
-        self.field = field
         self.choices = choices
         self.line = line
         self.values = values
         self.prompt_mode = prompt_mode
         self.lora_pick = lora_pick
         self.loras = loras
-        self.weight_low = weight_low
-        self.weight_high = weight_high
+        self.weights = weights
         self.lora_refresh = lora_refresh
         self.lora_dice = lora_dice
         self.point = point
@@ -3491,7 +3918,7 @@ def _profile_lines():
     return getattr(_profile_scale(), "PROFILE_LINES", {"Main": None})
 
 
-def _read_rows(args, row_count, weight_step):
+def _read_rows(args, row_count):
     """The visible rows, as genes.
 
     Rows past the count are skipped rather than read: they are still in the
@@ -3502,39 +3929,37 @@ def _read_rows(args, row_count, weight_step):
     genes = []
     for index in range(min(row_count, MAX_ROWS)):
         base = 1 + index * ROW_ARGS
-        (target, mode, field_label, choices, line, values, prompt_mode, loras,
-         weight_low, weight_high, point_index) = args[base:base + ROW_ARGS]
+        (target, mode, choices, line, values, prompt_mode, loras,
+         weights_text, points_text) = args[base:base + ROW_ARGS]
 
-        def weights(fallback):
-            low = weight_low if weight_low is not None else fallback[0]
-            high = weight_high if weight_high is not None else fallback[1]
-            return float(low), float(high)
+        def weight_list(default):
+            # The row's own weight list, interval notation included; an
+            # empty box means the kind's default grid - which is what the
+            # placeholder shows (WEIGHT_PLACEHOLDERS).
+            listed = [float(v) for v in _numbers(weights_text)]
+            return listed or list(default)
 
         if target == TARGET_PROMPT:
             prompts = _lines(values)
             if prompts:
-                low, high = weights((PROMPT_WEIGHT_MIN, PROMPT_WEIGHT_MAX))
                 genes.append(Gene(Gene.KIND_PROMPT, index, values=prompts,
                                   prompt_mode=prompt_mode or PROMPT_REPLACE,
-                                  weight_low=low, weight_high=high,
-                                  weight_step=weight_step))
+                                  weights=weight_list(PROMPT_WEIGHTS)))
             continue
 
         if target == TARGET_LORA:
             names = [_lora_name(item) for item in _lines(loras)]
             names = [name for name in names if name]
             if names:
-                low, high = weights((LORA_WEIGHT_MIN, LORA_WEIGHT_MAX))
                 genes.append(Gene(Gene.KIND_LORA, index, loras=names,
-                                  weight_low=low, weight_high=high,
-                                  weight_step=weight_step))
+                                  weights=weight_list(LORA_WEIGHTS)))
             continue
 
         unit_index = _unit_index(target)
         if unit_index is None:
             continue
 
-        if mode in (MODE_PROFILE, MODE_POINT):
+        if mode in (MODE_PROFILE, MODE_POINTS):
             module = _profile_scale()
             if module is None:
                 raise RuntimeError(
@@ -3543,13 +3968,14 @@ def _read_rows(args, row_count, weight_step):
             if line not in module.PROFILE_LINES:
                 raise ValueError(
                     f"{WHO}: row {index + 1}: unknown profile line {line!r}.")
-            if mode == MODE_POINT:
+            if mode == MODE_POINTS:
                 offsets = module.parse_offsets(values)
                 if offsets:
                     genes.append(Gene(Gene.KIND_POINT, index,
                                       unit_index=unit_index, line=line,
                                       values=offsets,
-                                      point_index=int(point_index or 0)))
+                                      point_indices=_point_indices(
+                                          points_text, index)))
                 continue
             factors = module.parse_factors(values)
             if factors:
@@ -3558,20 +3984,42 @@ def _read_rows(args, row_count, weight_step):
                                   values=factors))
             continue
 
-        field_name = FIELD_LABELS.get(field_label)
-        if field_name is None:
-            continue
-        field = UNIT_FIELDS[field_name]
-        if field.kind == KIND_CHOICE:
-            picked = [v for v in (choices or []) if v]
-        elif field.kind == KIND_NUMBER:
-            picked = _numbers(values)
-        else:
-            picked = _lines(values)
+        # Model mode: the multiselect IS the value list.
+        picked = [v for v in (choices or []) if v]
         if picked:
             genes.append(Gene(Gene.KIND_SETTING, index, unit_index=unit_index,
-                              field=field_name, values=picked))
+                              field="model", values=picked))
     return genes
+
+
+def _point_indices(text, row):
+    """The point-index list of one Profile-points row.
+
+    Integers, comma or whitespace separated, 0-based left to right, negative
+    from the end - and the LIST is the feature: every listed point moves by
+    the row's offset TOGETHER, which is what edits a profile interval
+    instead of one knot. Empty means [0], matching the box's initial value.
+    A repeated index is refused here in its typed form; collisions through
+    negative aliases (0 and -N on an N-point line) are caught in _setup,
+    where the point count is known.
+    """
+    tokens = [t for t in re.split(r"[\s,;]+", str(text or "").strip()) if t]
+    if not tokens:
+        return [0]
+    indices = []
+    for token in tokens:
+        try:
+            indices.append(int(token))
+        except ValueError:
+            raise ValueError(
+                f"{WHO}: row {row + 1}: {token!r} is not a point index - use "
+                f"integers, 0-based left to right, negative from the end, "
+                f"e.g. '0, 2, -1'.")
+    if len(set(indices)) != len(indices):
+        raise ValueError(
+            f"{WHO}: row {row + 1} lists a point index twice - each listed "
+            f"point moves once per offset, so a repeat would move it double.")
+    return indices
 
 
 def _lora_name(text):
@@ -3655,44 +4103,17 @@ def _headline(count):
             f"- one per row. Add rows for more.")
 
 
-#: The two ends of each weighted row kind's default range, by (min, max).
-WEIGHT_DEFAULTS = {
-    TARGET_LORA: (LORA_WEIGHT_MIN, LORA_WEIGHT_MAX),
-    TARGET_PROMPT: (PROMPT_WEIGHT_MIN, PROMPT_WEIGHT_MAX),
+#: What the weights box means when it is left EMPTY, by row kind - shown as
+#: the placeholder, applied by _read_rows. A placeholder rather than a value,
+#: so switching a row between LoRA and Prompt never has to decide whether the
+#: text in the box was the user's or the previous kind's default.
+WEIGHT_PLACEHOLDERS = {
+    TARGET_LORA: ", ".join(f"{w:g}" for w in LORA_WEIGHTS) + "   or   0.2:1:5",
+    TARGET_PROMPT: ", ".join(f"{w:g}" for w in PROMPT_WEIGHTS) + "   or   0.4:1.2:5",
 }
 
 
-#: The two weight boxes' labels. Abbreviated, and both on ONE line each, which
-#: is the whole requirement: a label of "prompt weight" wraps to two lines in a
-#: 70px box, so the pair rendered as two identical two-line captions with
-#: nothing saying which end was which.
-WEIGHT_LABELS = ("min. w.", "max. w.")
-
-
-def _weight_default(target, current, end):
-    """`{"value": ...}` when this end should be reset, `{}` when it should not.
-
-    A row that changes kind should offer the new kind's usual range - a LoRA's
-    0..1 is a de-emphasis-only range for a prompt term, and a prompt's 0.5..1.5
-    cannot switch a LoRA off. But a row whose range the USER typed must keep
-    it, and the handler cannot see what the row used to be. So the test is on
-    the value itself: reset it only while it still holds one of the defaults,
-    which is exactly the case where nobody has expressed an opinion.
-    """
-    defaults = WEIGHT_DEFAULTS.get(target)
-    if defaults is None:
-        return {}
-    untouched = {values[end] for values in WEIGHT_DEFAULTS.values()}
-    try:
-        current = float(current)
-    except (TypeError, ValueError):
-        return {"value": defaults[end]}
-    if any(abs(current - value) < 1e-9 for value in untouched):
-        return {"value": defaults[end]}
-    return {}
-
-
-def _row_visibility(target_value, mode_value, field_label, low, high):
+def _row_visibility(target_value, mode_value):
     """Props for a row's dependent controls, in `switches` order.
 
     A module function returning plain prop dicts rather than gr.updates,
@@ -3706,61 +4127,55 @@ def _row_visibility(target_value, mode_value, field_label, low, high):
     look like a unit and show the unit controls.
     """
     is_unit = _unit_index(target_value) is not None
-    setting = is_unit and mode_value == MODE_SETTING
+    model = is_unit and mode_value == MODE_MODEL
     profile = is_unit and mode_value == MODE_PROFILE
-    point_mode = is_unit and mode_value == MODE_POINT
+    points = is_unit and mode_value == MODE_POINTS
     is_lora = target_value == TARGET_LORA
     is_prompt = target_value == TARGET_PROMPT
-    field_name = FIELD_LABELS.get(field_label, "model")
-    kind = UNIT_FIELDS[field_name].kind
     weighted = is_lora or is_prompt
     return [
         {"visible": is_unit},                                   # mode
-        {"visible": setting},                                   # field
-        {"visible": setting and kind == KIND_CHOICE},           # choices
-        {"visible": profile or point_mode},                     # line
+        {"visible": model},                                     # choices
+        {"visible": profile or points},                         # line
         # ONE update carries visibility, label and placeholder together: the
-        # values box is shared by four kinds of row.
-        {"visible": (setting and kind != KIND_CHOICE) or profile
-                    or point_mode or is_prompt,
-         "label": _values_label(target_value, mode_value, field_label),
-         "placeholder": _values_placeholder(target_value, mode_value,
-                                            field_label)},      # values
+        # values box is shared by three kinds of row.
+        {"visible": profile or points or is_prompt,
+         "label": _values_label(target_value, mode_value),
+         "placeholder": _values_placeholder(target_value,
+                                            mode_value)},       # values
         {"visible": is_prompt},                                 # prompt mode
         {"visible": is_lora},                                   # picker
         {"visible": is_lora},                                   # loras
-        # The weight range serves BOTH weighted kinds, and its sensible
-        # bounds differ between them; _weight_default resets an end only
-        # while it still holds one of the defaults, so a range the user has
-        # typed is never overwritten by changing the row's target.
-        {"visible": weighted, **_weight_default(target_value, low, 0)},
-        {"visible": weighted, **_weight_default(target_value, high, 1)},
+        # The weights box serves BOTH weighted kinds; only its placeholder
+        # follows the kind (empty = that kind's default grid), so a list the
+        # user typed is never overwritten by changing the row's target.
+        {"visible": weighted,
+         "placeholder": WEIGHT_PLACEHOLDERS.get(target_value,
+                                                WEIGHT_PLACEHOLDERS[
+                                                    TARGET_LORA])},  # weights
         {"visible": is_lora},                                   # refresh
         {"visible": is_lora},                                   # dice
-        {"visible": point_mode},                                # point
+        {"visible": points},                                    # point
     ]
 
 
-def _values_label(target, mode, field_label):
+def _values_label(target, mode):
     if target == TARGET_PROMPT:
         return "prompts (one per line)"
     if _unit_index(target) is not None and mode == MODE_PROFILE:
         return "factors"
-    if _unit_index(target) is not None and mode == MODE_POINT:
+    if _unit_index(target) is not None and mode == MODE_POINTS:
         return "offsets (0 = as drawn)"
     return "values (one per line)"
 
 
-def _values_placeholder(target, mode, field_label):
+def _values_placeholder(target, mode):
     if target == TARGET_PROMPT:
         return "a house on a hill\na house in a storm\n…"
     if _unit_index(target) is not None and mode == MODE_PROFILE:
         return "0.5, 0.75, 1, 1.5   or   0.5:1.5:5"
-    if _unit_index(target) is not None and mode == MODE_POINT:
+    if _unit_index(target) is not None and mode == MODE_POINTS:
         return "-0.2, 0, 0.2   or   -0.2:0.2:5"
-    field_name = FIELD_LABELS.get(field_label, "model")
-    if UNIT_FIELDS[field_name].kind == KIND_NUMBER:
-        return "768, 1024, 1280   or   768:1280:5"
     return "one value per line"
 
 
@@ -3802,8 +4217,12 @@ def _status_markdown(snap):
     if snap["status"]:
         head_title = html.escape(str(snap["status"]))
         head += f" · {head_title}"
+    # ONE LINE, always - see the height contract above. The row meanings are
+    # written beside the rows themselves now (Distinct / Similar / Bad
+    # samples), so this says only what the three identical scales mean, which
+    # is the half the labels cannot carry.
     legend = ("0 = A much better · 5 = even · 10 = B much better &nbsp; "
-              "same grade on the lower row = and I dislike both")
+              "the ROW says whether they looked alike, or were both bad")
     summary = html.escape(snap["summary"]) if snap["summary"] else \
         "nothing graded yet - the first answer starts the model off"
     return (f"<div class='cnpro-ab-line cnpro-ab-clip' "
@@ -3869,14 +4288,8 @@ def _submit_button(is_img2img):
             else context.txt2img_submit_button)
 
 
-def _on_ui_settings():
-    section = ("cnpro", "CNPro")
-    shared.opts.add_option("cnpro_ab_idle_timeout", shared.OptionInfo(
-        IDLE_TIMEOUT_DEFAULT,
-        "A/B search: pause after this many minutes with no grade - the "
-        "learned state is kept and the next Generate resumes it "
-        "(0 = wait forever, which holds the tab until Interrupt)",
-        gr.Slider, {"minimum": 0, "maximum": 240, "step": 5}, section=section))
-
-
-script_callbacks.on_ui_settings(_on_ui_settings)
+# This script registers NO settings. There was one - the A/B search's idle
+# timeout - and it is gone rather than defaulted to "never": a saved value
+# outlives the default that produced it, so a build that merely changed the
+# default would keep pausing the searches of everyone whose config.json had
+# already recorded 30. See _Session.await_grade for why there is no clock.

@@ -916,27 +916,102 @@
         if (document.visibilityState === 'hidden') flushPendingRenders();
     });
 
-    // ---- Topaz upscale availability: asked once per page load, shared by all
-    // widgets; the toolbar button only appears when the server found tpai.exe
-    // (modules_forge/forge_canvas/topaz_upscale.py)
-    let topazStatusPromise = null;
-    function fetchTopazStatus() {
-        if (!topazStatusPromise) {
-            // failure and legit unavailability both keep the buttons hidden, so
-            // say WHY in the console - a silent miss here cost a debug session
-            topazStatusPromise = fetch('./forge-canvas/topaz/status')
-                .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-                .then((status) => {
-                    if (!status.available) console.info('[forge canvas] Topaz tools hidden: server reports tpai.exe not found');
-                    return status;
-                })
-                .catch((err) => {
-                    console.info('[forge canvas] Topaz tools hidden: status check failed -', err && err.message ? err.message : err);
-                    return { available: false };
-                });
-        }
-        return topazStatusPromise;
+    // ---- Topaz availability: ONE prober shared by every widget on the page.
+    //
+    // The old version fetched the status once and cached the promise -
+    // including failures, coerced to {available:false}. But the status route
+    // is registered from an on_app_started callback (cnpro_host/optional/
+    // __init__.py), i.e. AFTER the server already serves the page: a page
+    // that attached its first canvas fast enough asked before the route
+    // existed, got a 404, and cached "unavailable" for the whole session.
+    // The buttons showed or not on the same machine and config depending on
+    // a millisecond startup race, and only a full reload rolled the dice
+    // again. A transient failure must never become a final answer.
+    //
+    // Three outcomes, only one of them terminal:
+    //   * available   - the server answered yes: reveal every waiter, stop.
+    //   * unavailable - the server ANSWERED and said no. Honoured, but
+    //                   re-checked when the tab regains visibility: the
+    //                   server resolves tpai.exe per call precisely so the
+    //                   tool can appear without a restart (topaz.py::
+    //                   find_tpai), and installing Topaz means leaving the
+    //                   tab.
+    //   * unreachable - could not ask (404 while routes are still being
+    //                   registered, server busy, network blip). NOT an
+    //                   answer: retry with backoff until the server answers.
+    //                   The GET is tiny; giving up would just recreate the
+    //                   startup race as a countdown.
+    const topazProbe = {
+        verdict: null,      // null = no answer yet; true/false = server's word
+        waiters: [],        // reveal callbacks from attach(), flushed on true
+        inFlight: false,
+        retryTimer: null,
+        attempt: 0,
+        loggedFailure: false,
+    };
+    const TOPAZ_RETRY_MS = [1000, 2000, 5000, 10000, 30000]; // then stays at 30s
+
+    function topazProbeRun() {
+        if (topazProbe.inFlight || topazProbe.verdict === true) return;
+        topazProbe.inFlight = true;
+        clearTimeout(topazProbe.retryTimer);
+        // abort a wedged request: a fetch that never settles would otherwise
+        // hold inFlight forever and end all probing with no retry
+        const aborter = ('AbortController' in window) ? new AbortController() : null;
+        const abortTimer = aborter && setTimeout(() => aborter.abort(), 15000);
+        fetch('./forge-canvas/topaz/status', aborter ? { signal: aborter.signal } : {})
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+            .then((status) => {
+                topazProbe.inFlight = false;
+                topazProbe.attempt = 0;
+                topazProbe.verdict = !!status.available;
+                if (topazProbe.verdict) {
+                    if (topazProbe.loggedFailure) {
+                        console.info('[forge canvas] Topaz status answered after retries - tools revealed');
+                    }
+                    topazProbe.waiters.splice(0).forEach((reveal) => {
+                        try { reveal(); }
+                        catch (e) { console.error('[forge canvas] Topaz reveal failed', e); }
+                    });
+                } else {
+                    // a real answer, so say so - a silent miss here cost a
+                    // debug session. Waiters stay queued: a later re-probe
+                    // that flips to yes must still reveal them.
+                    console.info('[forge canvas] Topaz tools hidden: server reports tpai.exe not '
+                        + 'found (re-checked when the tab regains visibility)');
+                }
+            })
+            .catch((err) => {
+                topazProbe.inFlight = false;
+                const delay = TOPAZ_RETRY_MS[Math.min(topazProbe.attempt, TOPAZ_RETRY_MS.length - 1)];
+                topazProbe.attempt++;
+                if (!topazProbe.loggedFailure) {
+                    topazProbe.loggedFailure = true;
+                    console.info('[forge canvas] Topaz status check failed ('
+                        + (err && err.message ? err.message : err)
+                        + ') - not an answer, retrying with backoff; tools stay hidden until the server answers');
+                }
+                topazProbe.retryTimer = setTimeout(topazProbeRun, delay);
+            })
+            .finally(() => { if (abortTimer) clearTimeout(abortTimer); });
     }
+
+    // attach() registers its reveal here; it runs now if availability is
+    // already confirmed, or whenever a probe finally confirms it
+    function onTopazAvailable(reveal) {
+        if (topazProbe.verdict === true) { reveal(); return; }
+        topazProbe.waiters.push(reveal);
+        topazProbeRun();
+    }
+
+    document.addEventListener('visibilitychange', function () {
+        // a definitive "no" is re-asked on return to the tab: the server
+        // checks tpai.exe per call so a mid-session install can take effect
+        if (document.visibilityState === 'visible' && topazProbe.verdict === false) {
+            topazProbe.verdict = null;
+            topazProbeRun();
+        }
+    });
 
     // ---- gradio ECHO detection.
     // The core polls the gradio textarea and calls uploadBase64 whenever its
@@ -2332,8 +2407,11 @@
         wireTopazTool(topazDenoiseBtn, 'denoise');
         wireTopazTool(topazMpxBtn, 'mpx1');
         if (topazHqBtn || topazDenoiseBtn || topazMpxBtn) {
-            fetchTopazStatus().then((status) => {
-                if (!status.available) return;
+            // registered, not fetched: the shared prober calls this whenever
+            // availability is confirmed - now, after a startup-race retry, or
+            // on a re-probe when the tab comes back. This canvas reveals in
+            // every one of those cases, not just the lucky first one.
+            onTopazAvailable(() => {
                 if (topazHqBtn) {
                     topazHqBtn.title = 'Topaz enhance at the SAME dimensions' +
                         ' (Photo AI CLI upscaler at scale 1: minor denoise 100, minor deblur 1, fix compression 90);' +

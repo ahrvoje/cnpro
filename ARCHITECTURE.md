@@ -461,7 +461,7 @@ Compactness is not worth making the model unreadable.
 | Item | Status |
 |---|---|
 | `xyz_grid_support.py` | parked as `.deferred` — axis names still point at the old extension |
-| Topaz canvas tools | not shipped; the availability probe 404s and the buttons stay hidden, which is the designed behaviour |
+| Topaz canvas tools | shipped as an optional feature (`cnpro_host/optional/topaz.py`); the buttons stay hidden unless the status endpoint reports a local `tpai.exe`. The client probe treats "could not ask" (404 while `on_app_started` is still registering routes, server busy) as retryable, never as an answer — a one-shot probe used to cache that startup race as "unavailable" for the whole session, making the buttons appear or not on identical setups |
 | Host's builtin ControlNet | must be disabled — CNPro reuses its `elem_id` scheme deliberately, to keep ui-config keys and JS selectors identical |
 | Z-Image Fun-ControlNet v2.0 / 2.1 / 2.1-lite | recognised and **refused**. Its 33-channel conditioning is inpainting-shaped (latent + masked latent + mask) and has no UI here; worse, v2.0 and v2.1 ship identical key sets and differ only in whether the refiner is applied as intended, so the file cannot say which it is |
 | Z-Image per-unit prompt | `supports_unit_prompt = False`. The control tower does attend over caption tokens, but it takes them from the base model's already-refined sequence — re-refining a *different* caption is a second feature, not a flag |
