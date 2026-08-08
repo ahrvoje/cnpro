@@ -24,7 +24,8 @@ No test could have caught it, because no test read the stylesheet at all.
 
 WHAT IS PINNED HERE
 -------------------
-1. The braces balance, and no declaration sits outside a rule.
+1. The braces balance, no comment is left open or closed twice, and no
+   declaration sits outside a rule.
 2. Every class the tool registry renders is styled somewhere.
 3. The geometry rules stay scoped to CNPro's own canvases, so enabling the
    extension cannot restyle the host's img2img canvas.
@@ -65,6 +66,28 @@ def main():
         fail("style.css has %d '{' and %d '}' - it is malformed, and a browser "
              "will silently discard everything from the imbalance to the next "
              "rule it can parse" % (opens, closes))
+
+    # 1b. no stray comment delimiter. A `*/` still standing after the comments
+    #     have been stripped is a comment that was closed EARLY, and the prose
+    #     after it is not a comment at all - it is a selector as far as the
+    #     parser is concerned, and it swallows the next real rule as its
+    #     block. Two of these sat in the A/B section (the row-label wrap's
+    #     comment, closed twice mid-paragraph) and cost that rule entirely:
+    #     braces still balanced, no orphaned declaration, nothing to see.
+    #     Counted on the RAW file for the opposite failure - a comment never
+    #     closed eats every rule after it.
+    raw = read(css_path)
+    if raw.count("/*") != raw.count("*/"):
+        fail("style.css has %d '/*' against %d '*/' - a comment is unclosed, "
+             "and everything from it to the next '*/' (or the end of the "
+             "file) is discarded" % (raw.count("/*"), raw.count("*/")))
+    for match in re.finditer(r"\*/", css):
+        line_no = css.count("\n", 0, match.start()) + 1
+        line = css.split("\n")[line_no - 1].strip()
+        fail("style.css line %d closes a comment that is not open: %r. The "
+             "text before it reads as a selector, and the next rule's block "
+             "becomes its body - the rule is silently lost."
+             % (line_no, line[:60]))
 
     # 2. no declaration outside a rule. This is what an orphaned rule body looks
     #    like, and it is the exact shape the line-diff produced.

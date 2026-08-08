@@ -2858,6 +2858,71 @@
    CNPro A/B panel (scripts/CNPro_AB.py)
    --------------------------------------------------------------------------- */
 
+/* The header line carries FOUR different kinds of thing - tool buttons, a
+   sentence, and two checkboxes - and gradio gives each of them a different
+   idea of vertical placement: the buttons are their own height, the markdown
+   block sits at the top of its box, and a checkbox is a label plus a control.
+   Centring the row is what makes the four read as one line rather than as a
+   staircase. `!important` for the reason spelled out over .cnpro-ab-grades:
+   gradio's svelte-scoped Row classes outrank a single class here, and an
+   extension's style.css arrives as a plain <link> with no borrowed
+   specificity. */
+.cnpro-ab-headline-row {
+    align-items: center !important;
+    gap: 8px !important;
+    flex-wrap: nowrap !important;
+    /* Its own query container, for the narrow-panel rule at the bottom of
+       this block. The duel's container (.cnpro-ab-duel, further down) is a
+       SIBLING of this row, not an ancestor, so a bare @container here would
+       find no container and never match - inline-size containment on the row
+       itself is what gives the rule something to measure. Safe on a flex
+       container: the row's width comes from the panel column above it, never
+       from what is inside it. */
+    container-type: inline-size;
+}
+
+/* The markdown block is the row's SPRING - it takes the slack so the switches
+   stay pinned right - and gradio gives a <p> inside it a margin that would
+   push the sentence off the buttons' centre line. */
+.cnpro-ab-headline-row .cnpro-ab-headline {
+    min-width: 0;
+    overflow: hidden;
+}
+
+.cnpro-ab-headline-row .cnpro-ab-headline p {
+    margin: 0 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Checkboxes in a compact Row still carry the block padding they would need
+   as a standalone control, which on this line is a band of empty box around
+   two words. The label is what the user aims at, so it keeps its own hit
+   area; only the wrapper's padding goes. */
+.cnpro-ab-headline-row .cnpro-ab-switch {
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    flex-grow: 0 !important;
+}
+
+.cnpro-ab-headline-row .cnpro-ab-switch label {
+    margin: 0 !important;
+    padding: 0 !important;
+    white-space: nowrap;
+}
+
+/* Narrow panels: the sentence is the one thing here that can be inferred from
+   what is on screen (the rows are visible, and the +/- tooltips say what they
+   do), so it is what gives way - before the switches, which cannot be read
+   off anything, and before the buttons. */
+@container (max-width: 500px) {
+    .cnpro-ab-headline-row .cnpro-ab-headline {
+        display: none !important;
+    }
+}
+
 /* The grade row is the one piece of chrome in this extension that is used
    dozens of times in a row, so it is laid out for AIM rather than for looks:
    eleven equal targets in one unbroken strip, wrapping only when the panel is
@@ -2914,17 +2979,57 @@
 
        The right band is the one that has to be measured; the left simply
        matches it. It holds the row's label immediately beside its buttons,
-       then the parked controls beyond it (GOOD+STOP / N box + N GOOD /
-       skip) - the far-right column is reserved for STOP and skip alone, so
-       a fast hand overshooting a 10 cannot land on a collage instead. The N
-       box ends 224px in, and "Distinct samples" at 15px needs ~127px beyond
-       that (its 10px offset included). The left band spends the same on the
-       "your turn" hint, which needs far less.
+       then the parked controls beyond it (GOOD over "N GOOD", STOP over
+       SKIP) - the far-right column is reserved for STOP and SKIP alone, so
+       a fast hand overshooting a 10 cannot land on a collage instead.
+
+       IT IS COMPUTED, not written down, because the collage button carries
+       its own count - "3 GOOD", "12 GOOD" - and a band measured for one of
+       those is wrong for the other. `--cnpro-ab-digits` is the only input:
+       the panel sends how many digits the number has (see _phase_css), and
+       everything else here derives from it in `ch`, the width of a digit in
+       the font the button is actually drawn in. Nothing in this file or in
+       the panel has to know the theme's metrics, and the two buttons in the
+       column share the expression, so they cannot drift apart.
+
+       "Distinct samples" at 15px needs ~140px beyond the parked controls,
+       which is the only figure below still measured by hand. The left band
+       spends the same on the "your turn" hint, which needs far less.
+
+       THE LEFT BAND IS NOT PADDING, it is the hint's own flex item - a box
+       of exactly `--cnpro-ab-band` sitting before button 0 in every one of
+       the three rows (rows two and three carry an empty one, which is what
+       keeps the three strips to the pixel). Padding on the left and a
+       zero-width hint anchor was the previous arrangement and it is what
+       let the hint paint over buttons 0-4: an out-of-flow text has no width
+       to be stopped by. A flex item does, so the overlap is not fixed here,
+       it is UNSPELLABLE - see .cnpro-ab-grade-hint-wrap below.
+
+       The centring arithmetic survives that move exactly, and it is worth
+       writing down because it is what the two figures have to satisfy. With
+       band A on the left, padding P on the right, strip S and gap g, the
+       row's `justify-content: center` puts the strip's centre at
+       `W/2 - P/2 + A/2` - the gaps cancel - so `A == P` centres the strip
+       on the row, and therefore 5 on the A|B seam. Any future change to
+       either figure has to change BOTH.
 
        The strip therefore wants ~1142px of panel to have all of this at
        once. Under that it gives things up in a fixed order - see below. */
-    padding-left: 364px !important;
-    padding-right: 364px !important;
+    /* Digits in the collage button's count. Overwritten by the tick; 1 is
+       the right default because the panel opens before any search has said
+       otherwise, and CAPACITY_DEFAULT is 1. */
+    --cnpro-ab-digits: 1;
+    /* The GOOD / "N GOOD" column: room for " GOOD" and one digit, plus a
+       digit's width for each extra one. */
+    --cnpro-ab-demo: calc(80px + (var(--cnpro-ab-digits) - 1) * 1ch);
+    /* Everything parked: STOP/SKIP (80px), a 4px gap, then that column. */
+    --cnpro-ab-parked: calc(84px + var(--cnpro-ab-demo));
+    /* Plus the row's label, at the widest panel only. */
+    --cnpro-ab-right: calc(var(--cnpro-ab-parked) + 140px);
+    /* The left band MIRRORS the right - see the centring identity above. */
+    --cnpro-ab-band: var(--cnpro-ab-right);
+    padding-left: 0 !important;
+    padding-right: var(--cnpro-ab-right) !important;
 }
 
 /* WHAT GIVES WHEN THE PANEL IS NARROW, in order, and the order is the whole
@@ -2956,15 +3061,22 @@
         display: none;
     }
 
+    /* The label's 140px goes; the parked controls keep exactly what they
+       occupy. Band and padding move TOGETHER by construction here - both
+       read `--cnpro-ab-right`, and the centring identity above is why they
+       have to. */
     .cnpro-ab-grades {
-        padding-left: 224px !important;
-        padding-right: 224px !important;
+        --cnpro-ab-right: var(--cnpro-ab-parked);
     }
 }
 
 @container (max-width: 862px) {
+    /* The left band goes to nothing, which takes the hint with it: it is
+       clipped by the band it lives in rather than allowed to spill over the
+       scale. A nudge nobody can read is a small loss; a nudge painted across
+       buttons 0-4 is a scale that cannot be used. */
     .cnpro-ab-grades {
-        padding-left: 0 !important;
+        --cnpro-ab-band: 0px;
     }
 }
 
@@ -3054,21 +3166,44 @@
     box-shadow: inset 0 0 0 2px rgba(var(--cnpro-ab-row, 128, 128, 128), 0.9);
 }
 
-/* STOP sits at the far end, away from the grades. It ends the search, the
-   grade buttons continue it, and the two must not be neighbours that a fast
-   hand can confuse - the whole row is being clicked at speed.
+/* THE PARKED CONTROLS - STOP, SKIP, GOOD and the collage button - are the
+   rules below, and they share one vertical anchor, written here once.
 
-   Absolutely positioned, in the padding the row reserves for it above, so
-   that it is out of the flow the buttons are centred in. `flex` and `margin`
-   still carry !important because gradio writes flex properties onto every
-   block in a Row, and a STOP allowed to grow fills the leftover width. */
-.cnpro-ab-grades button.cnpro-ab-stop {
+   CENTRED BY AUTO MARGINS, not by `top: 50%` + `translateY(-50%)`, which is
+   what they used and what let them slide. A transform is a single property
+   with a single value: anything that sets `transform` on one of these
+   buttons for its own reasons - a theme's press effect, a hover lift, an
+   animation, gradio restyling a variant - REPLACES the half-height offset
+   rather than adding to it, and the button drops by half its own height
+   with nothing in the layout to say why. Stretching the box to the row
+   (`top: 0; bottom: 0`) and letting auto margins take the slack puts it on
+   the centre line as a matter of BOX LAYOUT, which has no such single point
+   of failure: `height: fit-content` keeps the box its own size, and the two
+   auto margins are equal by definition.
+
+   Absolutely positioned, in the padding the row reserves for them above, so
+   that they are out of the flow the buttons are centred in. `flex` and
+   `margin-left` still carry !important because gradio writes flex
+   properties onto every block in a Row, and a STOP allowed to grow fills
+   the leftover width. */
+.cnpro-ab-grades button.cnpro-ab-stop,
+.cnpro-ab-grades button.cnpro-ab-skip,
+.cnpro-ab-grades button.cnpro-ab-demo {
     position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
+    top: 0;
+    bottom: 0;
+    height: fit-content;
+    margin-top: auto !important;
+    margin-bottom: auto !important;
     flex: 0 0 auto !important;
     margin-left: 0 !important;
+}
+
+/* STOP sits at the far end, away from the grades. It ends the search, the
+   grade buttons continue it, and the two must not be neighbours that a fast
+   hand can confuse - the whole row is being clicked at speed. */
+.cnpro-ab-grades button.cnpro-ab-stop {
+    right: 0;
 }
 
 /* THE THREE ROWS ARE ONE INSTRUMENT, and the opacity is what orders them.
@@ -3085,34 +3220,37 @@
     opacity: 0.65;
 }
 
-/* skip lives where STOP lives one row up - in the padding the row reserves -
-   and for the same reason: it is not a grade, and a fast hand working the
-   scale must not be able to hit it by overshooting a 10. */
+/* SKIP lives directly under STOP - same far-right column, one row down - in
+   the padding the row reserves, and for the same reason: it is not a grade,
+   and a fast hand working the scale must not be able to hit it by
+   overshooting a 10. Capitals to match: STOP, SKIP. They are the same kind
+   of thing (neither is an answer, both end the duel in front of you) and the
+   lower-case one read as a link rather than as the third button.
+
+   WHICH ROW IT IS PAINTED ON IS DECIDED IN THE PANEL, not here - these
+   controls are absolutely positioned inside whichever grade row declares
+   them, and SKIP is declared on the SIMILAR row so that the four parked
+   controls form one 2x2 block. Declared on the last row, as it was, it sat
+   alone under an empty slot and read as having fallen off the block. */
 .cnpro-ab-grades button.cnpro-ab-skip {
-    position: absolute;
     right: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    flex: 0 0 auto !important;
-    margin-left: 0 !important;
 }
 
-/* GOOD and N GOOD park inboard of STOP and skip: on-demand samples from the
+/* GOOD and N GOOD park inboard of STOP and SKIP: on-demand samples from the
    good end of the solver's belief - pure inference, so they sit with the
    controls that are not grades, away from the scale a fast hand works. */
 /* The width is EXPLICIT, not left to the label. These four controls are
-   stacked by hand at fixed offsets (0, 88, 172) inside a fixed padding
+   stacked by hand at fixed offsets (0, 84, 168) inside a fixed padding
    band, so a button that sized to its own text would move the arithmetic
    with every relabelling - "N GOOD" is two characters wider than "GOOD",
    which is enough to slide it under the N box beside it. */
 .cnpro-ab-grades button.cnpro-ab-demo {
-    position: absolute;
-    right: 88px;
-    top: 50%;
-    transform: translateY(-50%);
-    flex: 0 0 auto !important;
-    margin-left: 0 !important;
-    width: 80px;
+    right: 84px;
+    /* ONE WIDTH FOR BOTH, read from the same variable the band is built
+       from: GOOD has nothing to size itself to, "12 GOOD" does, and a
+       column whose two buttons measured themselves independently would step
+       in and out by a digit every time the count changed. */
+    width: var(--cnpro-ab-demo);
     padding-left: 0;
     padding-right: 0;
     opacity: 0.85;
@@ -3123,12 +3261,12 @@
    unreadable without them - the ROW is the verdict, and a verdict nothing
    states is one nobody uses.
 
-   ANCHORED TO BUTTON 10 BY CONSTRUCTION, the mirror of the "your turn" hint
-   below and for the same reason: the wrap is a ZERO-WIDTH flex item sitting
-   directly after the last grade button, so the centred strip's geometry does
-   not move by a pixel, and the text hangs off it rightward. Positioning
-   against the ROW instead would need arithmetic that every future change to
-   the parked controls would silently invalidate. */
+   ANCHORED TO BUTTON 10 BY CONSTRUCTION: the wrap is a ZERO-WIDTH flex item
+   sitting directly after the last grade button, so the centred strip's
+   geometry does not move by a pixel, and the text hangs off it rightward.
+   Positioning against the ROW instead would need arithmetic that every
+   future change to the parked controls would silently invalidate.
+
    THE WRAP IS COLLAPSED TO A POINT - zero wide AND zero high - and the label
    hangs off it. Zero width keeps the centred strip's geometry intact (the
    hint below uses the same trick). Zero HEIGHT is what fixes the vertical
@@ -3158,7 +3296,8 @@
    offset that kept showing up. The same duplication is why every
    declaration on the label now carries !important: the child rule and the
    label rule have identical specificity, so whichever is written last would
-   otherwise win by accident. */
+   otherwise win by accident.
+
    THE ANCHOR HAS TO BE THE WRAP, not the row, and the reason is horizontal.
    Anchoring the label to the row with a fixed `right` was tried and is
    wrong: `justify-content: center` centres 414px of buttons inside a
@@ -3225,53 +3364,6 @@
     pointer-events: none;
 }
 
-/* N: the solver's own count of the distinctly different good samples it can
-   produce, and the number N GOOD will actually render. It sits immediately
-   left of the button it feeds, in the same parked band, because the two are
-   one control - a number and the thing that spends it.
-
-   The "N=" is drawn HERE rather than put in the box: the value stays a bare
-   integer, which is what both the tick (writing the solver's estimate) and
-   the click (reading the user's edit) parse, and neither has to strip a
-   prefix a user could have deleted. */
-.cnpro-ab-grades .cnpro-ab-capacity {
-    position: absolute;
-    right: 176px;
-    top: 50%;
-    transform: translateY(-50%);
-    flex: 0 0 auto !important;
-    margin: 0 !important;
-    width: 48px;
-    min-width: 48px !important;
-    opacity: 0.85;
-}
-
-.cnpro-ab-grades .cnpro-ab-capacity::before {
-    content: "N=";
-    position: absolute;
-    left: 4px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 0.8em;
-    opacity: 0.7;
-    pointer-events: none;
-    z-index: 1;
-}
-
-/* Room for the prefix above, and the digits sized to the strip rather than
-   to gradio's default input metrics - this box lives among 34px buttons. */
-.cnpro-ab-grades .cnpro-ab-capacity textarea,
-.cnpro-ab-grades .cnpro-ab-capacity input {
-    padding: 2px 2px 2px 22px !important;
-    text-align: right;
-    font-size: 0.85em;
-    line-height: 1.4;
-    min-height: 0 !important;
-    font-variant-numeric: tabular-nums;
-    resize: none;
-    overflow: hidden;
-}
-
 /* The interesting toggles: one under each image half, dim because they are
    the exceptional gesture, not the routine one. Their state lives in the
    session and is echoed by the status line - the button itself stays
@@ -3316,54 +3408,81 @@
 /* "Your turn" - the it-is-your-turn nudge. Generation ends, the panel goes
    quiet, and nothing used to say the next move is the user's.
 
-   ANCHORED TO BUTTON 0 BY CONSTRUCTION, not by arithmetic. The wrap is the
-   hint's gradio block, sitting in the flex flow directly before the first
-   grade button - squeezed to ZERO WIDTH, so the centred strip's geometry
-   (the 5-on-the-seam contract above) does not move by a pixel. The text
-   then hangs off that zero-width anchor leftward (`right: 100%` of an
-   absolutely positioned child resolves against the wrap), which pins it
-   against the strip's left edge at ANY panel width, theme, or wrap. Two
-   generations of this rule positioned against the ROW instead - `left: 0`,
-   then `right: calc(50% + half-strip)` - and both left the hint floating
-   in empty space the moment the real layout disagreed with the assumed
-   one. The wrap contributes one flex gap (4px) to the row; that is the
-   whole cost. */
+   IT IS THE LEFT BAND, and that is a structural claim rather than a
+   placement. The wrap is the hint's gradio block: a flex item of exactly
+   `--cnpro-ab-band`, in the flow, immediately before button 0, with the
+   text right-aligned inside it and `overflow: hidden` at its edge. So the
+   hint is always just left of the scale (flex order says so), and it can
+   never be anywhere else - not over button 0, not floating in the middle of
+   the row - because a flex item's box IS its extent and its siblings' boxes
+   begin where it ends. There is no width, panel, theme or translation of
+   the string at which the two can occupy the same pixel.
+
+   THE PREVIOUS VERSION COULD, and did: a zero-width anchor with the text
+   absolutely positioned off it. Out-of-flow text has no box to stop it, so
+   nothing in the layout knew it was there - it painted straight across
+   buttons 0-4, and the two rules before that one left it floating in empty
+   space instead. Three arrangements, three wrong answers, all of them the
+   same mistake: positioning a thing next to a box rather than making it
+   one.
+
+   A long string cannot break the row either - `overflow: hidden` clips it
+   at the band's edge and the band is never wider than the padding that
+   mirrors it. At narrow widths the band goes to zero and the hint goes with
+   it; see the container queries above for why that is the right thing to
+   lose. */
 .cnpro-ab-grades .cnpro-ab-grade-hint-wrap {
-    position: relative !important;
-    width: 0 !important;
+    flex: 0 0 var(--cnpro-ab-band, 0px) !important;
+    width: var(--cnpro-ab-band, 0px) !important;
     min-width: 0 !important;
-    flex: 0 0 0px !important;
+    max-width: var(--cnpro-ab-band, 0px) !important;
+    align-self: center !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    overflow: hidden !important;
     padding: 0 !important;
     margin: 0 !important;
     border: none !important;
     background: none !important;
-    overflow: visible !important;
 }
 
-/* Everything gradio nests between the block and the span (the .prose
-   wrapper) must stay zero-footprint too, or it reintroduces the width the
-   wrap just gave up. */
-.cnpro-ab-grades .cnpro-ab-grade-hint-wrap > * {
-    width: 0 !important;
+/* Whatever gradio nests between the block and the span (the .prose wrapper)
+   has to pass the band's width and the right-alignment through, or the text
+   lands at the left end of the band, an inch from the scale it points at.
+   `:not(.cnpro-ab-grade-hint)` is load-bearing for the reason spelled out
+   over the row label: elem_classes land on BOTH the .block and the .prose,
+   so `> *` reaches the hint span itself and would flatten it. */
+.cnpro-ab-grades .cnpro-ab-grade-hint-wrap > *:not(.cnpro-ab-grade-hint) {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    flex: 1 1 auto !important;
+    width: 100% !important;
     min-width: 0 !important;
+    max-width: 100% !important;
     padding: 0 !important;
     margin: 0 !important;
-    overflow: visible !important;
+    overflow: hidden !important;
 }
 
 /* Sized to be SEEN: this is the panel's only "the machine is done, you are
    the blocker now" signal, and at small-and-dim it was invisible in
    practice. Loud red, big, bold - `!important` throughout because the text
    lives inside gradio's .prose, whose theme styling won this fight twice.
-   Vertically centred on the grade row it points at. */
+   IN FLOW, right up against the band's right edge: `position: static` is as
+   load-bearing as the colour, since the whole no-overlap guarantee above is
+   that this text has a box in the layout. */
 .cnpro-ab-grades .cnpro-ab-grade-hint {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    display: inline-flex;
+    position: static !important;
+    display: inline-flex !important;
     align-items: center;
     gap: 8px;
+    /* The 8px the absolute version put between itself and button 0, now
+       simply the last thing in the band. */
+    margin-right: 8px !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
     opacity: 0;
     transition: opacity 0.4s ease;
     color: #ff5252 !important;

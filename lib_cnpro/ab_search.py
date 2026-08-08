@@ -284,20 +284,27 @@ duels or vanish. See mark_interesting / _hybrid / INTERESTING_SHARE.
 THE SEARCH IS ALSO A GENERATOR
 ------------------------------
 A converged solver is not one recipe, it is a REGION - and a region has a
-size. `capacity()` estimates it: how many mutually distinguishable
-configurations the posterior currently believes are good, over the whole
-space rather than over the handful the frontier has room to name. It is a
-Monte Carlo estimate of a volume divided by a collision count (see
-CAPACITY_BATCH), it starts at the keeper count and grows as evidence
-accumulates, and it is the number the panel offers before spending
-generations. `population(n)` is the matching extractor: n configurations
-that all clear the same quality floor and are all visibly different from
-each other, ranked by a fresh posterior DRAW so that asking twice gives two
-different samples of the same taste rather than the same list. Between them
-they are what makes "show me everything good you have learned" a question
-the model can answer, and `capacity` is deliberately allowed to answer with
-a number far larger than anybody will render - the honest size of the
-region is more useful than a comfortable one.
+shape as well as a size. Three questions are asked of it, and they are one
+piece of machinery:
+
+    islands()      how many SEPARATE good regions are there? Components of
+                   the good set, joined by hops the fitted similarity model
+                   cannot tell apart, so "isolated" means isolated to the
+                   eye rather than distant in parameters.
+    capacity()     how many mutually DISTINCT samples can be had? The count
+                   the collage button wears - "3 GOOD" - obtained by running
+                   that button's own selection and taking its length, not by
+                   estimating a related quantity.
+    population(n)  give me n of them. Island by island, round robin, every
+                   pair at least COLLAGE_CONFIDENCE likely to LOOK
+                   different, ranked by a fresh posterior DRAW so that
+                   asking twice gives two samples of one taste.
+
+All three share `_good_pool` and one distance, and the distance is a
+probability the user's own similar/distinct clicks calibrated. That last
+point is the whole reason the numbers mean anything: a bar written as a
+distance can be - and was - set to a value at which the model itself
+expected 82% of the pairs to look identical.
 
 Nothing in this module imports gradio, the host, or the rest of CNPro. It is
 numpy and stdlib, so `tests/test_ab_search.py` runs it directly.
@@ -515,6 +522,70 @@ RIVAL_SAMPLES = 16
 FRONTIER_SIZE = 4
 FRONTIER_SEPARATION = 0.5
 
+#: THE COLLAGE'S PROMISE, WRITTEN AS A PROBABILITY. Every pair of entries
+#: N-GOOD returns is at least this likely to LOOK different - not "this far
+#: apart in some units", which is what every version of this before it said
+#: and why every version of it was wrong.
+#:
+#: The similarity row makes this sayable. `_fit_metric` fits exactly one
+#: model, and the model is a probability:
+#:
+#:     P(the pair looks distinct) = 1 - exp(-separation)
+#:
+#: so a distance IS a probability, and the two can be converted. Doing that
+#: to the constants this used to be set to is the whole diagnosis of the
+#: original complaint - N-GOOD returning N of the same image:
+#:
+#:     MIN_DUEL_SEPARATION 0.2 -> 18% likely to look different
+#:     FRONTIER_SEPARATION 0.5 -> 39%
+#:                         1.0 -> 63%
+#:                         2.3 -> 90%
+#:
+#: A collage built at 0.2 was a set of pairs each MORE LIKELY THAN NOT to
+#: look identical, by the model's own fitted rates, and the sheet came back
+#: exactly as the model predicted. No amount of better selection fixes a bar
+#: that says the wrong thing; the bar had to be moved into the currency of
+#: the promise.
+#:
+#: 0.9 rather than 0.99: the last stretch is expensive in a way the user
+#: pays for. P is per PAIR, so a sheet of n entries holds n(n-1)/2 of them
+#: and demanding near-certainty on every one shrinks a collage of twelve to
+#: a collage of three in most spaces. At 0.9 an occasional near-pair on a
+#: big sheet is the price of the sheet being big, and the note says what was
+#: achieved rather than leaving it to be discovered.
+COLLAGE_CONFIDENCE = 0.9
+
+#: When two GOOD configurations are the same PLACE rather than two places -
+#: the hop that joins them into one island (see `islands`). Derived from the
+#: same model and deliberately at the coin-flip: if the fit cannot say which
+#: way a pair would be judged, they are not two answers. A hop of its own
+#: would be a third constant nobody could calibrate.
+ISLAND_CONFIDENCE = 0.5
+
+
+def similarity_distance(confidence):
+    """The learned-metric distance at which the fitted similarity model puts
+    `confidence` probability on the pair LOOKING different.
+
+    The inverse of `distinct_probability`, and the reason both exist: every
+    distance threshold in this engine is really a statement about what the
+    user will see, and stating it in probability is the only form in which
+    it can be checked against the data that was collected.
+    """
+    confidence = min(max(float(confidence), 0.0), 0.999)
+    return -math.log(1.0 - confidence)
+
+
+def distinct_probability(distance):
+    """The fitted model's chance that a pair `distance` apart looks
+    different - `1 - exp(-d)`, the noisy-OR of `_fit_metric`."""
+    return 1.0 - math.exp(-max(float(distance), 0.0))
+
+
+#: The two thresholds above, in the units every distance test uses.
+POPULATION_SEPARATION = similarity_distance(COLLAGE_CONFIDENCE)
+ISLAND_HOP = similarity_distance(ISLAND_CONFIDENCE)
+
 #: A keeper has to be WORTH KEEPING, and the test is probabilistic because
 #: the utility scale is not fixed - with few absolute anchors the whole
 #: posterior compresses toward 0, and any threshold written in raw utility
@@ -538,15 +609,28 @@ KEEP_VS_PAR = 0.35
 #: there are prompts - and it is the number the N-GOOD button spends
 #: generations on, so it is estimated rather than guessed.
 #:
-#: Estimated by Monte Carlo, because the space is combinatorial and the good
-#: region is not a shape anything here can integrate: CAPACITY_BATCH uniform
-#: draws are scored, the share that clears the quality floor is the share of
-#: the SPACE that is good, and the collision rate among those draws says how
-#: many of them are the same answer twice (see `capacity` for the arithmetic).
-#: Uniform rather than pool draws on purpose - the pool is deliberately
-#: concentrated near the attractors, which is the correct bias for choosing a
-#: duel and exactly the wrong one for measuring a fraction of the space.
-CAPACITY_BATCH = 512
+#: Counted rather than estimated: `capacity` runs the collage's own
+#: selection over the collage's own pool and reports how many entries it
+#: could place. See `capacity` - a Monte Carlo estimate of the good region's
+#: packing number lived here for a while, and it answered a different
+#: question than the one the box is asked.
+#:
+#: How many Thompson orderings the selection tries, and the asymmetry
+#: between the two callers is the whole point.
+#:
+#: A greedy maximal set is not unique: how many entries fit depends on which
+#: one is taken first, and every press starts from a fresh draw. Measured on
+#: one seed, presses of 2, 2, 2, 1, 1 against a box reading 2. So the two
+#: callers lean opposite ways - `capacity` reports the SMALLEST count any
+#: ordering yields, `population` returns the LARGEST set any ordering finds -
+#: and the box under-promises against the press by construction rather than
+#: by luck.
+#:
+#: The press leaning that way is right on its own terms too: it is about to
+#: spend a generation per entry, so a few milliseconds of retrying to place
+#: one more distinct sample is the cheapest work in the whole button. The
+#: draws share one Cholesky, so the extra orderings are nearly free.
+SELECTION_DRAWS = 3
 
 #: What counts as good, and how sure the model has to be of it: a
 #: configuration is good when its POSTERIOR puts it within QUALITY_MARGIN
@@ -1079,6 +1163,14 @@ class PreferenceSearch:
         self._dislike_streak = 0    # consecutive disliked duels
         self._surprise = None       # unexpected winner awaiting its follow-up
         self._interesting = []      # donor configurations, oldest first
+        #: What the last `population` call actually achieved - how many
+        #: islands its entries came from, how many the good region holds,
+        #: and the lowest pairwise probability of looking different on the
+        #: sheet. Read by the panel and printed with the collage: the
+        #: promise the button makes is only worth making if the press can
+        #: say whether it kept it.
+        self.population_report = {"islands": 0, "total_islands": 0,
+                                  "confidence": 1.0}
 
         # Host-injected cost oracle: point -> "an image of this configuration
         # is already made and reusable". None (the default, and what every
@@ -2249,14 +2341,27 @@ class PreferenceSearch:
         keepers = self.frontier()
         return keepers[0] if keepers else self.space.baseline()
 
-    def _candidates(self, centers, per_center=24, pool=POOL_SIZE):
+    def _candidates(self, centers, per_center=24, pool=POOL_SIZE,
+                    uniform=None):
         """A candidate set for frontier/portfolio: everything observed, the
         neighbourhoods of `centers`, and uniform draws up to `pool`.
 
         `pool` and `per_center` are arguments rather than constants because
-        `population` asks for as many diverse answers as the user typed into
-        the N box: a set sized for choosing ONE duel cannot hold sixty
+        `population` asks for as many diverse answers as the panel's count
+        offers: a set sized for choosing ONE duel cannot hold sixty
         configurations that are all different from each other.
+
+        `uniform` MAKES THE UNIFORM DRAWS A QUOTA instead of whatever is left
+        over under `pool`, and a caller that wants to see the whole space has
+        to ask for it. The default is the leftover behaviour, which is right
+        for a duel - the pool is meant to tighten around the attractors as
+        evidence accumulates (see POOL_LOCAL_MAX) - and quietly wrong for a
+        collage: `population` scales `per_center` with the count asked for,
+        so at N=20 the neighbourhoods alone already exceeded `pool` and the
+        uniform loop never ran once. The far half of the space was not
+        rejected for being bad, it was never a candidate, and no amount of
+        cleverness downstream can spread a selection over points that are
+        not in the set.
         """
         candidates, keys = [], set()
 
@@ -2272,15 +2377,27 @@ class PreferenceSearch:
             for _ in range(per_center):
                 add(self.space.perturb(center, self.rng,
                                        count=int(self.rng.integers(1, 3))))
-        for _ in range(pool * 4):
-            if len(candidates) >= pool:
+        target = pool if uniform is None else len(candidates) + int(uniform)
+        # x4 because `add` dedupes: in a small space the draws collide, and
+        # the loop has to be allowed to give up rather than spin.
+        for _ in range(max(pool, int(uniform or 0)) * 4):
+            if len(candidates) >= target:
                 break
             add(self.space.sample(self.rng))
         return candidates
 
     def _diverse_top(self, candidates, means, count, separation, best_first=True):
         """Greedy selection down a ranking, keeping only candidates at least
-        `separation` from everything already kept."""
+        `separation` from everything already kept.
+
+        RANKING FIRST, distance only as a filter - which is what a duel
+        wants (the next pair has to be worth asking about, and the best
+        available answer is the interesting one) and NOT what a collage
+        wants: near the top of a posterior every candidate is a
+        perturbation of the champion, so this fills up inside one basin and
+        every entry clears the filter against its neighbour while the sheet
+        is N views of one answer. `population` selects by island instead.
+        """
         picked = []
         order = np.argsort(-means) if best_first else np.argsort(means)
         for index in order:
@@ -2291,6 +2408,92 @@ class PreferenceSearch:
             if len(picked) >= count:
                 break
         return picked
+
+    @staticmethod
+    def _components(pairwise, hop):
+        """Index groups of `pairwise`, joined transitively at `hop`.
+
+        The ISLANDS: two good configurations belong to the same one when a
+        CHAIN of small steps connects them - which is the definition that
+        matches what the word means. Two points a mile apart at opposite
+        ends of one long plateau are one island (you can walk between them
+        without leaving the good region); two points the same distance apart
+        with badness between them are two.
+
+        Union-find over the matrix rather than clustering: there is no k to
+        choose, no centroid to place, nothing that can split a plateau down
+        the middle because a parameter said there should be three of
+        something. The one input is the hop, and the hop is a probability -
+        see ISLAND_CONFIDENCE.
+        """
+        size = len(pairwise)
+        parent = list(range(size))
+
+        def find(index):
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        close = np.asarray(pairwise) < hop
+        for row in range(size):
+            for column in np.flatnonzero(close[row][row + 1:]) + row + 1:
+                a, b = find(row), find(int(column))
+                if a != b:
+                    parent[a] = b
+        groups = {}
+        for index in range(size):
+            groups.setdefault(find(index), []).append(index)
+        return list(groups.values())
+
+    def islands(self):
+        """The ISOLATED HIGH-QUALITY DOMAINS: one entry per separate good
+        region the model believes in, best first.
+
+        Returns `[(peak, size)]` - the best configuration in each island
+        under the posterior mean, and how many of the pooled good points
+        landed in it (a rough read of how much room that island has).
+
+        WHAT THE NUMBER MEANS, and what it does not. This counts SEPARATE
+        answers, not distinguishable images: a taste where only the model
+        matters has one island the size of a subspace, and every point in it
+        is reachable from every other without passing through anything bad.
+        That is why the button's count is not this number - see `capacity`,
+        which counts how many mutually-distinct samples the region can hold -
+        but the two are complementary and the panel says both: three islands
+        holding forty distinct samples between them is a different thing to
+        know than either half alone.
+
+        OVER `_good_pool`, LIKE EVERYTHING ELSE HERE, and the keepers being
+        automatically eligible in it is what makes this reliable rather than
+        lucky. A second peak the frontier has PROVED is often still short of
+        the quality floor a fresh draw has to clear - the floor carries the
+        posterior variance, and a basin with few observations near it is
+        uncertain by construction. Sampled without the keepers forced in,
+        the runner-up basin was missing from the good set entirely on two
+        seeds out of three, and this reported one island for a taste with
+        two peaks that the frontier was holding at that very moment.
+
+        IT NEEDS THE SIMILARITY ROW. Under the prior metric every dimension
+        counts 1.0, which is over ISLAND_HOP, so every categorical
+        difference disconnects and "island" degenerates into "cell of the
+        categorical grid". The labels are what shrink the rows that do not
+        change the picture (measured: an inert row falls from 1.0 to ~0.4
+        over ninety graded duels) until only the ones that do can separate
+        two islands.
+        """
+        if not self.observations:
+            return []
+        chosen, scores, _thompson = self._good_pool()
+        if not chosen:
+            return []
+        groups = self._components(self.space.separations(chosen), ISLAND_HOP)
+        peaks = []
+        for group in groups:
+            best = int(max(group, key=lambda index: scores[index]))
+            peaks.append((chosen[best], len(group), float(scores[best])))
+        peaks.sort(key=lambda triple: -triple[2])
+        return [(point, size) for point, size, _score in peaks]
 
     def _diverse_centers(self, utilities, count):
         """Maximin pick among the DECENT observed points: the strongest
@@ -2472,111 +2675,278 @@ class PreferenceSearch:
         observed = float(self.f.max()) if len(self.f) else 0.0
         return max(observed, float(means.max()) if len(means) else 0.0)
 
-    def capacity(self, min_separation=MIN_DUEL_SEPARATION):
+    def capacity(self, min_separation=POPULATION_SEPARATION):
         """How many DISTINCTLY DIFFERENT good configurations the model
         believes the space holds, as one integer.
 
-        The estimate, in three steps - see CAPACITY_BATCH:
+        IT IS WHAT THE BUTTON CAN DELIVER, counted by running the button's
+        own selection and taking the length. One algorithm, two callers:
+        `population(n)` places entries until it runs out or reaches n, and
+        this places them until it runs out. The number in the box is then
+        the answer to the only question the box is asked - "how many
+        distinct good samples can I have" - rather than a separate estimate
+        of a related quantity that the button then fails to match.
 
-        1. `q`, the share of CAPACITY_BATCH uniform draws that clear the
-           quality floor. The space is huge and the good region is not a
-           shape that can be integrated, so its volume is measured the way
-           volumes of awkward regions are always measured: by sampling. The
-           number of good POINTS is then `G = q * |space|`.
-        2. `v`, how many of those good draws are the same answer twice: the
-           mean count of good draws within `min_separation` of a good draw,
-           itself included. With m good draws out of G good points, a
-           separation ball holding `b` good points shows up as
-           `v = 1 + (m - 1)(b - 1)/G`, which is solved for `b`.
-        3. `G / b` - the good points, divided by how many of them are
-           indistinguishable from each other. That is the number of good
-           samples a person could actually TELL APART.
+        THAT IT USED TO BE A SEPARATE ESTIMATE is the reason this is spelled
+        out. It was a volume-and-packing calculation: what share of uniform
+        draws clear the quality floor, times the space's size, divided by
+        how many good points sit within one separation ball of each other.
+        A fine estimator of the good region's packing number, and not the
+        same quantity as "configurations this solver can hand you that are
+        all mutually distinct" - which is what N-GOOD spends generations on.
+        It reported 40 where the button could produce 6, at which point the
+        box is not information, it is a target the button misses.
 
-        Both limits behave: with no collisions among the draws (`v = 1`) the
-        answer is G, the most the sample can support; with the draws
-        saturating a small good region (`G ~ m`) it is `m / v`, the packing
-        count measured directly. The floor is the keeper count - the frontier
-        has already proved those are good and different - so a converged
-        search never reports fewer answers than it is holding.
+        SMALL NUMBERS ARE THE HONEST ONES here, and they will be smaller
+        than the old estimate by a lot. At COLLAGE_CONFIDENCE the entries
+        have to be different ANSWERS, and most spaces hold a handful of
+        those and thousands of variations on them. The variations are still
+        reachable - ask for more than the box says and `population` gives
+        what it can, reporting the confidence it actually achieved.
+
+        NO KEEPER FLOOR any more, and that is deliberate rather than an
+        omission: keepers only have to clear FRONTIER_SEPARATION, which is
+        a 39% chance of looking different. Flooring this at their count
+        would put a number in the box that the collage cannot honour, which
+        is the exact failure being removed.
+
+        IT MUST NOT OVER-PROMISE, which is a weaker claim than "it equals
+        what the button returns" and the right one. Both run the same
+        selection over the same KIND of pool, but the button's pool is
+        sized by what was asked for and is therefore larger, so a press for
+        more than the box says can legitimately find more. Under-promising
+        costs nothing; over-promising is a target missed on every press.
+
+        THE WORST OF SEVERAL DRAWS, because a greedy maximal set is not a
+        unique quantity: how many entries fit depends on which one is taken
+        first, and the button takes its first from a Thompson draw that
+        differs every press. Measured on one seed, a box reading 2 was met
+        by presses returning 2, 2, 2, 1, 1 - so the box was wrong two times
+        in five while being a perfectly good estimate of the typical case.
+        SELECTION_DRAWS orderings from the ONE covariance factorisation, and
+        the smallest set any of them yields is what the box says. The press
+        takes the LARGEST of the same number of tries, so the inequality
+        between them holds by construction and not by luck.
         """
         if not self.observations:
             return 0
-        self._fit()
-        # The same floor `population` is guaranteed to reach: the frontier
-        # has already proved these are good and different, so a capacity
-        # under the keeper count would be the model contradicting itself.
-        floor = max(1, len(self._keepers or self.frontier()))
-        size = self.space.size
-        if size is None:
-            # A continuous dimension with no step grid: the space has no
-            # point count, so neither has this. "More than you will use" is
-            # the honest reading, and it is what the cap says.
-            return CAPACITY_MAX
-        # NOT deduplicated. A repeated draw is a collision, and collisions
-        # are exactly what step 2 measures - dropping them would make a tiny
-        # space look like an inexhaustible one.
-        draws = [self.space.sample(self.rng) for _ in range(CAPACITY_BATCH)]
-        means, cov = self._posterior(draws)
-        good = self._quality(means, np.diag(cov), self._champion_score(means))
-        count = int(np.count_nonzero(good))
-        if not count:
-            return floor
-        total = count / float(len(draws)) * size
-        separations = self.space.separations(
-            [point for point, keep in zip(draws, good) if keep])
-        neighbours = float(np.mean(
-            np.count_nonzero(separations < min_separation, axis=1)))
-        ball = 1.0 + (neighbours - 1.0) * total / max(count - 1, 1)
-        estimate = total / max(ball, 1.0)
-        return int(min(max(round(estimate), floor), CAPACITY_MAX))
+        eligible, means, thompson = self._good_pool()
+        if not eligible:
+            return 0
+        pairwise = self.space.separations(eligible)
+        placed = len(self._distinct_indices(pairwise, means, CAPACITY_MAX,
+                                            min_separation))
+        for scores in thompson(SELECTION_DRAWS):
+            placed = min(placed, len(self._distinct_indices(
+                pairwise, scores, CAPACITY_MAX, min_separation)))
+        return int(min(max(placed, 1), CAPACITY_MAX))
 
-    def population(self, count, min_separation=MIN_DUEL_SEPARATION):
-        """Up to `count` high-quality configurations, all visibly different
-        from each other - the extraction interface behind N-GOOD.
+    def _good_pool(self, count=0):
+        """The candidate set the count and the collage are both computed
+        over: `(eligible, means, thompson)`, everything already filtered to
+        what clears the quality floor.
+
+        `means` is the posterior mean of each eligible candidate, which is
+        what `capacity` counts by. `thompson(n)` draws n posterior SAMPLES
+        over the same candidates - what `population` ranks by, so that two
+        presses of one solver state differ, and what `capacity` uses to see
+        how much the count moves with the ordering. A callable rather than
+        an array because the draw costs a Cholesky, and n draws share it.
+
+        ONE CONSTRUCTION, because the box and the button disagreeing was
+        traced to two: `capacity` used to sample the space UNIFORMLY while
+        `population` sampled around the attractors. Uniform draws in a large
+        space land almost entirely in unexplored territory, where the
+        posterior is uncertain and the quality floor rejects on principle -
+        so the box counted over a handful of points while the button chose
+        over hundreds, and the two numbers had no reason to resemble each
+        other. Measured at box 1 / button 17 on one seed.
+
+        Half the pool is neighbourhoods of the attractors and half is
+        uniform - see `_candidates` - so both halves of the question ("what
+        do we already believe in" and "is there anything good out there we
+        have not looked at") are represented at every size.
+        """
+        self._fit()
+        keepers = list(self._keepers or self.frontier())
+        centers = self._diverse_centers(self.f, FRONTIER_SIZE)
+        seen = {self.space.key(point) for point in keepers}
+        pool = int(min(max(POOL_SIZE, int(count) * POPULATION_OVERSAMPLE),
+                       POPULATION_POOL_MAX))
+        candidates = keepers + [
+            point for point in self._candidates(
+                centers,
+                per_center=max(8, pool // (2 * max(1, len(centers)))),
+                pool=pool,
+                uniform=pool // 2)
+            if self.space.key(point) not in seen]
+        means, cov = self._posterior(candidates)
+        good = self._quality(means, np.diag(cov), self._champion_score(means))
+        # The keepers are always eligible: the frontier has already proved
+        # they are good, by its own floor, so an early press returns them
+        # rather than an empty sheet.
+        good[:len(keepers)] = True
+        keep = np.flatnonzero(good)
+        if not len(keep):
+            return [], np.zeros(0), (lambda draws=1: np.zeros((draws, 0)))
+        return ([candidates[int(index)] for index in keep], means[keep],
+                lambda draws=1: np.asarray(
+                    self._sample(means, cov, draws))[:, keep])
+
+    def population(self, count, min_separation=POPULATION_SEPARATION):
+        """Up to `count` high-quality configurations, SPREAD ACROSS the good
+        region rather than crowded at the top of it - the extraction
+        interface behind N-GOOD.
+
+        THE PROMISE IS A PROBABILITY, and it is checked against the model
+        that was fitted from the user's own similar/distinct clicks: every
+        PAIR of entries is at least COLLAGE_CONFIDENCE likely to look
+        different. Not "0.2 apart", not "0.5 apart" - both of those were the
+        bar at one time, and in the fitted model they mean an 82% and a 61%
+        chance of the pair looking IDENTICAL. The sheet came back exactly as
+        those numbers predicted, which is what "N-GOOD returns N of the same
+        image" was.
+
+        ISLANDS FIRST, then within them. `islands` finds the separate good
+        regions - components of the good set, joined by hops the model
+        cannot tell apart - and this walks them ROUND ROBIN: the best
+        unpicked entry of island 1, then of island 2, and so on, lap after
+        lap. So a collage of three over three islands is one sample of each
+        separate answer, and a collage of twelve is four looks at each. The
+        structure of the good region is what orders the sheet, rather than a
+        ranking that never leaves the champion's basin (the previous
+        failure) or a farthest-point walk that prefers the region's outer
+        margins (the one before that).
+
+        THE PAIRWISE BAR STILL HOLDS ACROSS ISLANDS, not only within them.
+        Two islands are separate places, which does not by itself make their
+        peaks look different - a chain of bad configurations can lie between
+        two good ones that resemble each other - so every candidate is
+        checked against EVERYTHING already picked, wherever it came from.
 
         FEWER THAN ASKED IS AN ANSWER. Nothing here relaxes the quality floor
-        or the separation to fill a quota: a collage padded with mediocre or
-        near-duplicate entries would misreport the model's own belief, and
-        the number that was asked for came from `capacity`, which is an
-        estimate. The caller says how many it got.
+        or the bar to fill a quota: a collage padded with mediocre or
+        near-duplicate entries would misreport the model's own belief. The
+        one exception is announced rather than silent - see the fallback at
+        the end, for the case where the model cannot yet promise anything
+        about anything.
 
-        VARIED PER CALL, and that is what makes pressing again worth
-        anything: the candidates are ranked by a DRAW from the posterior
-        rather than by its mean (the same Thompson logic the duels are
-        chosen by), so each press ranks the good region differently while
-        every entry still has to clear the same floor. Two collages from one
-        solver state are two different samples of one taste, not the same
-        list twice.
+        WHAT WAS ACHIEVED IS REPORTED, in `population_report`: how many
+        islands the entries came from, the lowest pairwise probability on
+        the sheet, and whether the bar had to be given up on. The panel
+        prints it. A promise nobody can check is not a promise.
+
+        AS MANY AS IT CAN PLACE. Which entries fit depends on which one is
+        taken first, so several orderings are tried and the fullest sheet
+        wins - see SELECTION_DRAWS. Without that the press could come back
+        under the number the box had just offered, not because the region
+        had shrunk but because one draw happened to open with a point that
+        crowded out the rest.
+
+        VARIED PER CALL: the island order and the pick inside each island
+        follow a DRAW from the posterior rather than its mean (the same
+        Thompson logic the duels are chosen by), so two presses of one
+        solver state are two different samples of one taste.
 
         THE KEEPERS ARE ALWAYS ELIGIBLE. Everything else has to clear the
         quality floor, which carries the posterior uncertainty and therefore
         admits nothing at all early in a search - but the frontier has
         already proved the keepers are good and different, by its own floor,
-        so an early press returns them rather than an empty collage. It is
-        also what keeps this function's answer consistent with `capacity`'s,
-        which floors at the same list.
+        so an early press returns them rather than an empty collage.
         """
         count = max(int(count), 1)
         if not self.observations:
             return []
-        self._fit()
-        keepers = list(self._keepers or self.frontier())
-        centers = self._diverse_centers(self.f, FRONTIER_SIZE)
-        seen = {self.space.key(point) for point in keepers}
-        candidates = keepers + [
-            point for point in self._candidates(
-                centers,
-                per_center=int(min(max(24, count * 4), POPULATION_POOL_MAX)),
-                pool=int(min(max(POOL_SIZE, count * POPULATION_OVERSAMPLE),
-                             POPULATION_POOL_MAX)))
-            if self.space.key(point) not in seen]
-        means, cov = self._posterior(candidates)
-        good = self._quality(means, np.diag(cov), self._champion_score(means))
-        good[:len(keepers)] = True
-        draw = self._sample(means, cov, 1)[0]
-        keep = np.flatnonzero(good)
-        return self._diverse_top([candidates[int(i)] for i in keep],
-                                 draw[keep], count, min_separation)
+        # The same pool the count is taken over, sized by what was asked
+        # for - see `_good_pool`.
+        eligible, _means, thompson = self._good_pool(count)
+        if not eligible:
+            self.population_report = {"islands": 0, "total_islands": 0,
+                                      "confidence": 0.0}
+            return []
+        # ONE pairwise matrix, shared by the island decomposition and every
+        # bar test below - the same numbers, so the sheet cannot be selected
+        # under one notion of distance and reported under another.
+        pairwise = self.space.separations(eligible)
+        # THE BEST OF SEVERAL ORDERINGS - see SELECTION_DRAWS. Greedy sets
+        # differ in size by which entry is taken first, and the press is
+        # about to spend a generation per entry, so it is worth a few
+        # milliseconds to find the ordering that places the most. Ties keep
+        # the FIRST draw, which is the Thompson one, so two presses of one
+        # solver state still differ.
+        scores, picked = None, []
+        for candidate_scores in thompson(SELECTION_DRAWS):
+            attempt = self._distinct_indices(pairwise, candidate_scores,
+                                             count, min_separation)
+            if len(attempt) > len(picked):
+                scores, picked = candidate_scores, attempt
+            if len(picked) >= count:
+                break
+        groups = self._components(pairwise, ISLAND_HOP)
+        island_of = {index: number for number, group in enumerate(
+            sorted(groups, key=lambda g: -max(scores[i] for i in g)))
+            for index in group}
+
+        # NO FALLBACK, and the absence is the feature. A "the bar could not
+        # be met, here are the most different ones available" path was
+        # written here and deleted: it fired exactly when the good region
+        # holds one or two answers and the user asked for twelve, which is
+        # the case N-GOOD was reported broken for, and it filled the sheet
+        # with look-alikes under a disclaimer. A short collage is the
+        # honest answer to "give me twelve distinct samples" when there are
+        # two - and it is the only answer that cannot waste an hour.
+        gaps = [pairwise[a][b] for position, a in enumerate(picked)
+                for b in picked[position + 1:]]
+        self.population_report = {
+            "islands": len({island_of[index] for index in picked}),
+            "total_islands": len(groups),
+            "confidence": (distinct_probability(min(gaps)) if gaps else 1.0),
+        }
+        return [eligible[index] for index in picked]
+
+    def _distinct_indices(self, pairwise, scores, count, bar):
+        """Up to `count` indices, every pair at least `bar` apart, taken
+        ISLAND BY ISLAND - the selection behind both N-GOOD and the count
+        on its label.
+
+        The islands come first because they are the structure of the answer:
+        one lap of the round robin puts one sample of every separate good
+        region on the sheet, and the laps after it deepen each island in the
+        same order, so a collage of three over three islands is three
+        answers and a collage of twelve is four looks at each. Inside an
+        island the best candidate under `scores` wins - so the peaks lead
+        and the margins fill in behind them, which is the opposite of what a
+        farthest-point walk does.
+
+        The bar is checked against EVERY index already taken, not just the
+        ones from the same island: two separate places can still look alike,
+        and the promise is about pairs on the sheet, not about topology.
+
+        A lap that places nothing ends it. That is what "fewer than asked is
+        an answer" is, mechanically - there is no relaxation step, and the
+        caller decides what to say about a short result.
+        """
+        groups = self._components(pairwise, ISLAND_HOP)
+        groups.sort(key=lambda group: -max(scores[index] for index in group))
+        order = [sorted(group, key=lambda index: -scores[index])
+                 for group in groups]
+        taken, picked = set(), []
+        while len(picked) < count:
+            placed = False
+            for group in order:
+                if len(picked) >= count:
+                    break
+                for index in group:
+                    if index in taken:
+                        continue
+                    if all(pairwise[index][other] >= bar for other in picked):
+                        taken.add(index)
+                        picked.append(index)
+                        placed = True
+                        break
+            if not placed:
+                break
+        return picked
 
     def confidence(self):
         """How sure the model is that `best()` beats a typical rival, 0..1.
@@ -2610,9 +2980,15 @@ class PreferenceSearch:
             # distinct looks" a promise the keepers then fail to keep.
             "attractors": len(self._keepers),
             # How many good answers the space holds, not how many the
-            # frontier keeps - see `capacity`. This is what the panel's N box
-            # shows and what N-GOOD spends generations on.
+            # frontier keeps - see `capacity`. This is the count the panel
+            # puts on the collage button and what a press spends.
             "capacity": self.capacity(),
+            # ISOLATED good regions - separate answers rather than
+            # distinguishable samples. A plateau taste is one island holding
+            # dozens of distinct samples; two unrelated looks that both work
+            # are two islands. Knowing both numbers is the difference
+            # between "vary this" and "choose between these".
+            "islands": len(self.islands()),
             "confidence": self.confidence(),
             # What the similarity row has taught about each row's visibility
             # - all ones until it has been used. See _fit_metric.

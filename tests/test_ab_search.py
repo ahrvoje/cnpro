@@ -491,6 +491,16 @@ def test_search(search, numpy):
         return peaks.get(int(model), -0.8) \
             + {0: 0.0, 1: 0.2, 2: 0.0}[int(prompt)]
 
+    # WHAT THE PAIR LOOKS LIKE, which is not what it is WORTH. The panel's
+    # three grade rows partition the on-track case, so a real session hands
+    # back a similarity verdict with every single grade - and any test that
+    # grades without one is running the engine in a state the UI cannot
+    # produce. Here the look is carried by the model and the weight; factor
+    # and prompt change the score without changing the picture, which is the
+    # case the learned metric exists to discover.
+    def looks_alike(a, b):
+        return int(a[0]) == int(b[0]) and abs(float(a[3]) - float(b[3])) < 0.25
+
     both_found = 0
     engines = []
     for seed in range(3):
@@ -504,7 +514,8 @@ def test_search(search, numpy):
             # The dislike row, the way a person actually uses it: clicked
             # when BOTH sides clearly miss what they want.
             disliked = max(two_peak_taste(a), two_peak_taste(b)) < -0.2
-            engine.observe(a, b, grade, disliked=disliked)
+            engine.observe(a, b, grade, disliked=disliked,
+                           similar=looks_alike(a, b))
         engines.append(engine)
         keepers = engine.frontier()
         for i, one in enumerate(keepers):
@@ -527,6 +538,35 @@ def test_search(search, numpy):
           "pool and the cross-basin duels exist precisely so that a user who "
           "likes two unrelated looks ends the search holding both"
           % both_found)
+
+    # -- the two peaks are two ISLANDS -------------------------------------
+    #
+    # The frontier check above says the search HOLDS both answers. This says
+    # it can NAME them as separate places: `islands` is the machinery N-GOOD
+    # samples from, and a taste built out of two disjoint peaks with a wall
+    # of -0.8 between them is the case it has to get right. Two of three
+    # seeds, like the frontier claim beside it - one search is one sample of
+    # a stochastic process.
+    named = 0
+    for engine in engines:
+        found = engine.islands()
+        models = {int(peak[0]) for peak, _size in found}
+        if len(found) >= 2 and {1, 3} <= models:
+            named += 1
+    check(named >= 2,
+          "islands() separated the two peaks on only %d of 3 seeds. The good "
+          "set here is two disjoint blobs around models 1 and 3 with "
+          "everything between them at -0.8, so a component count that cannot "
+          "see two is not measuring isolation - and N-GOOD, which samples one "
+          "entry per island before it takes a second from any, would offer "
+          "one answer where the user has two.\n"
+          "      THE SIMILARITY ROW IS WHAT MAKES THIS WORK, so suspect the "
+          "metric first: under the PRIOR weights every row counts 1.0 and "
+          "the island hop is %.2f, so a change of factor or prompt splits a "
+          "blob as surely as a change of model does and 'isolated' means "
+          "nothing. It is the labels that shrink the inert rows until only "
+          "the ones that change the picture can separate two islands"
+          % (named, search.ISLAND_HOP))
 
     # -- portfolio: good samples on demand, bad samples on demand ----------
     engine = engines[0]
@@ -756,11 +796,20 @@ def test_capacity(search, numpy):
       render a thousand images of nothing.
 
     And `population(n)` is the extractor that has to agree with it: every
-    entry mutually distinguishable (the SAME MIN_DUEL_SEPARATION bar that
-    decides a duel is worth asking - a collage of near-duplicates is the
-    one failure that wastes a GPU-hour and looks like success), never more
-    than asked, and DIFFERENT between presses, which is the whole reason
-    the button can be pressed twice.
+    entry a different ANSWER, not merely a visible notch away (the
+    POPULATION_SEPARATION bar, which is the keeper's - a collage of
+    near-duplicates is the one failure that wastes a GPU-hour and looks
+    like success), never more than asked, and DIFFERENT between presses,
+    which is the whole reason the button can be pressed twice.
+
+    THE BAR ALONE DOES NOT CATCH THE BUG THIS TEST NOW CARRIES, which is
+    why the pre-fix selection is run alongside and has to lose. N-GOOD
+    returned N slight variations of one image while satisfying a pairwise
+    floor perfectly: walking the posterior ranking downward and keeping
+    whatever clears the floor fills up inside the champion's basin, where
+    every neighbour is one notch from the last. Pairwise-floor tests pass on
+    that. What separates the two selections is COVERAGE - how far the set
+    reaches across the good region - so that is what is measured.
     """
     space = build_space(search)
 
@@ -796,12 +845,25 @@ def test_capacity(search, numpy):
                                      (other, broads, "a good subspace")):
             count = engine.capacity()
             counts.append(count)
-            check(count >= len(engine._keepers),
-                  "capacity reported %d good configurations under a taste "
-                  "with %s while the frontier was holding %d keepers it had "
-                  "already proved were good AND different - the model "
-                  "contradicting itself, and N-GOOD offering less than STOP "
-                  "is about to print" % (count, name, len(engine._keepers)))
+            # THE BOX IS WHAT THE BUTTON DELIVERS. Ask for more than the
+            # box says and the collage should come back at the box's number,
+            # because the two are the same selection run to different
+            # limits. Slack of one for the sampling: the two calls draw
+            # their own candidate pools.
+            #
+            # NOT floored at the keeper count, which is what this used to
+            # assert. Keepers only clear FRONTIER_SEPARATION - a 39% chance
+            # of looking different - so a capacity floored at their number
+            # is the box promising samples the collage cannot produce, the
+            # exact mismatch that made "N-GOOD returns N of the same image"
+            # look like a selection bug rather than a units bug.
+            delivered = len(engine.population(count + 5))
+            check(delivered >= count,
+                  "the N box says %d under a taste with %s and N-GOOD asked "
+                  "for %d delivered only %d. The box may UNDER-promise - the "
+                  "button sizes its pool by what was asked for and can find "
+                  "more - but a box the button cannot reach is a target "
+                  "missed on every press" % (count, name, count + 5, delivered))
     narrows.sort()
     broads.sort()
     check(broads[1] > narrows[1],
@@ -830,24 +892,82 @@ def test_capacity(search, numpy):
           "more than asked (the count is a GPU budget) and never nothing "
           "when the capacity it agrees with says there are answers"
           % (wanted, len(picks)))
-    for index, one in enumerate(picks):
-        for other in picks[index + 1:]:
-            gap = broadly.space.separation(one, other)
-            check(gap >= search.MIN_DUEL_SEPARATION - 1e-9,
-                  "two entries of a collage are %.3f apart, under the %.2f it "
-                  "takes to SEE a difference - the button promises distinctly "
-                  "different samples, and a grid of the same image rendered "
-                  "twenty times costs a GPU-hour to discover"
-                  % (gap, search.MIN_DUEL_SEPARATION))
+    def gaps(points):
+        return [broadly.space.separation(one, other)
+                for index, one in enumerate(points)
+                for other in points[index + 1:]]
 
-    again = broadly.population(wanted)
-    keys = {broadly.space.key(point) for point in picks}
-    repeat = {broadly.space.key(point) for point in again}
-    check(keys != repeat,
-          "two presses of N-GOOD produced the identical set of %d "
-          "configurations - the button exists to be pressed again, and a "
-          "second collage that is the first one re-rendered is a second "
-          "GPU-hour spent on nothing" % len(keys))
+    report = broadly.population_report
+    for gap in gaps(picks):
+        check(gap >= search.POPULATION_SEPARATION - 1e-9,
+              "two entries of a collage are %.3f apart - the fitted "
+              "similarity model puts them at %.0f%% likely to look "
+              "different, under the %.0f%% the button promises. A grid of "
+              "the same image rendered twenty times costs a GPU-hour to "
+              "discover" % (gap, 100 * search.distinct_probability(gap),
+                            100 * search.COLLAGE_CONFIDENCE))
+    check(report["confidence"] >= search.COLLAGE_CONFIDENCE - 1e-9,
+          "population_report claims %.0f%%, under the %.0f%% the button "
+          "promises. The report is what the panel prints beside the collage, "
+          "so it has to be the measured truth about the sheet - and since "
+          "there is no relaxation path, a sheet that cannot make the bar is "
+          "short rather than disclaimed"
+          % (100 * report["confidence"], 100 * search.COLLAGE_CONFIDENCE))
+
+    # THE PRE-FIX SELECTION, run on the same solver, and it has to FAIL the
+    # assertion above - otherwise the assertion proves nothing about this
+    # engine and would pass just as happily on the code that produced the
+    # bug. This is `population` as it was: rank by the posterior draw, keep
+    # whatever clears MIN_DUEL_SEPARATION.
+    broadly._fit()
+    keepers = list(broadly._keepers or broadly.frontier())
+    seen = {broadly.space.key(point) for point in keepers}
+    pool = keepers + [point for point in broadly._candidates(
+        broadly._diverse_centers(broadly.f, search.FRONTIER_SIZE),
+        per_center=96, pool=512)
+        if broadly.space.key(point) not in seen]
+    means, cov = broadly._posterior(pool)
+    good = broadly._quality(means, numpy.diag(cov),
+                            broadly._champion_score(means))
+    good[:len(keepers)] = True
+    keep = numpy.flatnonzero(good)
+    eligible = [pool[int(i)] for i in keep]
+    draw = broadly._sample(means, cov, 1)[0][keep]
+    ranked = broadly._diverse_top(eligible, draw, max(wanted, 8),
+                                  search.MIN_DUEL_SEPARATION)
+    if len(ranked) > 1:
+        worst = min(gaps(ranked))
+        check(worst < search.POPULATION_SEPARATION,
+              "the pre-fix selection (ranking-first at MIN_DUEL_SEPARATION) "
+              "produced %d entries whose worst pair is %.3f - already over "
+              "the collage bar. Then the assertion above cannot distinguish "
+              "the fix from the bug on this solver, and it is measuring "
+              "nothing" % (len(ranked), worst))
+
+    # DIFFERENT BETWEEN PRESSES - ASKED WITH SLACK, which is the only form
+    # of the claim that means anything. Ask for everything the region holds
+    # and there is nothing to choose: the selection finds the same maximal
+    # set every time, and returning it twice is CORRECT - those are the
+    # answers, and a press that shuffled in a near-duplicate to look busy
+    # would be the original bug wearing a disguise. The claim is about
+    # WHICH of several possible answers a press shows, so it is asked one
+    # short of the maximum, where the choice exists.
+    if wanted >= 2:
+        fewer = wanted - 1
+        # Three presses, at least two outcomes: the selection is stochastic
+        # (a fresh pool and a fresh posterior draw per press), so demanding
+        # that two CONSECUTIVE presses differ would be a coin flip dressed
+        # as an assertion. What is being pinned is that the button is not
+        # DETERMINISTIC, and three tries settle that without flakiness.
+        outcomes = {frozenset(broadly.space.key(point)
+                              for point in broadly.population(fewer))
+                    for _ in range(3)}
+        check(len(outcomes) >= 2,
+              "three presses of N-GOOD for %d of the %d distinct answers the "
+              "region holds produced one single outcome - with a choice "
+              "available the button has to make different ones, or pressing "
+              "again is a GPU-hour spent re-rendering the first collage"
+              % (fewer, wanted))
 
     status = broadly.status()
     check(status.get("capacity") == broadly.capacity() or
@@ -1730,7 +1850,11 @@ def test_point_gene(dna, search):
     check("0@0;0.5@0.5;1@1%7C0~2" in baseline,
           "offset 0 did not reproduce the drawn profile verbatim in the "
           "recipe: %r" % (baseline,))
-    check("as drawn" in gene.describe((1,))
+    # The neutral offset prints as a bare "0", not as words: the trace is a
+    # column of these, one per row per image, and "0" among signed offsets
+    # already reads as "the profile untouched" for a fraction of the width.
+    # What has to hold is that the line says WHICH offset the duel chose.
+    check(gene.describe((1,)).endswith(" 0")
           and "+0.5" in gene.describe((2,)),
           "the trace line does not say which offset a duel chose: %r / %r"
           % (gene.describe((1,)), gene.describe((2,))))
@@ -1889,6 +2013,24 @@ def test_phase_css(dna):
     clamped = dna._phase_css("x", snap(running=True, generating="A"), 2.0)
     check("100%" in clamped and "200%" not in clamped,
           "progress above 1 was not clamped: %r" % (clamped,))
+
+    # THE COLLAGE BUTTON'S WIDTH rides the same channel, as a DIGIT COUNT.
+    # style.css turns it into a width in `ch` - the width of a digit in the
+    # font the button is drawn in - and GOOD above it reads the same
+    # variable, which is what keeps the two one column at any count. A pixel
+    # width computed in python would be the panel guessing at a font it
+    # never sees, and it is the one thing this payload must never contain.
+    for count, digits in ((3, 1), (12, 2), (9999, 4)):
+        sized = dna._phase_css("x", snap(), 0.0, count)
+        check(f"--cnpro-ab-digits:{digits}" in sized,
+              "a count of %d did not publish %d digit(s) for the parked "
+              "column to size itself by: %r" % (count, digits, sized))
+        check("px" not in sized,
+              "the phase CSS carried a PIXEL width for the collage button "
+              "(%r). The panel cannot know the theme's font metrics; the "
+              "digit count is the whole contract" % (sized,))
+    check(dna._phase_css("x", snap(), 0.0) == "",
+          "an idle panel with no count yet still got phase CSS")
 
     # The session-side lifecycle the CSS keys off.
     session = dna._Session()

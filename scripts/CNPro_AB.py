@@ -97,36 +97,47 @@ a difference you called invisible, because every duel is filtered by the
 learned metric and a dimension wrongly written off would otherwise never get
 asked about again. Grade the row you actually see.
 
-skip, beside the bottom row, is the last kind of answer: this pair could not
+SKIP, beside the bottom row, is the last kind of answer: this pair could not
 be judged at all - a broken render, an unreadable duel - and records
 nothing, which is NOT what 5 records.
 
-GOOD and N-GOOD, parked beside STOP and skip, are not answers either: each
+GOOD and N-GOOD, parked beside STOP and SKIP, are not answers either: each
 renders fresh samples drawn from the good end of the solver's current
 belief - varied per press, pure inference, no observation recorded - prints
 their full recipes into the trace, and, during a search, returns to the same
 duel. They are the "show me what you think I want" probes, and the images
 join the gallery at stop.
 
-    GOOD    one sample.
-    N-GOOD  a COLLAGE of N samples that are all good AND all visibly
-            different from each other, laid out as one grid image.
+    GOOD    one sample, from the good end - quality first.
+    N-GOOD  a COLLAGE of N samples that are all good AND SPREAD ACROSS the
+            good region, laid out as one grid image. Spread, not merely
+            "each different from its neighbour": the entries are chosen to
+            cover the region rather than to rank inside it, and they clear
+            the keeper's distance from each other rather than the duel's -
+            see ab_search.population, which returned N views of the
+            champion until both of those were true.
 
-N IS THE SOLVER'S OWN ESTIMATE, in the editable box to the left of the
-button: how many mutually distinguishable configurations it currently
-believes are good, over the WHOLE space rather than over the handful the
-frontier has room to name (`ab_search.capacity`). It is recomputed after
-every graded duel and written into the box, so the number is a live reading
-of what the search has learned - it starts at the keeper count, stays there
-while the model still cannot tell a champion from a typical configuration,
-and grows as the good region is mapped. It can honestly reach the thousands,
-which is why the box is EDITABLE and why the estimate is not simply spent:
-the solver reports the size of the region, the person decides how much of it
-is worth a GPU-hour. Whatever the box says at the moment of the press is
-what gets rendered, capped at COLLAGE_MAX. Press again for another collage:
-the entries are ranked by a fresh draw from the posterior each time, so two
-presses are two different samples of one taste rather than the same list
-twice.
+N IS ON THE BUTTON - "3 GOOD" - and it is the solver's own count of how many
+mutually distinguishable good configurations it can actually hand over
+(`ab_search.capacity`). Recomputed after every graded duel and written into
+the LABEL, so the button always says what pressing it will do: it starts at
+one, stays there while the model cannot yet tell a champion from a typical
+configuration, and grows as the good region is mapped. Capped at
+COLLAGE_MAX. Press again for another collage: each press enters the good
+region at a fresh draw from the posterior and covers it from there, so two
+presses are two samples of one taste rather than the same list twice - until
+the region is exhausted, at which point the same sheet IS the answer.
+
+IT USED TO BE AN EDITABLE BOX beside the button, and the box is gone because
+the number stopped being an estimate. It was one: a Monte Carlo reading of
+the good region's size that could report forty while the button delivered
+six, and choosing what to spend on that region was the user's call. The box
+and the button now run the SAME selection to different limits (see
+ab_search.capacity), so the box could only ever say what the button was
+about to do - asking for more returns the same sheet, and the only edit it
+still supported was asking for fewer of the few answers there are. A button
+that states its own count is the whole control, and the width the box was
+using went back to the scale.
 
 THE BUTTONS DO NOT DIE WITH THE SEARCH, and that is the point of them: a
 finished search is a reached state, not a spent one. With no search running
@@ -206,7 +217,7 @@ the loop possible at all. Two consequences worth knowing:
 NOTHING ENDS A SEARCH IRRECOVERABLY. Every graded duel refreshes the retained
 solver state - on the session, and mirrored to a small JSON file that
 survives a UI restart - and the next Generate on the same rows RESUMES from
-it. "Resume search" (on by default, in the loop controls) is the way out:
+it. "Resume search" (on by default, on the header line) is the way out:
 untick it to start over. So a STOP, an Interrupt, a page reload or a
 restarted server cost nothing but the interruption itself: press Generate and
 the search continues where it left off, or press GOOD/N-GOOD and sample from
@@ -266,10 +277,16 @@ REMOVE_SYMBOL = "➖"
 
 #: Rows built up front. Gradio 4.40 cannot create components after the page is
 #: built, so "dynamic row count" is a fixed stack of rows whose VISIBILITY the
-#: +/- buttons move. Ten is well past useful: every extra degree of freedom
-#: costs comparisons, and a human runs out of patience long before a search
-#: with ten of them has enough evidence to speak.
-MAX_ROWS = 10
+#: +/- buttons move.
+#:
+#: Fifteen, sized off the search somebody actually wants to run rather than off
+#: a round number: three profile points on each of five ControlNet units is a
+#: reasonable thing to try, and at ten rows it could not be expressed at all.
+#: Every extra degree of freedom still costs comparisons, so a fifteen-row
+#: search is a long one - but that is the user's trade to make, and the ceiling
+#: is here to stop the component stack from growing without bound, not to
+#: ration ambition.
+MAX_ROWS = 15
 
 #: Grades on offer. 0..10 with 5 meaning "cannot pick" - see the docstring.
 GRADES = 11
@@ -816,8 +833,12 @@ class Gene:
         if self.kind == Gene.KIND_PROFILE:
             return f"{self.name} x{value:g}"
         if self.kind == Gene.KIND_POINT:
-            return (f"{self.name} {value:+g}" if value
-                    else f"{self.name} as drawn")
+            # "+0.1", "-0.2" ... and a bare "0" for the neutral offset rather
+            # than "as drawn". The trace is a column of these, one per row per
+            # image, and the words cost more width than they carry: 0 in a
+            # column of signed offsets already reads as "the profile
+            # untouched", and the box's own header says what 0 means.
+            return f"{self.name} {value:+g}" if value else f"{self.name} 0"
         if self.kind == Gene.KIND_SETTING and self.field == "model":
             return f"{self.name} = {_short_model(value)}"
         return f"{self.name} = {_elide(value)}"
@@ -1162,17 +1183,17 @@ _DEMO_SERIAL = {"txt2img": 0, "img2img": 0}
 #: its own business: one sample for GOOD, up to COLLAGE_MAX for N-GOOD.
 DEMO_BATCH_MAX = 8
 
-#: Samples ONE N-GOOD press will render, whatever the N box says. The
-#: solver's estimate is honest about the size of the good region and that
-#: region can hold thousands of configurations - which is a number worth
-#: KNOWING and not a number worth rendering unasked. Sixty-four is an 8x8
+#: Samples ONE N-GOOD press will render, whatever count the button carries.
+#: The solver's count is honest about how many distinct answers it holds and
+#: a mapped region can offer a great many - which is a number worth KNOWING
+#: and not a number worth rendering unasked. Sixty-four is an 8x8
 #: collage and roughly half an hour of GPU time; a request beyond it is
 #: clamped, and the status line says by how much, so pressing again is how
 #: more is asked for rather than the first press quietly becoming an
 #: overnight job.
 COLLAGE_MAX = 64
 
-#: What the N box holds before any solver has spoken. One, because a panel
+#: What the button offers before any solver has spoken. One, because a panel
 #: that opens offering to spend eight generations on a taste it has not
 #: learned yet is offering the wrong thing.
 CAPACITY_DEFAULT = 1
@@ -1207,21 +1228,48 @@ class _Demo:
 
 
 def _collage_count(text):
-    """The N box's contents as a number of samples to render.
+    """The count a press carries, as a number of samples to render.
 
-    Clamped rather than validated, and that is the right severity for this
-    box: it is free text next to a button, the press has already happened by
-    the time this runs, and the alternatives are a traceback in the
-    generation thread or a press that silently does nothing. An unreadable
-    box falls back to the default, which costs one generation and is
-    obviously wrong on screen - the cheapest possible way to say "that was
-    not a number".
+    Clamped rather than validated, and that is the right severity here: the
+    press has already happened by the time this runs, and the alternatives
+    are a traceback in the generation thread or a press that silently does
+    nothing. The value has crossed a session boundary - an imported file, a
+    disk mirror written by an older build - so it is not trusted even though
+    the panel is the only thing that writes it. An unreadable one falls back
+    to the default, which costs one generation and is obviously wrong on
+    screen.
     """
     try:
         count = int(float(str(text).strip()))
     except (TypeError, ValueError):
         return CAPACITY_DEFAULT
     return max(min(count, COLLAGE_MAX), 1)
+
+
+def _collage_promise(report):
+    """The claim the collage makes, as one clause, from
+    `ab_search.population_report`.
+
+    A PROBABILITY THE SHEET CAN BE CHECKED AGAINST. The entries came from a
+    selection that enforces it, so this is not a boast - it is the number
+    the next glance at the images either confirms or refutes, which is the
+    only form in which "distinctly different samples" is worth saying at
+    all. It also says how many separate good regions the entries came from,
+    because that is what decides whether a short sheet is a disappointment
+    or the answer: three entries from three islands is the good region
+    having three answers in it.
+    """
+    if not report:
+        return ""
+    islands = int(report.get("islands") or 0)
+    total = int(report.get("total_islands") or 0)
+    confidence = float(report.get("confidence") or 0.0)
+    if not islands:
+        return ""
+    where = f" from {islands} isolated good region{'' if islands == 1 else 's'}"
+    if total > islands:
+        where += f" of {total}"
+    return f"{where}, every pair {confidence:.0%}+ likely to look different"
 
 
 def _collage(images):
@@ -1425,9 +1473,10 @@ def _solver_payload(search, seed, space):
         "seed": int(seed),
         "duels": int(search.duels),
         # A REPORT, not state: it is recomputed from the observations below
-        # and nothing replays it. It rides along so that the N box means
-        # something on a page that loaded after the search that learned it -
-        # a reload, or a restart reading the disk mirror.
+        # and nothing replays it. It rides along so that the collage
+        # button's count means something on a page that loaded after the
+        # search that learned it - a reload, or a restart reading the disk
+        # mirror.
         "capacity": int(search.capacity()),
         "signature": _space_signature(space),
         "observations": [
@@ -1665,7 +1714,8 @@ class _Session:
         # The solver's capacity estimate - how many distinctly different good
         # configurations it believes it can produce. None until a search has
         # said; the panel then falls back to the retained state's own copy,
-        # which is what keeps the N box meaningful on a freshly loaded page.
+        # which is what keeps the button's count meaningful on a freshly
+        # loaded page.
         self.capacity = None
 
     # -- written by run() ------------------------------------------------
@@ -1789,14 +1839,13 @@ class _Session:
             self.summary = summary
 
     def set_capacity(self, count):
-        """The solver's latest estimate of how many good answers it holds.
+        """How many good answers the solver can currently hand over.
 
-        Written after every graded duel and painted into the N box, which
-        OVERWRITES whatever the user had typed there - deliberately: the box
-        shows what the search currently believes, and an edit is a decision
-        about the next press, not a correction of the model. Between two
-        grades the edit stands, which is the whole window in which it is
-        made.
+        Written after every graded duel and painted into the collage
+        button's own label, so the button always advertises what pressing it
+        will do. Nothing else writes it: the editable box this used to feed
+        is gone, because the count and the collage are now the same
+        selection and the box could only ever repeat the button.
         """
         with self.condition:
             self.capacity = int(count)
@@ -2077,8 +2126,16 @@ class Script(scripts.Script):
         type_filters = [g.type_filter for g in groups]
         count = len(groups)
 
-        # --- header: how many degrees of freedom -------------------------
-        with gr.Row(variant="compact"):
+        # --- header: how many degrees of freedom, and the loop's own two
+        #     switches ------------------------------------------------------
+        #
+        # ONE ROW, not two. The switches are the search's standing settings,
+        # the same kind of thing as "how many rows are there" - and a row of
+        # its own for two checkboxes bought nothing but a band of empty panel
+        # between the header and the rows it introduces. Sharing the header's
+        # line saves that band and puts them beside the count they qualify.
+        with gr.Row(variant="compact",
+                    elem_classes=["cnpro-ab-headline-row"]):
             add = ToolButton(value=ADD_SYMBOL, elem_id=f"{eid}_add",
                              tooltip="One more degree of freedom")
             remove = ToolButton(value=REMOVE_SYMBOL, elem_id=f"{eid}_remove",
@@ -2086,20 +2143,17 @@ class Script(scripts.Script):
             rescan = ToolButton(value=REFRESH_SYMBOL, elem_id=f"{eid}_rescan",
                                 tooltip="Rescan the ControlNet and LoRA "
                                         "directories")
-            headline = gr.Markdown(_headline(1), elem_id=f"{eid}_headline")
-
-        row_count = gr.State(1)
-        rows = [self._row(i, eid, visible=(i == 0)) for i in range(MAX_ROWS)]
-
-        # --- the loop's own controls -------------------------------------
-        #
-        # Two checkboxes, nothing more. The weight grids live on the rows
-        # themselves (each weighted row's own list), and a stop renders
-        # nothing - the keepers are recipes in the trace, one paste away.
-        with gr.Row(variant="compact"):
+            # scale=1 on the headline and scale=0 on the switches: the
+            # headline absorbs whatever width is going, so the two checkboxes
+            # sit against the panel's right edge at any width instead of
+            # drifting with the sentence's length.
+            headline = gr.Markdown(_headline(1), elem_id=f"{eid}_headline",
+                                   elem_classes=["cnpro-ab-headline"])
             vary_seed = gr.Checkbox(
-                label="New seed each duel", value=False, scale=2,
-                elem_id=f"{eid}_vary_seed")
+                label="New seed each duel", value=False,
+                scale=0, min_width=140,
+                elem_id=f"{eid}_vary_seed",
+                elem_classes=["cnpro-ab-switch"])
             # ON BY DEFAULT: a search that ended - STOP, Interrupt, even a
             # restart (the state is mirrored to disk) - is a reached state,
             # and Generate continues from it as long as the rows still match
@@ -2107,8 +2161,13 @@ class Script(scripts.Script):
             # rows, start over", and it is also what clears the Tried record
             # (see _Session.start) - the two are the same statement.
             resume_search = gr.Checkbox(
-                label="Resume search", value=True, scale=2,
-                elem_id=f"{eid}_resume")
+                label="Resume search", value=True,
+                scale=0, min_width=115,
+                elem_id=f"{eid}_resume",
+                elem_classes=["cnpro-ab-switch"])
+
+        row_count = gr.State(1)
+        rows = [self._row(i, eid, visible=(i == 0)) for i in range(MAX_ROWS)]
 
         # --- the duel ----------------------------------------------------
         #
@@ -2238,33 +2297,54 @@ class Script(scripts.Script):
                 gr.HTML("<span class='cnpro-ab-row-label'>Similar samples"
                         "</span>",
                         elem_classes=["cnpro-ab-row-label-wrap"])
-                # The solver's own estimate of how many distinctly different
-                # good configurations it holds, and the count the button
-                # beside it will actually render. Rewritten after every
-                # graded duel (see _Session.set_capacity) and EDITABLE in
-                # between: the estimate is honest about a good region that
-                # can hold thousands, and what it is worth spending on that
-                # region is not a question the solver can answer.
-                #
-                # A Textbox rather than a Number: gradio's Number carries a
-                # stepper and a minimum width that no amount of CSS makes
-                # small, and this has to fit in the strip of parked controls
-                # beside a scale. `container=False` drops the label frame;
-                # the "N=" in front of it is drawn by style.css, so the value
-                # stays a bare integer that both sides can parse.
-                capacity_box = gr.Textbox(
-                    value=str(CAPACITY_DEFAULT), container=False, lines=1,
-                    max_lines=1, interactive=True, show_label=False,
-                    elem_id=f"{eid}_capacity",
-                    elem_classes=["cnpro-ab-capacity"])
                 # N-GOOD: a COLLAGE of N good samples that are all visibly
                 # different from each other - the whole learned region at
                 # once rather than one draw from it. Press again for another
                 # collage; the entries are ranked by a fresh posterior draw
                 # each time. See ab_search.population.
-                n_good = gr.Button(value="N GOOD", min_width=80,
+                #
+                # THE COUNT IS THE LABEL - "3 GOOD" - and it used to be an
+                # editable box beside it. The box was worth its width while
+                # `capacity` was an estimate of the good region's size: it
+                # could report forty, and the number worth spending was the
+                # user's call. It is not that any more. The box and the
+                # button now run the same selection (see ab_search.capacity),
+                # so the box could only ever say what the button was about
+                # to do - asking for more returns the same sheet, and the
+                # only edit it still supported was asking for fewer of the
+                # few answers there are. A button that says what it will do
+                # is the whole control.
+                #
+                # The number is written by the tick, into the LABEL. Its
+                # width follows in style.css, and GOOD above it follows the
+                # same width, so the column stays one column at 3 or at 12.
+                n_good = gr.Button(value=f"{CAPACITY_DEFAULT} GOOD",
+                                   min_width=80,
                                    elem_id=f"{eid}_n_good",
                                    elem_classes=["cnpro-ab-demo"])
+                # What the press will actually ask for. A State rather than
+                # the label it mirrors: the click reads a number, and
+                # parsing it back out of "12 GOOD" would make the button's
+                # wording load-bearing.
+                capacity_state = gr.State(CAPACITY_DEFAULT)
+                # SKIP, on THIS row rather than the one below it, and the row
+                # it is declared in is the row it is painted on: the parked
+                # controls are absolutely positioned inside their own grade
+                # row (style.css), so being declared last put it alone at the
+                # bottom right with an empty slot above it - the block read as
+                # three buttons and a straggler. Here the four make one 2x2
+                # block, GOOD over N GOOD and STOP over SKIP, and the third
+                # row's parked band is simply empty.
+                #
+                # It answers the DUEL, not the row it sits on - "this pair
+                # could not be judged" is the same statement wherever the
+                # button lives - so nothing about the wiring cares, and the
+                # far-right column stays what it was: the two controls that
+                # end the duel in front of you, furthest from the scale a
+                # fast hand is working.
+                skip = gr.Button(value="SKIP", min_width=80,
+                                 elem_id=f"{eid}_skip",
+                                 elem_classes=["cnpro-ab-skip"])
             # "I will rate them, but both are bad." The grade still matters
             # (which side is LESS bad steers the search inside the region);
             # the row is what lets it mark the whole region as avoid-this and
@@ -2282,9 +2362,6 @@ class Script(scripts.Script):
                     for score in range(GRADES)]
                 gr.HTML("<span class='cnpro-ab-row-label'>Bad samples</span>",
                         elem_classes=["cnpro-ab-row-label-wrap"])
-                skip = gr.Button(value="skip", min_width=80,
-                                 elem_id=f"{eid}_skip",
-                                 elem_classes=["cnpro-ab-skip"])
             status = gr.Markdown("", elem_id=f"{eid}_status",
                                  elem_classes=["cnpro-ab-status"])
 
@@ -2365,7 +2442,7 @@ class Script(scripts.Script):
                         status, config, trace,
                         (grade_buttons, similar_buttons, dislike_buttons),
                         (interesting_a, interesting_b), (good, n_good),
-                        capacity_box, skip, stop, is_img2img)
+                        capacity_state, skip, stop, is_img2img)
         self._wire_set(apply_button, config, set_note, targets, unreachable)
         self._wire_io(export_button, import_button, session_file, io_note,
                       rows, row_count, headline,
@@ -2626,10 +2703,10 @@ class Script(scripts.Script):
 
     def _wire_duel(self, poller, seen, duel_group, image_a, image_b,
                    status, config, trace, grade_rows,
-                   interesting_buttons, demo_buttons, capacity_box, skip,
+                   interesting_buttons, demo_buttons, capacity_state, skip,
                    stop, is_img2img):
         """The poll, the three grade rows, the interesting toggles,
-        GOOD/N-GOOD and its N box, skip and STOP."""
+        GOOD/N-GOOD and the count in its label, SKIP and STOP."""
         session = _session(is_img2img)
         tab = "img2img" if is_img2img else "txt2img"
         eid = f"cnpro_ab_{tab}"
@@ -2700,21 +2777,23 @@ class Script(scripts.Script):
                 snap["status"] = ("solver state from an earlier session is "
                                   "available - GOOD/N-GOOD render samples "
                                   "from it; Generate resumes the search")
-            # The retained state's own estimate is what keeps the N box
-            # meaningful on a page that loaded AFTER the search that learned
-            # it - a reload, or a restarted server reading its disk mirror.
+            # The retained state's own count is what keeps the button's
+            # number meaningful on a page that loaded AFTER the search that
+            # learned it - a reload, or a restarted server reading its disk
+            # mirror.
             capacity = snap["capacity"]
             if capacity is None and isinstance(retained, dict):
                 capacity = retained.get("capacity")
+            count = None if capacity is None else max(int(capacity), 1)
             now = {
                 "generation": snap["generation"],
                 "visible": visible,
                 "status": _status_markdown(snap),
                 "result": snap["result"],
                 "trace": snap["trace"],
-                "capacity": None if capacity is None else str(int(capacity)),
+                "capacity": count,
                 "active": bool(snap["running"]),
-                "css": _phase_css(eid, snap, _inference_progress()),
+                "css": _phase_css(eid, snap, _inference_progress(), count),
             }
 
             def when(key, value):
@@ -2739,15 +2818,17 @@ class Script(scripts.Script):
                 (when("result", now["result"])
                  if now["result"] or now["active"] else gr.update()),
                 when("trace", now["trace"]),
-                # The N box, and ONLY when the number the solver reports has
-                # actually changed. Every tick would fight the user for the
-                # box - this is the one output here that is interactive, and
-                # a value re-sent 1.6 times a second is a value that cannot
-                # be typed into. Changing it after a graded duel is the
-                # intended overwrite (see _Session.set_capacity); between
-                # grades nothing here touches it.
-                (when("capacity", now["capacity"])
-                 if now["capacity"] is not None else gr.update()),
+                # The count, into the BUTTON'S LABEL and into the state the
+                # press reads - and only when it has actually changed. Both
+                # carry the same number for the same reason they always
+                # did: the label is what the user aims at, the state is
+                # what the click spends, and a press must never render a
+                # different count from the one it advertised.
+                (gr.update(value=f"{now['capacity']} GOOD")
+                 if now["capacity"] is not None
+                 and now["capacity"] != last.get("capacity") else gr.update()),
+                (now["capacity"] if now["capacity"] is not None
+                 else gr.update()),
                 # The timer switches ITSELF off. Nothing else knows when the
                 # loop ended: run() returns on its own thread, and a handler
                 # bound to the Generate click would have to guess whether this
@@ -2757,8 +2838,10 @@ class Script(scripts.Script):
                 when("css", now["css"]),
             ]
 
+        good_button, n_good_button = demo_buttons
         tick_outputs = [seen, duel_group, image_a, image_b, status, config,
-                        trace, capacity_box, poller, phase_css]
+                        trace, n_good_button, capacity_state, poller,
+                        phase_css]
         poller.tick(fn=tick, inputs=[seen], outputs=tick_outputs,
                     show_progress=False, queue=False)
 
@@ -2868,19 +2951,18 @@ class Script(scripts.Script):
             return (gr.update(value=_status_markdown(session.snapshot())),
                     gr.update(value=f"go-{_DEMO_SERIAL[tab]}"))
 
-        good_button, n_good_button = demo_buttons
         good_button.click(fn=lambda: press(_Demo()), inputs=[],
                           outputs=[status, demo_go],
                           show_progress=False, queue=False)
-        # The N box is an INPUT to this click, so whatever is in it at the
-        # moment of the press is what gets rendered - the user's edit wins
-        # over the solver's last estimate without either side having to
-        # notice the other. Read as text and clamped here rather than
-        # trusted: it is a free-text box, and "twelve" or "-3" or an empty
-        # box must cost a status line, not a traceback in the generation
-        # thread.
-        n_good_button.click(fn=lambda text: press(_Demo(_collage_count(text))),
-                            inputs=[capacity_box],
+        # THE COUNT THE BUTTON WAS ADVERTISING is what the press spends: the
+        # state is an INPUT to this click, and the tick writes it in the same
+        # breath as the label, so the two cannot disagree about what a press
+        # is going to do. Still clamped rather than trusted - the value has
+        # crossed a session boundary (an import, a disk mirror written by an
+        # older build), and a bad one must cost a status line rather than a
+        # traceback in the generation thread.
+        n_good_button.click(fn=lambda count: press(_Demo(_collage_count(count))),
+                            inputs=[capacity_state],
                             outputs=[status, demo_go],
                             show_progress=False, queue=False)
 
@@ -3540,9 +3622,9 @@ class Script(scripts.Script):
                 payload = _solver_payload(search, base_seed, space)
                 with session.condition:
                     session.solver_state = payload
-                # AFTER every answer, which is what makes the N box a live
-                # reading of the search rather than a number typed once: the
-                # good region is exactly what each grade redraws.
+                # AFTER every answer, which is what makes the button's count
+                # a live reading of the search rather than a figure fixed at
+                # the start: the good region is what each grade redraws.
                 session.set_capacity(payload["capacity"])
                 _store_solver(tab, payload)
         except Exception as exc:
@@ -3639,7 +3721,17 @@ class Script(scripts.Script):
         six - and the note says so, because the difference between "six is
         all there is" and "something went wrong" is the whole value of the
         number in the box.
+
+        THE NOTE CARRIES THE PROMISE THE COLLAGE MAKES: how many separate
+        good regions the entries came from, and the model's own lowest
+        probability that any two of them look different. Both come from
+        `population_report`, and printing them is not decoration - a sheet
+        that claims distinct samples and delivers near-duplicates is the one
+        failure of this button that costs an hour and looks like success, so
+        the claim is stated in a form the next glance at the sheet can
+        falsify.
         """
+        report = {}
         wanted = None if request.count is None else min(request.count,
                                                         COLLAGE_MAX)
         if wanted is None:
@@ -3649,6 +3741,7 @@ class Script(scripts.Script):
             # only in the box's parser: this is the one place that knows a
             # number is about to become GPU minutes.
             points = search.population(wanted)
+            report = dict(getattr(search, "population_report", None) or {})
             # A collage is not worth the render cache: sixty-four entries
             # would evict every duel image in it (RENDER_CACHE is 32), and
             # the cache is what the engine's reuse economy trades on. The
@@ -3699,7 +3792,8 @@ class Script(scripts.Script):
                      f"has")
         else:
             short = f" - stopped after {len(made)} of {wanted}"
-        return [collage], (f"collage of {len(made)} good samples{short}")
+        return [collage], (f"collage of {len(made)} good samples"
+                           f"{_collage_promise(report)}{short}")
 
     def _demo_run(self, request, p, ab_search, space, genes, base_args, cnpro,
                   base_units, base_prompt, base_seed, session):
@@ -4099,8 +4193,10 @@ def _coerce(token, value):
 # ---------------------------------------------------------------------------
 
 def _headline(count):
-    return (f"**{count}** degree{'s' if count != 1 else ''} of freedom "
-            f"- one per row. Add rows for more.")
+    # SHORT, because the line it sits on is shared with the loop's two
+    # switches now. "Add rows for more" was the +/- buttons' own tooltips
+    # said twice; the buttons are an inch to the left of this text.
+    return f"**{count}** degree{'s' if count != 1 else ''} of freedom, one per row"
 
 
 #: What the weights box means when it is left EMPTY, by row kind - shown as
@@ -4248,7 +4344,7 @@ def _inference_progress():
     return min(max(step / steps, 0.0), 1.0)
 
 
-def _phase_css(eid, snap, progress):
+def _phase_css(eid, snap, progress, capacity=None):
     """The tick's <style> payload: what the current PHASE paints onto chrome
     gradio components cannot carry themselves.
 
@@ -4262,10 +4358,25 @@ def _phase_css(eid, snap, progress):
       in CSS opacity rather than component visibility so that its appearing
       cannot move a single pixel of the rows it points at.
 
-    Empty when the phase needs nothing painted, which is the idle common
-    case the tick then dedupes away entirely.
+    * The parked column is as wide as N-GOOD's label needs, and only the
+      DIGIT COUNT is sent - "how many characters", never a pixel width.
+      style.css turns it into one, in `ch`, which is the width of a digit in
+      the button's own font: the column then fits "3 GOOD" and "9999 GOOD"
+      exactly, in whatever theme and at whatever font size, and GOOD above
+      it reads the same variable so the two stay one column. A pixel width
+      computed here would be this file guessing at a font it never sees.
+
+    Empty when the phase needs nothing painted and the count is unknown,
+    which is the idle common case the tick then dedupes away entirely. Note
+    that a KNOWN count makes the payload non-empty for the rest of the
+    session - that is not churn, because the tick only re-sends this string
+    when it CHANGES, and the digit count changes about as often as the
+    number of good answers does.
     """
     rules = []
+    if capacity is not None:
+        rules.append(f"#{eid}_duel .cnpro-ab-grades"
+                     f"{{--cnpro-ab-digits:{len(str(int(capacity)))}}}")
     if snap["running"] and snap["generating"] in ("A", "B"):
         percent = int(round(min(max(progress, 0.0), 1.0) * 100))
         if snap["generating"] == "A":

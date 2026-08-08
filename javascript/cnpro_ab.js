@@ -45,10 +45,10 @@
 (function () {
     "use strict";
 
-    /* Both tabs build the panel and each has ten rows, so twenty pickers exist
-       in one document. Matched whole, not by prefix: the id of the textbox
-       these write into is derived from it below, and a near-miss would write
-       into a component that is not there. */
+    /* Both tabs build the panel and each has MAX_ROWS rows, so twice that
+       many pickers exist in one document. Matched whole, not by prefix: the
+       id of the textbox these write into is derived from it below, and a
+       near-miss would write into a component that is not there. */
     const PICKER_ID = /^cnpro_ab_(txt2img|img2img)_r\d+_lora_pick$/;
 
     function textareaFor(picker) {
