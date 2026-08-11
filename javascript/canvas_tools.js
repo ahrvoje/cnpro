@@ -398,7 +398,7 @@
                     range({id: 'edgeFeather', labelId: 'edgeFeatherLabel', label: 'feathering 0',
                            labelMax: 'feathering 100',
                            min: 0, max: 100, value: 0,
-                           note: '% of the edge pixels fully eaten by the white mask, diffusing inwards from the edge boundary (0 = off, 100 = no edges left); a soft exponential front bleaches the not-yet-eaten pixels'}),
+                           note: 'Topology-preserving thinning: broad contours are eaten from both sides towards a precise centerline (0 = original thickness, 100 = one-pixel lines); details that are already one pixel wide are preserved'}),
                     reset({id: 'edgesResetButton',
                            title: 'Reset the menu to defaults (opacities 0 = effect off, sensitivity 50, thickness 2, feathering 0)'}),
                 ],

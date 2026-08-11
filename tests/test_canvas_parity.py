@@ -130,6 +130,19 @@ def main():
              % (name, r.get("diffPixels"), r.get("totalPixels"), r.get("maxDiff"),
                 r.get("firstDiffAt"), r.get("displayed")))
 
+    edge = (cases.get("edges-feather-detail") or {}).get("edgeFeather")
+    if not edge:
+        fail("the real-browser Edge feather behavior case did not report pixels")
+    else:
+        if edge["detailAt100"] <= 0:
+            fail("Edge feather 100 erased the fine trace in the real canvas")
+        if edge["thickAt100"] <= 0:
+            fail("Edge feather 100 erased the thick contours instead of leaving centerlines")
+        if edge["thickAt100"] >= edge["thickAt0"] * 0.65:
+            fail("Edge feather 100 did not reduce thick contours to fine lines "
+                 "(%d black pixels before, %d after)"
+                 % (edge["thickAt0"], edge["thickAt100"]))
+
     return report(data)
 
 
@@ -146,6 +159,11 @@ def report(data=None):
           "exception%s asserted, not skipped)"
           % (len(cases), os.path.basename(data.get("chrome") or "chrome"),
              exceptions, "" if exceptions == 1 else "s"))
+    edge = (cases.get("edges-feather-detail") or {}).get("edgeFeather")
+    if edge:
+        print("     Edge feather: fine trace at 100 = %d black pixels; thick "
+              "trace %d->%d black pixels"
+              % (edge["detailAt100"], edge["thickAt0"], edge["thickAt100"]))
     return 0
 
 

@@ -70,7 +70,9 @@ instantly when a pair appears and a comparison cannot carry, each asking for
 no memory of any reference and no absolute number:
 
 * **Distinct samples** - the normal answer. These two look rather different,
-  and we are on track.
+  and we are on track. "On track" is an absolute signal as well as prose:
+  both samples are softly anchored above par, while the 0..10 grade orders
+  them inside that usable region.
 * **Similar samples** - ...rather ALIKE. This is the cheapest click in the
   panel and among the most informative: "do these look the same" is a
   first-glance impression that costs no deliberation, and because the top
@@ -79,7 +81,10 @@ no memory of any reference and no absolute number:
   That is what trains the SEPARATION METRIC (`lib_cnpro/ab_search.py`,
   `_fit_metric`) - the thing that decides whether a duel is worth asking at
   all, how different the STOP keepers have to be, and what an N-GOOD collage
-  may hold together. It was a hand-written constant until this row existed.
+  may hold together. It was a hand-written constant until this row existed;
+  it now also calibrates the utility kernel, so grades transfer farther over
+  visually inert rows and less over vivid ones. Like the first row, this one
+  anchors both samples above par.
   It also pins the two configurations together in the utility model: two
   images that look the same are worth the same, which is a stronger claim
   than the grade beside it.
@@ -92,16 +97,12 @@ no memory of any reference and no absolute number:
   that data.
 
 Once in a while the search will show a pair that looks like the same image
-twice, and say so in the status line. That is deliberate - it is re-checking
-a difference you called invisible, because every duel is filtered by the
-learned metric and a dimension wrongly written off would otherwise never get
-asked about again. Grade the row you actually see.
+twice. That is deliberate - it is re-checking a difference you called
+invisible, because every duel is filtered by the learned metric and a
+dimension wrongly written off would otherwise never get asked about again.
+Grade the row you actually see.
 
-SKIP, beside the bottom row, is the last kind of answer: this pair could not
-be judged at all - a broken render, an unreadable duel - and records
-nothing, which is NOT what 5 records.
-
-GOOD and N-GOOD, parked beside STOP and SKIP, are not answers either: each
+GOOD and N-GOOD, parked beside START/STOP and RESUME, are not answers: each
 renders fresh samples drawn from the good end of the solver's current
 belief - varied per press, pure inference, no observation recorded - prints
 their full recipes into the trace, and, during a search, returns to the same
@@ -110,7 +111,7 @@ join the gallery at stop.
 
     GOOD    one sample, from the good end - quality first.
     N-GOOD  a COLLAGE of N samples that are all good AND SPREAD ACROSS the
-            good region, laid out as one grid image. Spread, not merely
+            good region, laid out as one horizontal strip. Spread, not merely
             "each different from its neighbour": the entries are chosen to
             cover the region rather than to rank inside it, and they clear
             the keeper's distance from each other rather than the duel's -
@@ -121,9 +122,9 @@ N IS ON THE BUTTON - "3 GOOD" - and it is the solver's own count of how many
 mutually distinguishable good configurations it can actually hand over
 (`ab_search.capacity`). Recomputed after every graded duel and written into
 the LABEL, so the button always says what pressing it will do: it starts at
-one, stays there while the model cannot yet tell a champion from a typical
-configuration, and grows as the good region is mapped. Capped at
-COLLAGE_MAX. Press again for another collage: each press enters the good
+one before a solver has spoken, becomes "0 GOOD" (disabled) when the evidence
+supports no above-par population, and grows as the good region is mapped.
+Capped at COLLAGE_MAX. Press again for another collage: each press enters the good
 region at a fresh draw from the posterior and covers it from there, so two
 presses are two samples of one taste rather than the same list twice - until
 the region is exhausted, at which point the same sheet IS the answer.
@@ -139,17 +140,27 @@ still supported was asking for fewer of the few answers there are. A button
 that states its own count is the whole control, and the width the box was
 using went back to the scale.
 
+During a live search N-GOOD reads the duel render cache: an island peak already
+shown costs a lookup rather than another generation. Fresh collage members do
+NOT enter that 32-image cache, or one large collage would evict every duel
+image and destroy the reuse economy after the press. Reuse without pollution
+is deliberate; the generated configurations remain subject to the same
+quality and pairwise-distinctness tests either way.
+
 THE BUTTONS DO NOT DIE WITH THE SEARCH, and that is the point of them: a
 finished search is a reached state, not a spent one. With no search running
 - after STOP, or right after an Import staged a solver - a GOOD/N-GOOD press
-starts a generation ITSELF (it stages the request and clicks Generate
-client-side), and run() serves it by rendering those samples from the
+stages its request and clicks Generate client-side (the same route START
+and RESUME take - see HOW THE SEARCH IS STARTED AND STOPPED), and run()
+serves it by rendering those samples from the
 retained solver state instead of opening duels: nothing is asked, nothing
-is observed, the state is left exactly as it was. Everything the rows do
-not own - prompt, canvases, resolution, seed - is read fresh from the UI by
-that generation, so the learned taste can be applied under freely retuned
-settings for as long as it is useful. The search is how the generator is
-TRAINED; the buttons are how it is USED.
+is observed, the state is left exactly as it was. The rows are read fresh too:
+editing them after the search reinterprets the learned coordinates on their
+current values, with added coordinates starting at their first value and
+out-of-range choices clamped. Prompt, canvases, resolution and seed are likewise
+read fresh from the UI by that generation, so the learned taste can be applied
+under freely retuned settings for as long as it is useful. The search is how
+the generator is TRAINED; the buttons are how it is USED.
 
 The panel's Session file accordion holds Export and Import: the whole session
 - rows, unit settings, canvases, prompt AND negative prompt, the sampler
@@ -157,16 +168,56 @@ settings (sampler, scheduler, steps, CFG, size, denoising), seed, and the
 solver's learned state - as ONE deterministic HTML file. The file renders in a browser as readable
 tables and images, so a version mismatch still leaves a page a human can
 reproduce by hand; imported, it reconfigures everything and stages the solver
-state, which the next Generate resumes onto the same rows.
+state, which RESUME then continues onto the same rows.
 
 Under each image sits an "✦ interesting" TOGGLE, and it is deliberately not a
 grade: it says "overall this sample is whatever I graded it - usually bad -
 but it touches a characteristic I want to see in good samples". The mark adds
 no utility whatsoever; it donates the configuration's coordinates to hybrid
 candidates (the characteristic, transplanted into the current attractors),
-which then earn their way through ordinary duels or vanish. Toggled marks are
+which then earn their way through ordinary duels or vanish. A LoRA/prompt pick
+and its conditional weight transplant as one semantic gene, never as two
+unrelated coordinates. Toggled marks are
 sent with the grade, so the natural gesture is: mark ✦ on the tempting side,
 then grade the pair on the dislike row.
+
+HOW THE SEARCH IS STARTED AND STOPPED
+-------------------------------------
+TWO BUTTONS, and the host's Generate is not one of them.
+
+    START/STOP  one button wearing the state it is in. Idle it reads START
+                and begins a FRESH search - a new record, a new model, the
+                retained state left untouched. Alive it reads STOP and ends
+                the loop.
+    RESUME      under it, and always on screen. It continues from the
+                retained solver state - the last search on these rows, the
+                disk mirror that survived a restart, or a state an Import
+                staged - and it is ENABLED only while nothing is running and
+                that state exactly matches the visible rows. Starting a search
+                greys it out again.
+
+GENERATE STAYS THE HOST'S OWN BUTTON. Selecting this script does not turn
+Generate into "start a search" any more: a plain press renders the current
+setup exactly as it would with no script selected - `run()` returns None and
+the host generates normally. That is what makes the panel usable AS a panel,
+because a search is a long-lived thing to be inside of and the prompt, the
+canvases and the sampler settings still want trying out while you are in one.
+
+The three buttons that DO start work still go THROUGH Generate, because only
+the Generate event reads every component the generation pipeline needs: a
+press stages its intent (see _PENDING_START and _PENDING_DEMO) and clicks the
+host's button client-side, and `run()` serves the staged intent instead of a
+plain render. There is no second path into the pipeline, and a gradio handler
+cannot invoke one.
+
+ONE SEED FOR THE WHOLE SEARCH. Both sides of every duel render on the seed in
+the host's own box, which is what makes a duel a comparison of two
+CONFIGURATIONS rather than of two noise fields - and it is also what makes
+the render cache worth having, since a side already shown can be shown again
+for a lookup instead of a generation. There used to be a "new seed each duel"
+switch and it is gone: it traded a noisier comparison for nothing the panel
+could show, and it disabled the cache outright (a fresh seed is a fresh
+recipe, so no side could ever repeat).
 
 THE SEARCH HAS NO LENGTH. It asks until STOP, because how many comparisons an
 answer needs is not knowable in advance - it depends on how many degrees of
@@ -192,6 +243,13 @@ and can be saved, pasted back into that box, or handed to somebody else, which
 is the point of it being a string rather than a button that only works in this
 session.
 
+SET GOOD samples one configuration from the learned good posterior and applies
+it without generating an image. RESET restores every writable setting to the
+exact values captured when START was pressed. That snapshot travels with the
+retained solver state, so stop/reload/restart and Export/Import do not change
+what Reset means. Both actions write through the same visible-component map as
+Set; neither touches a unit State wholesale.
+
 HOW IT RUNS, AND WHY THAT IS UNUSUAL
 ------------------------------------
 A script's `run()` is one blocking call, so an interactive loop inside it has
@@ -216,31 +274,30 @@ the loop possible at all. Two consequences worth knowing:
 
 NOTHING ENDS A SEARCH IRRECOVERABLY. Every graded duel refreshes the retained
 solver state - on the session, and mirrored to a small JSON file that
-survives a UI restart - and the next Generate on the same rows RESUMES from
-it. "Resume search" (on by default, on the header line) is the way out:
-untick it to start over. So a STOP, an Interrupt, a page reload or a
-restarted server cost nothing but the interruption itself: press Generate and
-the search continues where it left off, or press GOOD/N-GOOD and sample from
-whatever it had learned. State learned on DIFFERENT rows never resumes - the
-signature check refuses it - so changing the rows is also a fresh start, with
-a log line saying so. The reloaded page finds its way back too: the poll
-timer runs once at page load and repaints whatever the server-side session is
-doing, then switches itself off if that is nothing.
+survives a UI restart - and RESUME picks it up on the same rows. So a STOP,
+an Interrupt, a page reload or a restarted server cost nothing but the
+interruption itself: press RESUME and the search continues where it left
+off, or press GOOD/N-GOOD and sample from whatever it had learned. State
+learned on DIFFERENT rows never resumes - the signature check refuses it -
+so changing the rows disables RESUME; START is the explicit fresh-search
+action. The reloaded page finds its way back too: the poll timer runs once at
+page load and repaints whatever the server-side session is doing, then
+switches itself off if that is nothing.
 
 A RESUMED SEARCH KEEPS ITS RECORD. Tried, the recommendation and the summary
 survive a stop-and-continue exactly as the learned state does - they describe
 the very duels the resumed observations came from, so clearing them would
-leave a record that starts mid-session. Only a search that is genuinely fresh
-- new rows, or "Resume search" unticked - opens a new record.
+leave a record that starts mid-session. START opens a new record; RESUME
+never does.
 
 WHAT IS DELIBERATELY NOT DONE HERE
 ----------------------------------
 Nothing is written back to the UI while searching. Every duel gets a shallow
 COPY of the unit dataclass in a copy of `p.script_args`; the gr.State the unit
 panel is bound to is never touched, so an abandoned search leaves the panel
-exactly as it was. The Set button is the ONE path that writes to the UI, it
-runs only when pressed, and it writes to the visible components rather than to
-the unit State - the same route an infotext paste takes.
+exactly as it was. Set, Set GOOD and Reset are the ONLY paths that write to the
+UI, each runs only when pressed, and each writes to the visible components
+rather than to the unit State - the same route an infotext paste takes.
 """
 
 import base64
@@ -249,7 +306,6 @@ import html
 import io
 import json
 import logging
-import math
 import os
 import random
 import re
@@ -257,6 +313,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 import gradio as gr
 
@@ -655,7 +712,7 @@ def _target_choices(flags):
 
 
 def _short_model(name):
-    """Model name without its ` [hash]` suffix - status lines are narrow."""
+    """Model name without its ` [hash]` suffix - trace summaries are narrow."""
     return RE_MODEL_HASH.sub("", str(name or "")).strip() or "None"
 
 
@@ -1098,6 +1155,107 @@ def _parse_config_string(text):
     return values
 
 
+def _settings_string(settings, order=None):
+    """A complete settings snapshot in the same grammar Set already reads.
+
+    Search recommendations intentionally name only the fields required to
+    reproduce one sampled point. The initial snapshot has a different job:
+    Reset must put *every* writable setting back, including fields no search
+    row varied. It therefore serializes the whole `_set_targets` map while
+    keeping that map's UI order when one is supplied.
+    """
+    settings = settings if isinstance(settings, dict) else {}
+    keys = []
+    for token in order or settings:
+        if token in settings and token not in keys:
+            keys.append(token)
+    keys.extend(token for token in settings if token not in keys)
+    return " | ".join(
+        f"{token}={_escape(_jsonable(settings[token]))}" for token in keys)
+
+
+def _configuration_for_point(genes, point, initial_settings):
+    """The exact initial settings with one search `point` applied.
+
+    Set GOOD is not a generation, so it has no `p` object or live unit
+    dataclass to copy. The initial snapshot already contains every component
+    Set can write. Rebuild only the small unit-shaped surface Gene.apply_unit
+    needs, apply the sampled coordinates, then fold those changed fields back
+    into a copy of the snapshot. Untouched settings consequently return to
+    what the search actually started from instead of inheriting whatever was
+    changed after it.
+    """
+    initial_settings = (initial_settings
+                        if isinstance(initial_settings, dict) else {})
+    settings = copy.deepcopy(initial_settings)
+    units = {}
+    changed = {}
+    for gene in genes:
+        if not gene.on_unit:
+            continue
+        index = gene.unit_index
+        if index not in units:
+            prefix = f"u{index}."
+            fields = {
+                token[len(prefix):]: _coerce(token, value)
+                for token, value in settings.items()
+                if token.startswith(prefix)
+            }
+            # Main-profile arithmetic consults the legacy scalars only when
+            # the profile string is empty. Current CNPro units always carry a
+            # profile, but explicit fallbacks keep old saved sessions
+            # readable instead of turning Set GOOD into an AttributeError.
+            fields.setdefault("weight_profile", "")
+            fields.setdefault("weight", 1.0)
+            fields.setdefault("guidance_start", 0.0)
+            fields.setdefault("guidance_end", 1.0)
+            fields.setdefault("enabled", True)
+            units[index] = types.SimpleNamespace(**fields)
+            changed[index] = set()
+        gene.apply_unit(units[index], point)
+        changed[index].add(
+            "weight_profile"
+            if gene.kind in (Gene.KIND_PROFILE, Gene.KIND_POINT)
+            else gene.field)
+
+    for index, fields in changed.items():
+        unit = units[index]
+        for field in fields:
+            settings[f"u{index}.{field}"] = _jsonable(getattr(unit, field))
+
+    if any(gene.kind in (Gene.KIND_PROMPT, Gene.KIND_LORA) for gene in genes):
+        settings["prompt"] = _compose_prompt(
+            genes, point, str(initial_settings.get("prompt", "") or ""))
+    return settings
+
+
+def _sample_good_configuration(payload, genes, initial_settings, serial=0):
+    """One posterior sample as a complete settings mapping, or an error.
+
+    The retained payload is replayed exactly like idle GOOD, including its
+    deliberate projection onto edited rows. No render is submitted and no
+    observation is added; only `suggest(good=True)` is consumed.
+    """
+    if not isinstance(payload, dict) or not payload.get("observations"):
+        return None, "no solver state to sample from"
+    ab_search = _search()
+    if ab_search is None:
+        return None, "the search engine is unavailable"
+    try:
+        space = _space(genes, ab_search)
+        seed = int(payload.get("seed", 0)) + 104729 * max(int(serial), 0)
+        search = ab_search.PreferenceSearch(space, seed=seed)
+        restored = _restore_solver(
+            search, payload, space, allow_row_changes=True)
+        if restored is None or restored < 1:
+            return None, "the retained solver has no observations to sample"
+        point = search.suggest(good=True)
+        return _configuration_for_point(
+            genes, point, initial_settings), None
+    except Exception as exc:
+        return None, str(exc)
+
+
 def _compose_prompt(genes, point, base_prompt):
     """The prompt a configuration actually generates with.
 
@@ -1160,12 +1318,22 @@ _PENDING_SOLVER = {}
 #: entry and its own click, and the pairing stays exact.
 _PENDING_DEMO = {"txt2img": [], "img2img": []}
 
-#: A staged idle request older than this is dropped with a log line rather
-#: than served. The click that staged it fires Generate immediately, so a
+#: START and RESUME presses, per tab: a list of (resume_flag, staged_at).
+#: The same stage-then-click-Generate route the demo presses take, and for
+#: the same reason - a gradio handler cannot invoke the host's generation
+#: pipeline, and only the Generate event reads every component that pipeline
+#: needs. THIS LIST IS ALSO WHAT MAKES A PLAIN GENERATE PLAIN: run() starts
+#: a search only when it finds an entry here, and returns None otherwise, so
+#: the host renders the current setup exactly as it would with no script
+#: selected.
+_PENDING_START = {"txt2img": [], "img2img": []}
+
+#: A staged press older than this is dropped with a log line rather than
+#: served. The click that staged it fires Generate immediately, so a
 #: surviving entry means that click never turned into a run (page reloaded,
 #: script switched away) - and a stale entry would otherwise turn some
-#: LATER, unrelated Generate press into a sample render the user did not
-#: ask for.
+#: LATER, unrelated Generate press into a sample render, or into a search,
+#: that the user did not ask for.
 DEMO_STALE_SECONDS = 30 * 60
 
 #: Idle presses counted per tab, forever. Two jobs: each press writes a
@@ -1176,21 +1344,32 @@ DEMO_STALE_SECONDS = 30 * 60
 #: render the SAME "varied" sample.
 _DEMO_SERIAL = {"txt2img": 0, "img2img": 0}
 
+#: START/RESUME presses counted per tab, forever, for the first of those two
+#: jobs only: the trigger box fires no change event on a repeated value, so a
+#: second press has to write something the first did not. Its own counter
+#: rather than the demo one because the demo counter is ALSO a seed - see
+#: _demo_run - and a START must not move the sample a later GOOD renders.
+_START_SERIAL = {"txt2img": 0, "img2img": 0}
+
+#: Set-GOOD presses counted per tab. Replaying a retained solver is
+#: deterministic, so every press needs a different seed or the button would
+#: keep setting the same supposedly sampled configuration.
+_SET_GOOD_SERIAL = {"txt2img": 0, "img2img": 0}
+
 #: PRESSES one demo run will serve at most, however many landed while it was
-#: working. Presses beyond the cap are dropped and the status line says so -
-#: a runaway "leaned on the button" burst should cost a bounded number of
-#: generations, and pressing again is one click. What each press costs is
-#: its own business: one sample for GOOD, up to COLLAGE_MAX for N-GOOD.
+#: working. Presses beyond the cap are dropped: a runaway "leaned on the
+#: button" burst should cost a bounded number of generations, and pressing
+#: again is one click. What each press costs is its own business: one sample
+#: for GOOD, up to COLLAGE_MAX for N-GOOD.
 DEMO_BATCH_MAX = 8
 
 #: Samples ONE N-GOOD press will render, whatever count the button carries.
 #: The solver's count is honest about how many distinct answers it holds and
 #: a mapped region can offer a great many - which is a number worth KNOWING
-#: and not a number worth rendering unasked. Sixty-four is an 8x8
+#: and not a number worth rendering unasked. Sixty-four is a very wide
 #: collage and roughly half an hour of GPU time; a request beyond it is
-#: clamped, and the status line says by how much, so pressing again is how
-#: more is asked for rather than the first press quietly becoming an
-#: overnight job.
+#: clamped, so pressing again is how more is asked for rather than the first
+#: press quietly becoming an overnight job.
 COLLAGE_MAX = 64
 
 #: What the button offers before any solver has spoken. One, because a panel
@@ -1199,7 +1378,7 @@ COLLAGE_MAX = 64
 CAPACITY_DEFAULT = 1
 
 #: Padding between collage cells, in pixels, and the colour behind them. The
-#: gap is what makes the grid read as N separate samples rather than as one
+#: gap is what makes the strip read as N separate samples rather than as one
 #: wide image - the whole point of a collage is comparing its cells.
 COLLAGE_GAP = 8
 COLLAGE_BACKGROUND = (24, 24, 27)
@@ -1215,8 +1394,8 @@ class _Demo:
 
     An OBJECT rather than a flag, because the two requests differ in what
     they cost and in what they produce, and because `await_grade` returns it
-    down the same channel a grade comes back on - where a tuple is a grade
-    and a string is "skip", so the third kind of answer has to be neither.
+    down the same channel a grade comes back on - where a tuple is a grade,
+    so this has to be neither a tuple nor None.
     """
 
     def __init__(self, count=None):
@@ -1273,14 +1452,14 @@ def _collage_promise(report):
 
 
 def _collage(images):
-    """`images` as ONE grid image, or None if there are none.
+    """`images` as ONE horizontal strip, or None if there are none.
 
     A collage rather than N gallery entries because the question it answers
     is comparative - "what does the whole good region look like" - and that
     is not a question anybody answers by clicking through a gallery. The
-    cells are laid out in the squarest grid that holds them and every cell
-    is the size of the largest image, so a row of mixed resolutions still
-    reads as a grid.
+    Every image occupies one cell in the same row, and every cell is the size
+    of the largest image. Mixed resolutions therefore stay aligned without
+    changing the strip into a second row.
 
     The sheet is what the gallery gets, alone: each sample was already
     written to the output folder by the generation that made it, and
@@ -1295,8 +1474,8 @@ def _collage(images):
         logger.warning(f"{WHO}: could not compose the collage ({exc}) - the "
                        f"samples are in the gallery individually.")
         return None
-    columns = int(math.ceil(math.sqrt(len(images))))
-    rows = int(math.ceil(len(images) / columns))
+    columns = len(images)
+    rows = 1
     cell_w = max(image.width for image in images)
     cell_h = max(image.height for image in images)
     sheet = Image.new(
@@ -1307,7 +1486,7 @@ def _collage(images):
     for index, image in enumerate(images):
         column, row = index % columns, index // columns
         # Centred in its cell: an image smaller than the largest would
-        # otherwise hang off one corner and break the grid the eye is
+        # otherwise hang off one corner and break the strip the eye is
         # reading the comparison across.
         x = COLLAGE_GAP + column * (cell_w + COLLAGE_GAP) \
             + (cell_w - image.width) // 2
@@ -1387,6 +1566,33 @@ def _retained_solver(tab):
             or _stored_solver(tab))
 
 
+def _solver_matches_rows(state, row_values, ab_search=None):
+    """Whether `state` can resume the exact search rows now on screen.
+
+    A retained solver may still be useful to GOOD/N-GOOD after the rows are
+    edited: that path deliberately projects its coordinates. RESUME cannot do
+    that. It promises to continue the same search, so both the button state and
+    its click handler use this one predicate before making that promise.
+    """
+    if not isinstance(state, dict) or not state.get("observations"):
+        return False
+    ab_search = ab_search or _search()
+    if ab_search is None:
+        return False
+    try:
+        values = list(row_values)
+        count = int(values[0] or 1)
+        genes = _build_genes(_read_rows(values, count), ab_search)
+        if not genes:
+            return False
+        signature = _space_signature(_space(genes, ab_search))
+    except Exception:
+        # Row edits pass through short-lived incomplete states. Eligibility is
+        # a diagnostic and must not break the panel while one is on screen.
+        return False
+    return state.get("signature") == signature
+
+
 def _image_to_data_uri(value):
     """A canvas/mask component's value as a PNG data URI, or None.
 
@@ -1460,7 +1666,35 @@ def _coerce_point(space, values):
         for d, v in zip(space.dimensions, values))
 
 
-def _solver_payload(search, seed, space):
+def _project_point(space, values):
+    """A saved point reinterpreted on rows the user edited after searching.
+
+    GOOD/N-GOOD are generators, not a continuation of the search. Their rows
+    are therefore live controls: an existing coordinate keeps its position,
+    choices and ranges clamp to what the edited row can express, removed
+    coordinates disappear, and newly added ones take their baseline. This is
+    deliberately different from RESUME, where reinterpreting observations
+    would change what the old comparisons meant.
+    """
+    saved = list(values or [])
+    projected = []
+    for index, dimension in enumerate(space.dimensions):
+        if index >= len(saved):
+            projected.append(dimension.baseline())
+            continue
+        value = saved[index]
+        try:
+            if dimension.kind == "choice":
+                last = max(len(dimension.labels) - 1, 0)
+                projected.append(min(max(int(float(value)), 0), last))
+            else:
+                projected.append(dimension.snap(float(value)))
+        except (TypeError, ValueError, OverflowError):
+            projected.append(dimension.baseline())
+    return tuple(projected)
+
+
+def _solver_payload(search, seed, space, initial_settings=None):
     """Everything needed to rebuild the search: the observations by VALUE.
 
     Points are stored as tuples, not indices, so the replay does not depend
@@ -1478,6 +1712,15 @@ def _solver_payload(search, seed, space):
         # search that learned it - a reload, or a restart reading the disk
         # mirror.
         "capacity": int(search.capacity()),
+        # Reset and Set GOOD are UI actions, but the settings they act on are
+        # search state: exactly what every writable component held when the
+        # search was launched. Keep it beside the observations so a stop,
+        # reload, server restart or exported/imported session does not turn
+        # Reset into a best-effort guess.
+        "initial_settings": {
+            str(token): _jsonable(value)
+            for token, value in (initial_settings or {}).items()
+        },
         "signature": _space_signature(space),
         "observations": [
             [None if a is None else list(search.points[a]),
@@ -1491,6 +1734,11 @@ def _solver_payload(search, seed, space):
         # this session already answered.
         "similarities": [[list(a), list(b), bool(d), float(m)]
                          for a, b, d, m in search.similarities],
+        # Schema marker for the absolute half of the top/middle rows. Builds
+        # before this marker stored their similarity labels but discarded the
+        # shared "on track" verdict; restore can upgrade those states once,
+        # while a current state must not receive duplicate anchors.
+        "on_track_anchors": True,
         # The hyperparameters as SELECTED, not just the data they were
         # selected from: re-selection runs every few observations, so the
         # exporting search and a replay are usually between selections -
@@ -1500,29 +1748,41 @@ def _solver_payload(search, seed, space):
     }
 
 
-def _restore_solver(search, state, space):
-    """Replay an exported solver state, or None on a space mismatch."""
-    if state.get("signature") != _space_signature(space):
+def _restore_solver(search, state, space, allow_row_changes=False):
+    """Replay solver state; optionally project it onto currently edited rows."""
+    changed = state.get("signature") != _space_signature(space)
+    if changed and not allow_row_changes:
         return None
+    restore_point = _project_point if changed else _coerce_point
     count = 0
     for point_a, point_b, p in state.get("observations", []):
-        index_b = search._row(_coerce_point(space, point_b))
+        index_b = search._row(restore_point(space, point_b))
         index_a = (None if point_a is None
-                   else search._row(_coerce_point(space, point_a)))
+                   else search._row(restore_point(space, point_a)))
         search.observations.append((index_a, index_b, float(p)))
         count += 1
     search.duels = int(state.get("duels", count))
     for point in state.get("interesting", []):
-        search.mark_interesting(_coerce_point(space, point))
+        search.mark_interesting(restore_point(space, point))
     # Replayed then fitted ONCE, rather than refitting per label the way
     # observe() does: the fit is over the whole set either way, and a replay
     # of two hundred labels would otherwise run it two hundred times.
+    has_on_track_anchors = bool(state.get("on_track_anchors", False))
     for record in state.get("similarities", []):
         point_a, point_b, distinct = record[0], record[1], record[2]
         mass = float(record[3]) if len(record) > 3 else 1.0
-        search.similarities.append((_coerce_point(space, point_a),
-                                    _coerce_point(space, point_b),
+        restored_a = restore_point(space, point_a)
+        restored_b = restore_point(space, point_b)
+        search.similarities.append((restored_a, restored_b,
                                     bool(distinct), mass))
+        if not has_on_track_anchors:
+            # Both similarity-labelled rows mean "on track". Old payloads
+            # retained enough information to recover that signal exactly;
+            # add it once instead of resuming a positive-only session with a
+            # model that still knows only relative winners.
+            for point in (restored_a, restored_b):
+                search.observations.append(
+                    (None, search._row(point), search.ON_TRACK_P))
     search._fit_metric()
     hyper = state.get("hyper")
     if hyper and len(hyper) == 3:
@@ -1556,8 +1816,10 @@ def _export_html(payload):
     sections.append("<h2>Search rows</h2>" + table(row_lines))
     sections.append("<h2>Settings</h2>" + table(
         sorted(payload.get("settings", {}).items())))
-    sections.append("<h2>Loop</h2>" + table(
-        sorted(payload.get("tail", {}).items())))
+    # A "Loop" section used to sit here, holding the two switches the panel
+    # no longer has. Files that still carry them keep them in the island (a
+    # payload is written back verbatim) - they are simply nothing this build
+    # has a control for, so there is nothing to lay out for a human either.
 
     canvases = payload.get("canvases", {})
     if canvases:
@@ -1695,12 +1957,27 @@ class _Session:
         # WAITING, which is exactly when a poll must still be served.
         self.tick_lock = threading.Lock()
         self.running = False
+        # STAGED, BUT NOT YET PICKED UP. A START/RESUME press cannot start
+        # the loop itself - it stages its intent and clicks Generate, and the
+        # host may take a while to get to the job (it may be finishing
+        # another one). Between the press and run() calling `start` there is
+        # therefore a window in which nothing is running and yet the search
+        # has been asked for, and without this flag the panel spends that
+        # window offering START again - which stages a SECOND search.
+        self.launching = False
         self.stopping = False
         self.pending_score = None
         self.pending_demos = []    # queued _Demo requests, served in order
         self.interesting = [False, False]     # A, B - toggled, sent with the grade
         self.awaiting = False
         self.generating = None     # "A"/"B" while that side's image renders
+        # Monotone within ONE explicitly started render. The host's sampler
+        # counters briefly fall back to zero during finalization; reading them
+        # raw made a bar that had reached 100% flash empty before the image was
+        # published. `render_started` also rejects a stale 100% left by the
+        # previous side when the next side has only just been announced.
+        self.render_progress = 0.0
+        self.render_started = False
         self.generation = 0        # bumped whenever the images change
         self.image_a = None
         self.image_b = None
@@ -1711,6 +1988,11 @@ class _Session:
         self.summary = ""
         self.trace = []
         self.solver_state = None   # refreshed after every grade, for Export
+        # Exact values of every component Set can write at the START/RESUME
+        # press. Reset replays this mapping; Set GOOD uses it as the base on
+        # which a sampled point is applied. It also rides in solver_state so
+        # both buttons survive a page/server restart and session Import.
+        self.initial_settings = None
         # The solver's capacity estimate - how many distinctly different good
         # configurations it believes it can produce. None until a search has
         # said; the panel then falls back to the retained state's own copy,
@@ -1735,16 +2017,19 @@ class _Session:
         # describe. Wiping it here meant that every STOP-and-continue (and
         # every Interrupt, and every pause) silently threw away the record of
         # the session it was continuing, leaving a Tried box that began at
-        # duel 42 with nothing before it. Only a genuinely FRESH search - new
-        # rows, or "Resume search" unticked, both of which arrive here as
-        # `resumed=False` - starts a new record.
+        # duel 42 with nothing before it. Only a START press starts a new
+        # record. A mismatched RESUME is refused before start() rather than
+        # silently being changed into START.
         with self.condition:
             self.running = True
+            self.launching = False
             self.stopping = False
             self.pending_score = None
             self.pending_demos = []
             self.awaiting = False
             self.generating = None
+            self.render_progress = 0.0
+            self.render_started = False
             self.generation += 1
             self.image_a = self.image_b = None
             self.duel = self.graded = 0
@@ -1772,19 +2057,53 @@ class _Session:
     def finish(self, status):
         with self.condition:
             self.running = False
+            self.launching = False
             self.awaiting = False
             self.generating = None
             self.status = status
             self.generation += 1
 
     def say(self, status, generating=None):
-        """A status line - and, when a side's image is being rendered, WHICH
-        side, so the panel can wear the inference progress on that side's
-        own chrome. Callers that say anything else clear the side with the
-        same call: whatever was rendering is not any more."""
+        """Record the phase and, while rendering, which side owns progress.
+
+        Callers that say anything else clear the side with the same call:
+        whatever was rendering is not any more.
+        """
         with self.condition:
             self.status = status
             self.generating = generating
+            if generating is not None:
+                # `say(..., generating=side)` is the render boundary. Reset
+                # even when the side is A twice (successive GOOD samples).
+                self.render_progress = 0.0
+                self.render_started = False
+
+    def track_progress(self, progress):
+        """Latch host progress monotonically for the active render.
+
+        A fresh render may initially see the previous render's terminal 1.0;
+        ignore that until a sub-terminal value proves the new sampler has
+        started. Once started, host finalization may report 0 again, but a
+        completed fraction never moves backwards. `render_complete` is the
+        authoritative terminal edge for cached and one-step renders.
+        """
+        with self.condition:
+            if self.generating not in ("A", "B"):
+                return self.render_progress
+            value = min(max(float(progress or 0.0), 0.0), 1.0)
+            if not self.render_started:
+                if value >= 1.0:
+                    return self.render_progress
+                self.render_started = True
+            self.render_progress = max(self.render_progress, value)
+            return self.render_progress
+
+    def render_complete(self, side):
+        """The render returned successfully: its only truthful state is 1."""
+        with self.condition:
+            if self.generating == side:
+                self.render_started = True
+                self.render_progress = 1.0
 
     def publish(self, duel, image_a, image_b, status):
         with self.condition:
@@ -1793,6 +2112,8 @@ class _Session:
             self.image_b = image_b
             self.awaiting = True
             self.generating = None
+            self.render_started = True
+            self.render_progress = 1.0
             # Marks belong to the images they were toggled on.
             self.interesting = [False, False]
             self.status = status
@@ -1808,6 +2129,7 @@ class _Session:
         """
         with self.condition:
             self.running = True
+            self.launching = False
             self.stopping = False
             self.pending_score = None
             self.pending_demos = []
@@ -1815,6 +2137,8 @@ class _Session:
             # Demo samples render into the A slot, so A's chrome carries
             # their progress for the whole batch.
             self.generating = "A"
+            self.render_progress = 0.0
+            self.render_started = False
             self.status = status
             self.generation += 1
 
@@ -1830,6 +2154,9 @@ class _Session:
             self.image_a = image
             self.image_b = None
             self.awaiting = False
+            self.generating = None
+            self.render_started = True
+            self.render_progress = 1.0
             self.status = status
             self.generation += 1
 
@@ -1849,6 +2176,17 @@ class _Session:
         """
         with self.condition:
             self.capacity = int(count)
+
+    def remember_initial(self, settings):
+        """Memorize the settings this search began from, by value."""
+        if not isinstance(settings, dict):
+            return False
+        with self.condition:
+            self.initial_settings = {
+                str(token): _jsonable(value)
+                for token, value in settings.items()
+            }
+        return True
 
     def await_grade(self):
         """Block until the user grades, stops or interrupts. FOREVER, if that
@@ -1877,9 +2215,9 @@ class _Session:
                     score = self.pending_score
                     self.pending_score = None
                     self.awaiting = False
-                    # Only a real answer counts as graded - not a skip, and
-                    # not a GOOD sample request, which leaves the duel
-                    # on screen still waiting.
+                    # Only a real answer counts as graded - not a GOOD
+                    # sample request, which leaves the duel on screen still
+                    # waiting.
                     if isinstance(score, tuple):
                         self.graded += 1
                     return score
@@ -1896,8 +2234,8 @@ class _Session:
     # -- written by the panel --------------------------------------------
 
     def grade(self, score, disliked=False, similar=None):
-        """An A-vs-B grade (0..10) or the "skip" token. ONE click, whichever
-        of the three rows it lands on.
+        """An A-vs-B grade, 0..10. ONE click, whichever of the three rows it
+        lands on.
 
         The row is the verdict the comparison itself cannot carry, and there
         are three of them because there are two such verdicts:
@@ -1917,10 +2255,8 @@ class _Session:
         with self.condition:
             if not self.awaiting:
                 return False
-            self.pending_score = (
-                "skip" if score == "skip"
-                else (float(score), bool(disliked), similar,
-                      tuple(self.interesting)))
+            self.pending_score = (float(score), bool(disliked), similar,
+                                  tuple(self.interesting))
             self.interesting = [False, False]
             self.status = "recorded - working out what to ask next"
             self.condition.notify_all()
@@ -1958,8 +2294,7 @@ class _Session:
 
         A toggle, not a submission: it waits for the grade, like the dislike
         row it usually accompanies - the expected click is "this one is bad,
-        AND it has something". The status line echoes the current state, so
-        on-and-off-again is visible and trustworthy.
+        AND it has something".
         """
         with self.condition:
             if not self.awaiting:
@@ -1971,8 +2306,34 @@ class _Session:
                            else "interesting marks cleared")
             return True
 
+    def arm(self, status):
+        """A START/RESUME press that has staged itself and clicked Generate.
+
+        Not `running` - nothing is - but the panel must read as busy from the
+        press rather than from the host getting round to the job, or the
+        button spends the wait offering to start a second search.
+        """
+        with self.condition:
+            self.launching = True
+            self.status = status
+
+    def disarm(self):
+        """The host reached run(), so the wait above is over either way.
+
+        Called for EVERY generation this script sees, staged or plain: a
+        press whose click never became a run would otherwise leave the panel
+        reading "starting" forever, and the next Generate is exactly the
+        evidence that it did not.
+        """
+        with self.condition:
+            self.launching = False
+
     def request_stop(self):
         with self.condition:
+            # `launching` too, and it is the way out of a press that never
+            # became a run: STOP is on screen for as long as the panel thinks
+            # something is coming, so it has to be able to take that back.
+            self.launching = False
             self.stopping = True
             self.status = "stopping"
             self.condition.notify_all()
@@ -1981,8 +2342,10 @@ class _Session:
         with self.condition:
             return {
                 "running": self.running,
+                "launching": self.launching,
                 "awaiting": self.awaiting,
                 "generating": self.generating,
+                "progress": self.render_progress,
                 "generation": self.generation,
                 "image_a": self.image_a,
                 "image_b": self.image_b,
@@ -2098,11 +2461,12 @@ def _host_component(name, is_img2img):
 #: read), so they are not among them.
 ROW_ARGS = 9
 
-#: Trailing controls after the rows: seed policy, and whether Generate
-#: resumes the retained solver state.
-TAIL_ARGS = 2
-
-ARG_COUNT = 1 + MAX_ROWS * ROW_ARGS + TAIL_ARGS
+#: THE ROWS ARE THE WHOLE ARGUMENT LIST. There used to be two trailing
+#: switches - "New seed each duel" and "Resume search" - and both are gone:
+#: the seed is fixed by construction (see the module docstring), and
+#: resuming is what the RESUME button says at the moment it is pressed, which
+#: a checkbox read at Generate time could only ever say earlier and worse.
+ARG_COUNT = 1 + MAX_ROWS * ROW_ARGS
 
 
 class Script(scripts.Script):
@@ -2126,14 +2490,11 @@ class Script(scripts.Script):
         type_filters = [g.type_filter for g in groups]
         count = len(groups)
 
-        # --- header: how many degrees of freedom, and the loop's own two
-        #     switches ------------------------------------------------------
+        # --- header: how many degrees of freedom -------------------------
         #
-        # ONE ROW, not two. The switches are the search's standing settings,
-        # the same kind of thing as "how many rows are there" - and a row of
-        # its own for two checkboxes bought nothing but a band of empty panel
-        # between the header and the rows it introduces. Sharing the header's
-        # line saves that band and puts them beside the count they qualify.
+        # The two switches that used to share this line are gone - the seed
+        # is fixed by construction, and resuming is the RESUME button - so
+        # the row is back to the count and the three tools that change it.
         with gr.Row(variant="compact",
                     elem_classes=["cnpro-ab-headline-row"]):
             add = ToolButton(value=ADD_SYMBOL, elem_id=f"{eid}_add",
@@ -2143,41 +2504,28 @@ class Script(scripts.Script):
             rescan = ToolButton(value=REFRESH_SYMBOL, elem_id=f"{eid}_rescan",
                                 tooltip="Rescan the ControlNet and LoRA "
                                         "directories")
-            # scale=1 on the headline and scale=0 on the switches: the
-            # headline absorbs whatever width is going, so the two checkboxes
-            # sit against the panel's right edge at any width instead of
-            # drifting with the sentence's length.
             headline = gr.Markdown(_headline(1), elem_id=f"{eid}_headline",
                                    elem_classes=["cnpro-ab-headline"])
-            vary_seed = gr.Checkbox(
-                label="New seed each duel", value=False,
-                scale=0, min_width=140,
-                elem_id=f"{eid}_vary_seed",
-                elem_classes=["cnpro-ab-switch"])
-            # ON BY DEFAULT: a search that ended - STOP, Interrupt, even a
-            # restart (the state is mirrored to disk) - is a reached state,
-            # and Generate continues from it as long as the rows still match
-            # what it was learned on. Unticking is the one way to say "same
-            # rows, start over", and it is also what clears the Tried record
-            # (see _Session.start) - the two are the same statement.
-            resume_search = gr.Checkbox(
-                label="Resume search", value=True,
-                scale=0, min_width=115,
-                elem_id=f"{eid}_resume",
-                elem_classes=["cnpro-ab-switch"])
 
         row_count = gr.State(1)
         rows = [self._row(i, eid, visible=(i == 0)) for i in range(MAX_ROWS)]
 
         # --- the duel ----------------------------------------------------
         #
-        # Hidden until there is one. The panel is a configuration form until
-        # the search starts and a grading station afterwards, and showing the
-        # grading half while there is nothing to grade costs a screenful of
-        # empty boxes in a UI that is short of screenfuls.
-        with gr.Group(visible=False, elem_id=f"{eid}_duel",
-                      elem_classes=["cnpro-ab-duel"]) as duel_group:
-            with gr.Row(elem_classes=["cnpro-ab-images"]):
+        # ALWAYS ON SCREEN, and it did not use to be: the group was revealed
+        # by the first duel, because a grading station with nothing to grade
+        # is a screenful of empty boxes in a UI that is short of screenfuls.
+        # START lives in this group, so hiding it would hide the one control
+        # that could ever make a duel appear.
+        #
+        # What folds away instead is the pair of IMAGE boxes, which is where
+        # essentially all of that screenful was - two gr.Images with no
+        # picture in them. The rest is one row of buttons per line and reads
+        # as the search's console, which is what it is.
+        with gr.Group(elem_id=f"{eid}_duel",
+                      elem_classes=["cnpro-ab-duel"]):
+            with gr.Row(visible=False,
+                        elem_classes=["cnpro-ab-images"]) as images_row:
                 # NO fixed height. The panel is as wide as the user's window
                 # lets it be, and a duel is decided on detail - so the images
                 # take the width they are given and stop at their own
@@ -2233,12 +2581,9 @@ class Script(scripts.Script):
             # memory say "top = normal, bottom = both bad", and the new state
             # goes in the middle where it costs neither.
             #
-            # The scale's ends are NOT labelled here, they are labelled in the
-            # status line directly underneath. A gr.HTML in this row carries
-            # gradio's `.block { width: 100% }`, so each caption claims the
-            # whole row as its flex base and pushes STOP onto a line of its
-            # own - measured, not guessed. Two fewer components, and the
-            # legend still sits against the buttons it explains.
+            # The numbered buttons are the whole scale. There is deliberately
+            # no live explanatory block underneath: replacing that output on
+            # every phase change flickered and moved everything below it.
             with gr.Row(elem_classes=["cnpro-ab-grades", "cnpro-ab-distinct"]):
                 # "Your turn", hugging the scale's left edge. The block is a
                 # ZERO-WIDTH flex item sitting right before the first grade
@@ -2269,12 +2614,30 @@ class Script(scripts.Script):
                 # press, no effect on the duel or the model. The recipe
                 # lands in Tried; the image lands in the output folder and
                 # the final gallery.
-                good = gr.Button(value="GOOD", min_width=80,
+                #
+                # NO min_width, HERE OR ON THE OTHER THREE. The parked block
+                # is one 2x2 grid whose cell size lives in exactly one place
+                # - `--cnpro-ab-parked-w` in style.css, which every one of
+                # the four reads for its width and both columns read for
+                # their offsets. A number repeated here would be a second
+                # opinion about the same box: it loses (the CSS carries
+                # !important, which is what beats the inline style gradio
+                # writes for min_width), so it could only ever be wrong
+                # silently.
+                good = gr.Button(value="GOOD",
                                  elem_id=f"{eid}_good",
                                  elem_classes=["cnpro-ab-demo"])
-                stop = gr.Button(value="STOP", variant="stop", min_width=80,
-                                 elem_id=f"{eid}_stop",
-                                 elem_classes=["cnpro-ab-stop"])
+                # ONE BUTTON FOR BOTH ENDS OF THE LOOP, wearing whichever
+                # state it is in - START while nothing runs, STOP while
+                # something does. Two buttons would mean one of them is
+                # always the wrong one to press, and a disabled START beside
+                # a live STOP says nothing a single label does not.
+                #
+                # It starts as START: the panel opens with nothing running,
+                # and the tick repaints it from the session on every poll.
+                run_toggle = gr.Button(value="START", variant="primary",
+                                       elem_id=f"{eid}_run",
+                                       elem_classes=["cnpro-ab-run"])
             # "Rather similar, and we are on track". Same scale, same click,
             # one row lower - and the label it adds is the one thing no
             # amount of grading can produce: a graded duel encodes a
@@ -2315,11 +2678,13 @@ class Script(scripts.Script):
                 # few answers there are. A button that says what it will do
                 # is the whole control.
                 #
-                # The number is written by the tick, into the LABEL. Its
-                # width follows in style.css, and GOOD above it follows the
-                # same width, so the column stays one column at 3 or at 12.
+                # The number is written by the tick, into the LABEL - and it
+                # is the ONE thing that resizes the parked block. style.css
+                # turns the digit count into the grid's cell width, which
+                # all four buttons and both column offsets read, so the 2x2
+                # stays a 2x2 at 3 or at 12 rather than the collage button
+                # growing out of its column.
                 n_good = gr.Button(value=f"{CAPACITY_DEFAULT} GOOD",
-                                   min_width=80,
                                    elem_id=f"{eid}_n_good",
                                    elem_classes=["cnpro-ab-demo"])
                 # What the press will actually ask for. A State rather than
@@ -2327,24 +2692,27 @@ class Script(scripts.Script):
                 # parsing it back out of "12 GOOD" would make the button's
                 # wording load-bearing.
                 capacity_state = gr.State(CAPACITY_DEFAULT)
-                # SKIP, on THIS row rather than the one below it, and the row
-                # it is declared in is the row it is painted on: the parked
-                # controls are absolutely positioned inside their own grade
-                # row (style.css), so being declared last put it alone at the
-                # bottom right with an empty slot above it - the block read as
-                # three buttons and a straggler. Here the four make one 2x2
-                # block, GOOD over N GOOD and STOP over SKIP, and the third
-                # row's parked band is simply empty.
+                # RESUME, on THIS row rather than the one below it, and the
+                # row it is declared in is the row it is painted on: the
+                # parked controls are absolutely positioned inside their own
+                # grade row (style.css), so being declared last would put it
+                # alone at the bottom right with an empty slot above it - the
+                # block would read as three buttons and a straggler. Here the
+                # four make one 2x2 block, GOOD over N GOOD and START/STOP
+                # over RESUME, and the third row's parked band is simply
+                # empty.
                 #
-                # It answers the DUEL, not the row it sits on - "this pair
-                # could not be judged" is the same statement wherever the
-                # button lives - so nothing about the wiring cares, and the
-                # far-right column stays what it was: the two controls that
-                # end the duel in front of you, furthest from the scale a
-                # fast hand is working.
-                skip = gr.Button(value="SKIP", min_width=80,
-                                 elem_id=f"{eid}_skip",
-                                 elem_classes=["cnpro-ab-skip"])
+                # ALWAYS SHOWN, never hidden - only enabled or not. A control
+                # that appears and disappears with the state is a control the
+                # user has to hunt for; one that is greyed out says "this is
+                # the thing you would press, and it is not available yet",
+                # which is the more useful of the two statements. Disabled at
+                # build time because a freshly opened panel has nothing
+                # running and nothing to continue; the tick turns it on the
+                # moment a retained state exists (see paint).
+                resume = gr.Button(value="RESUME", interactive=False,
+                                   elem_id=f"{eid}_resume",
+                                   elem_classes=["cnpro-ab-resume"])
             # "I will rate them, but both are bad." The grade still matters
             # (which side is LESS bad steers the search inside the region);
             # the row is what lets it mark the whole region as avoid-this and
@@ -2362,18 +2730,30 @@ class Script(scripts.Script):
                     for score in range(GRADES)]
                 gr.HTML("<span class='cnpro-ab-row-label'>Bad samples</span>",
                         elem_classes=["cnpro-ab-row-label-wrap"])
-            status = gr.Markdown("", elem_id=f"{eid}_status",
-                                 elem_classes=["cnpro-ab-status"])
-
         # --- the answer --------------------------------------------------
-        with gr.Row(variant="compact"):
+        with gr.Row(variant="compact", elem_classes=["cnpro-ab-answer"]):
             config = gr.Textbox(
                 label="Configuration", value="", lines=1, max_lines=3, scale=9,
                 placeholder="the search prints its recommendation here - or "
                             "paste one back in",
-                elem_id=f"{eid}_config")
-            apply_button = gr.Button(value="Set", variant="primary", scale=1,
-                                     min_width=70, elem_id=f"{eid}_set")
+                elem_id=f"{eid}_config",
+                elem_classes=["cnpro-ab-configuration"])
+            # One compact 2x2 action block. Set GOOD is a posterior sample
+            # applied without rendering; RESET spans the row below because it
+            # is the inverse of either top action, restoring the exact values
+            # memorized at search launch.
+            with gr.Column(scale=2, min_width=180,
+                           elem_classes=["cnpro-ab-set-actions"]):
+                with gr.Row(variant="compact"):
+                    apply_button = gr.Button(
+                        value="Set", variant="primary", scale=1,
+                        min_width=80, elem_id=f"{eid}_set")
+                    set_good_button = gr.Button(
+                        value="Set GOOD", scale=1, min_width=80,
+                        elem_id=f"{eid}_set_good")
+                reset_button = gr.Button(
+                    value="RESET", scale=1, min_width=160,
+                    elem_id=f"{eid}_reset")
         # Set's own report, OUTSIDE the duel group. It used to share the
         # status line in there, which is hidden until a search runs and hidden
         # again on a fresh page - so "Set applied nothing, and here is what it
@@ -2427,28 +2807,31 @@ class Script(scripts.Script):
         # search still waiting for a grade is the search "stopping working".
         # The first tick switches it off again when nothing is running, so
         # an idle panel still costs one request per page load, not one per
-        # second forever; the Generate click switches it back on.
+        # second forever. What switches it back on is any press that means
+        # work - START, RESUME, GOOD/N-GOOD - and the Generate click besides.
         poller = gr.Timer(POLL_SECONDS, active=True)
         # What THIS browser was last sent, so the poll can send only what
         # changed - see `tick`. A dict rather than a counter because the parts
-        # move independently: the images change once per duel, the status
-        # several times per duel, the recipe once per answer.
+        # move independently: the images change once per duel, the recipe once
+        # per answer, and the controls change with the search phase.
         seen = gr.State({})
 
         targets, unreachable = _set_targets(groups, is_img2img)
         self._wire_rows(rows, row_count, headline, add, remove, rescan,
                         enables, type_filters, count)
-        self._wire_duel(poller, seen, duel_group, image_a, image_b,
-                        status, config, trace,
+        self._wire_duel(poller, seen, images_row, image_a, image_b,
+                        config, trace,
                         (grade_buttons, similar_buttons, dislike_buttons),
                         (interesting_a, interesting_b), (good, n_good),
-                        capacity_state, skip, stop, is_img2img)
-        self._wire_set(apply_button, config, set_note, targets, unreachable)
+                        capacity_state, run_toggle, resume, rows, row_count,
+                        is_img2img, targets)
+        self._wire_set(apply_button, set_good_button, reset_button,
+                       config, set_note, targets, unreachable,
+                       rows, row_count, is_img2img)
         self._wire_io(export_button, import_button, session_file, io_note,
                       rows, row_count, headline,
-                      (vary_seed, resume_search),
                       targets, _canvas_targets(groups), len(groups),
-                      is_img2img, duel_group, status)
+                      is_img2img, resume)
 
         # Returned in the order run() unpacks them - see _read_rows.
         controls = [row_count]
@@ -2456,7 +2839,6 @@ class Script(scripts.Script):
             controls.extend([row.target, row.mode, row.choices,
                              row.line, row.values, row.prompt_mode, row.loras,
                              row.weights, row.point])
-        controls.extend([vary_seed, resume_search])
         return controls
 
     # -- one row ---------------------------------------------------------
@@ -2701,15 +3083,21 @@ class Script(scripts.Script):
                 inputs=[row.target, row.choices] + enables + type_filters,
                 outputs=[row.choices, row.lora_pick], show_progress=False)
 
-    def _wire_duel(self, poller, seen, duel_group, image_a, image_b,
-                   status, config, trace, grade_rows,
-                   interesting_buttons, demo_buttons, capacity_state, skip,
-                   stop, is_img2img):
+    def _wire_duel(self, poller, seen, images_row, image_a, image_b,
+                   config, trace, grade_rows,
+                   interesting_buttons, demo_buttons, capacity_state,
+                   run_toggle, resume, rows, row_count, is_img2img,
+                   setting_targets):
         """The poll, the three grade rows, the interesting toggles,
-        GOOD/N-GOOD and the count in its label, SKIP and STOP."""
+        GOOD/N-GOOD and the count in its label, START/STOP and RESUME."""
         session = _session(is_img2img)
         tab = "img2img" if is_img2img else "txt2img"
         eid = f"cnpro_ab_{tab}"
+        row_inputs = [row_count]
+        for row in rows:
+            row_inputs.extend([row.target, row.mode, row.choices,
+                               row.line, row.values, row.prompt_mode,
+                               row.loras, row.weights, row.point])
         # The tick's style channel: a <style> element whose rules paint the
         # PHASE onto chrome a gradio update cannot reach - the inference
         # fill on the interesting toggles, the grade-here nudge's opacity.
@@ -2720,15 +3108,14 @@ class Script(scripts.Script):
         phase_css = gr.HTML(value="", elem_id=f"{eid}_phase_css",
                             elem_classes=["cnpro-ab-phase-css"])
 
-        def tick(last):
+        def tick(last, *row_values):
             """Paint whatever the loop is doing - and ONLY what changed.
 
             NOTHING here is sent unconditionally, and that is the whole point.
-            Re-sending a value gradio already holds still re-renders the
-            block, so a status line rewritten with the same text 1.6 times a
-            second FLICKERS, a textbox does the same and steals a selection
-            the user was making inside it, and two images re-encoded every
-            tick cost more bandwidth than the search costs GPU.
+            Re-sending a value gradio already holds still re-renders the block:
+            a textbox steals a selection the user was making inside it, and two
+            images re-encoded every tick cost more bandwidth than the search
+            costs GPU.
 
             `last` is a per-browser gr.State holding what this client was last
             sent, so the comparison is against what IT has - not against a
@@ -2756,27 +3143,34 @@ class Script(scripts.Script):
             if not session.tick_lock.acquire(blocking=False):
                 return [gr.update()] * len(tick_outputs)
             try:
-                return paint(last)
+                return paint(last, row_values)
             finally:
                 session.tick_lock.release()
 
-        def paint(last):
+        def paint(last, row_values):
+            # The host briefly resets its sampler counters during render
+            # finalization. Feed them through the session's per-render
+            # monotone latch before taking the coherent phase snapshot.
+            progress = session.track_progress(_inference_progress())
             snap = session.snapshot()
             last = last if isinstance(last, dict) else {}
-            # Retained solver state keeps the group (and the GOOD/N-GOOD
-            # buttons inside it) reachable on a page that loaded AFTER the
-            # search - a reload, or a restarted server whose disk mirror
-            # still holds a taste worth sampling. Checked last, so a live
-            # search never pays the disk read.
-            retained = None if snap["running"] else _retained_solver(tab)
-            visible = (snap["running"] or bool(snap["image_a"])
-                       or retained is not None)
-            if visible and not snap["running"] and not snap["status"]:
-                # Only a fresh session is this blank; say why the group is
-                # on screen at all.
-                snap["status"] = ("solver state from an earlier session is "
-                                  "available - GOOD/N-GOOD render samples "
-                                  "from it; Generate resumes the search")
+            # BUSY means "the loop is alive or about to be": a START press
+            # that has staged itself and clicked Generate is not `running`
+            # until the host picks the job up, and every control below has
+            # to read it as running from the press. See _Session.arm.
+            busy = bool(snap["running"] or snap["launching"])
+            # Retained solver state is what RESUME continues from and what
+            # GOOD/N-GOOD sample from with nothing running - a reload, or a
+            # restarted server whose disk mirror still holds a taste worth
+            # having. Checked only while idle, so a live search never pays
+            # the disk read.
+            retained = None if busy else _retained_solver(tab)
+            resumable = (retained is not None
+                         and _solver_matches_rows(retained, row_values))
+            # The IMAGES fold away when there is no duel to look at; the
+            # rest of the group - the scale, GOOD/N-GOOD, START/STOP,
+            # RESUME - is the search's console and is always on screen.
+            visible = busy or bool(snap["image_a"])
             # The retained state's own count is what keeps the button's
             # number meaningful on a page that loaded AFTER the search that
             # learned it - a reload, or a restarted server reading its disk
@@ -2784,16 +3178,28 @@ class Script(scripts.Script):
             capacity = snap["capacity"]
             if capacity is None and isinstance(retained, dict):
                 capacity = retained.get("capacity")
-            count = None if capacity is None else max(int(capacity), 1)
+            # Zero is meaningful now: every observed configuration can be
+            # below par. Do not turn "no supported good population" into a
+            # button promising one sample; that was the last UI route by
+            # which the least-bad point could be rendered under a GOOD label.
+            count = None if capacity is None else max(int(capacity), 0)
             now = {
                 "generation": snap["generation"],
                 "visible": visible,
-                "status": _status_markdown(snap),
                 "result": snap["result"],
                 "trace": snap["trace"],
                 "capacity": count,
-                "active": bool(snap["running"]),
-                "css": _phase_css(eid, snap, _inference_progress(), count),
+                # ONE FLAG FOR THE POLL AND FOR THE BUTTON, because they say
+                # the same thing: the timer runs exactly while there is
+                # something to paint, and the button reads STOP exactly then
+                # too. Note it covers the staged-but-not-started window at
+                # both ends - a poll that only woke for `running` would leave
+                # the panel showing START until the first duel landed.
+                "running": busy,
+                # RESUME is offered only when both halves are true - nothing
+                # is running, and there is something to continue.
+                "can_resume": (not busy) and resumable,
+                "css": _phase_css(eid, snap, progress, count),
             }
 
             def when(key, value):
@@ -2806,7 +3212,6 @@ class Script(scripts.Script):
                  if now["visible"] != last.get("visible") else gr.update()),
                 gr.update(value=snap["image_a"]) if fresh else gr.update(),
                 gr.update(value=snap["image_b"]) if fresh else gr.update(),
-                when("status", now["status"]),
                 # An empty recipe is only painted while a search is RUNNING:
                 # there it means "this session has not recommended anything
                 # yet", and leaving the previous session's recipe on screen
@@ -2816,7 +3221,7 @@ class Script(scripts.Script):
                 # must not be sent: the box may hold a configuration the user
                 # pasted in for Set.
                 (when("result", now["result"])
-                 if now["result"] or now["active"] else gr.update()),
+                 if now["result"] or now["running"] else gr.update()),
                 when("trace", now["trace"]),
                 # The count, into the BUTTON'S LABEL and into the state the
                 # press reads - and only when it has actually changed. Both
@@ -2824,7 +3229,8 @@ class Script(scripts.Script):
                 # did: the label is what the user aims at, the state is
                 # what the click spends, and a press must never render a
                 # different count from the one it advertised.
-                (gr.update(value=f"{now['capacity']} GOOD")
+                (gr.update(value=f"{now['capacity']} GOOD",
+                           interactive=now["capacity"] > 0)
                  if now["capacity"] is not None
                  and now["capacity"] != last.get("capacity") else gr.update()),
                 (now["capacity"] if now["capacity"] is not None
@@ -2833,17 +3239,44 @@ class Script(scripts.Script):
                 # loop ended: run() returns on its own thread, and a handler
                 # bound to the Generate click would have to guess whether this
                 # script was the one that ran.
-                (gr.update(active=now["active"])
-                 if now["active"] != last.get("active") else gr.update()),
+                (gr.update(active=now["running"])
+                 if now["running"] != last.get("running") else gr.update()),
                 when("css", now["css"]),
+                # ONE BUTTON, TWO STATES, painted from the session rather
+                # than from what the last click meant to do: the loop can
+                # also end without a click (Interrupt, a failed generation,
+                # the search stopping itself), and a label that tracked the
+                # clicks would then read STOP over a search that is gone.
+                (gr.update(value="STOP" if now["running"] else "START",
+                           variant="stop" if now["running"] else "primary")
+                 if now["running"] != last.get("running") else gr.update()),
+                (gr.update(interactive=now["can_resume"])
+                 if now["can_resume"] != last.get("can_resume")
+                 else gr.update()),
             ]
 
         good_button, n_good_button = demo_buttons
-        tick_outputs = [seen, duel_group, image_a, image_b, status, config,
-                        trace, n_good_button, capacity_state, poller,
-                        phase_css]
-        poller.tick(fn=tick, inputs=[seen], outputs=tick_outputs,
+        tick_outputs = [seen, images_row, image_a, image_b, config, trace,
+                        n_good_button, capacity_state, poller, phase_css,
+                        run_toggle, resume]
+        poller.tick(fn=tick, inputs=[seen] + row_inputs, outputs=tick_outputs,
                     show_progress=False, queue=False)
+
+        # A disk mirror can belong to rows other than the ones a new page
+        # shows. Re-evaluate RESUME whenever any part of the visible space
+        # changes; one shared handler reads the whole row list, so no field can
+        # be added to a row and silently escape the eligibility decision.
+        def refresh_resume(*row_values):
+            snap = session.snapshot()
+            busy = bool(snap["running"] or snap["launching"])
+            retained = None if busy else _retained_solver(tab)
+            return gr.update(
+                interactive=(not busy)
+                and _solver_matches_rows(retained, row_values))
+
+        gr.on(triggers=[component.change for component in row_inputs],
+              fn=refresh_resume, inputs=row_inputs, outputs=[resume],
+              show_progress=False, queue=False)
 
         # The Generate button starts the poll. It fires for EVERY generation,
         # including ones this script is not part of - which is why `tick`
@@ -2862,9 +3295,7 @@ class Script(scripts.Script):
 
         def grade(score, disliked=False, similar=None):
             def handler():
-                if not session.grade(score, disliked, similar):
-                    return gr.update()
-                return gr.update(value=_status_markdown(session.snapshot()))
+                session.grade(score, disliked, similar)
             return handler
 
         # The three rows carry the same eleven grades and differ only in the
@@ -2876,25 +3307,16 @@ class Script(scripts.Script):
                                  (dislike_buttons, {"disliked": True})):
             for score, button in enumerate(buttons):
                 button.click(fn=grade(score, **verdict), inputs=[],
-                             outputs=[status], show_progress=False,
+                             outputs=None, show_progress=False,
                              queue=False)
-
-        # skip is a grade in every mechanical sense - it wakes the loop, the
-        # loop moves on - it just records nothing: the duel could not be
-        # judged (a broken render, an unreadable pair), and "could not judge"
-        # is NOT the same answer as 5, which says they are worth the same.
-        skip.click(fn=grade("skip"), inputs=[], outputs=[status],
-                   show_progress=False, queue=False)
 
         def toggle(side):
             def handler():
-                if not session.toggle_interesting(side):
-                    return gr.update()
-                return gr.update(value=_status_markdown(session.snapshot()))
+                session.toggle_interesting(side)
             return handler
 
         for side, button in enumerate(interesting_buttons):
-            button.click(fn=toggle(side), inputs=[], outputs=[status],
+            button.click(fn=toggle(side), inputs=[], outputs=None,
                          show_progress=False, queue=False)
 
         # GOOD/N-GOOD press two very different machines depending on whether
@@ -2917,6 +3339,12 @@ class Script(scripts.Script):
         # gradio handler cannot invoke the host's generation pipeline - the
         # Generate button's own event is the one path that reads every
         # component the pipeline needs.
+        #
+        # SHARED WITH START AND RESUME, which reach the pipeline the same way
+        # and for the same reason. One box rather than three: what the press
+        # MEANT is already staged server-side, so the token only has to be
+        # new, and three boxes would be three copies of the same three lines
+        # of JS.
         demo_go = gr.Textbox(value="", visible=False,
                              elem_id=f"cnpro_ab_{tab}_demo_go")
         demo_go.change(
@@ -2930,16 +3358,14 @@ class Script(scripts.Script):
             the two look identical from the button and only one of them
             produces an image within the second."""
             if session.request_demo(request.count):
-                return (gr.update(value=_status_markdown(session.snapshot())),
-                        gr.update())
+                return gr.update()
             payload = _retained_solver(tab)
             if not payload or not payload.get("observations"):
                 with session.condition:
                     session.status = (
                         "no solver state to sample from - run a search "
                         "first, or Import a session file that carries one")
-                return (gr.update(value=_status_markdown(session.snapshot())),
-                        gr.update())
+                return gr.update()
             _DEMO_SERIAL[tab] += 1
             _PENDING_DEMO[tab].append((request, time.time()))
             with session.condition:
@@ -2948,33 +3374,106 @@ class Script(scripts.Script):
                                   else f"generating a collage of "
                                        f"{request.count} good samples from "
                                        f"the learned taste")
-            return (gr.update(value=_status_markdown(session.snapshot())),
-                    gr.update(value=f"go-{_DEMO_SERIAL[tab]}"))
+            return gr.update(value=f"go-{_DEMO_SERIAL[tab]}")
 
         good_button.click(fn=lambda: press(_Demo()), inputs=[],
-                          outputs=[status, demo_go],
+                          outputs=[demo_go],
                           show_progress=False, queue=False)
         # THE COUNT THE BUTTON WAS ADVERTISING is what the press spends: the
         # state is an INPUT to this click, and the tick writes it in the same
         # breath as the label, so the two cannot disagree about what a press
         # is going to do. Still clamped rather than trusted - the value has
         # crossed a session boundary (an import, a disk mirror written by an
-        # older build), and a bad one must cost a status line rather than a
-        # traceback in the generation thread.
+        # older build), and a bad one must be clamped rather than raise in the
+        # generation thread.
         n_good_button.click(fn=lambda count: press(_Demo(_collage_count(count))),
                             inputs=[capacity_state],
-                            outputs=[status, demo_go],
+                            outputs=[demo_go],
                             show_progress=False, queue=False)
 
-        def on_stop():
-            session.request_stop()
-            return gr.update(value=_status_markdown(session.snapshot()))
+        def painted(go=None):
+            """The trigger box and poll updates shared by the loop controls.
 
-        stop.click(fn=on_stop, inputs=[], outputs=[status],
-                   show_progress=False, queue=False)
+            The POLL is on this list because a press is the one moment the
+            panel knows something is about to happen and the timer may be
+            asleep - it switches itself off whenever nothing is running, and
+            the tick that would switch it back on is the tick that is not
+            firing. Waking it here rather than relying on the Generate click
+            also covers the press that never reaches Generate: the panel then
+            repaints, sees nothing running, and folds back to START.
+            """
+            return (gr.update() if go is None else gr.update(value=go),
+                    gr.update(active=True))
 
-    def _wire_set(self, apply_button, config, note, targets, unreachable):
-        """Set: a configuration string onto the actual Forge Neo controls.
+        setting_tokens = [token for token, _component in setting_targets]
+        setting_inputs = [component for _token, component in setting_targets]
+
+        def launch(resume, setting_values, row_values=()):
+            """START or RESUME: stage the intent, then click Generate.
+
+            `resume` is decided HERE, at the press, and travels with the
+            staged entry - it is not a control run() reads later. That is the
+            whole reason the "Resume search" checkbox could go: a checkbox is
+            a standing setting that has to be read at Generate time and can
+            therefore disagree with the button that was actually pressed,
+            while two buttons cannot.
+            """
+            snap = session.snapshot()
+            if snap["running"] or snap["launching"]:
+                # The button reads STOP in this state, so getting here means
+                # a stale click - a second one in the same instant, or a page
+                # whose poll had not repainted yet. Starting a second search
+                # is the one thing it must not do.
+                return painted()
+            retained = _retained_solver(tab) if resume else None
+            if resume and not _solver_matches_rows(retained, row_values):
+                with session.condition:
+                    session.status = (
+                        "nothing to resume for these rows - START begins a "
+                        "fresh search, or restore the rows that produced the "
+                        "retained solver state")
+                return painted()
+            # Capture at the PRESS, not on the first grade and not from code
+            # defaults. These are the exact visible settings Generate is
+            # about to read. A successful RESUME replaces this fallback with
+            # the original search's saved snapshot inside run().
+            session.remember_initial(dict(zip(setting_tokens, setting_values)))
+            _START_SERIAL[tab] += 1
+            _PENDING_START[tab].append((bool(resume), time.time()))
+            session.arm("resuming the search - waiting for the host"
+                        if resume else
+                        "starting a fresh search - waiting for the host")
+            return painted(f"run-{_START_SERIAL[tab]}")
+
+        def on_run_toggle(*setting_values):
+            """One button, so one handler, and it reads the session rather
+            than a remembered mode: whichever label the browser happens to be
+            showing, what the press MEANS is decided by what is actually
+            running at the moment it lands."""
+            snap = session.snapshot()
+            if snap["running"] or snap["launching"]:
+                session.request_stop()
+                return painted()
+            return launch(False, setting_values)
+
+        run_toggle.click(fn=on_run_toggle, inputs=setting_inputs,
+                         outputs=[demo_go, poller],
+                         show_progress=False, queue=False)
+        setting_count = len(setting_inputs)
+
+        def on_resume(*values):
+            return launch(True, values[:setting_count],
+                          values[setting_count:])
+
+        resume.click(fn=on_resume,
+                     inputs=setting_inputs + row_inputs,
+                     outputs=[demo_go, poller],
+                     show_progress=False, queue=False)
+
+    def _wire_set(self, apply_button, set_good_button, reset_button,
+                  config, note, targets, unreachable,
+                  rows, row_count, is_img2img):
+        """Set, Set GOOD and Reset onto the actual Forge Neo controls.
 
         Writes to the VISIBLE components, never to the unit gr.State. That is
         the same route an infotext paste takes, and it is the safe one: each
@@ -2993,12 +3492,16 @@ class Script(scripts.Script):
         different places has to say which of them it reached.
         """
 
-        def apply_config(text):
-            values = _parse_config_string(text)
-            if not values:
-                return [gr.update(value="**Nothing to set** - the box above "
-                                        "holds no configuration string.")] \
-                    + [gr.update() for _ in targets]
+        tab = "img2img" if is_img2img else "txt2img"
+        session = _session(is_img2img)
+        target_tokens = [token for token, _component in targets]
+        target_outputs = [component for _token, component in targets]
+
+        def no_updates(message):
+            return [gr.update(value=message)] \
+                + [gr.update() for _ in targets]
+
+        def apply_values(values, action):
             updates, applied = [], []
             for token, _component in targets:
                 if token not in values:
@@ -3008,7 +3511,10 @@ class Script(scripts.Script):
                 applied.append(token)
 
             missing = sorted(set(values) - set(applied))
-            report = f"**Set** {', '.join(applied)}." if applied else "**Set nothing.**"
+            report = (f"**{action}** {', '.join(applied)}."
+                      if applied else f"**{action} set nothing.**")
+            if action == "Reset" and applied:
+                report += " Restored the settings captured when this search started."
             if missing:
                 # Named, not swallowed: a token nothing here can place is
                 # either a newer version's, or a unit this tab does not have,
@@ -3021,18 +3527,88 @@ class Script(scripts.Script):
                     report += (" The console says which box was not found; "
                                f"copy that value by hand into the box above the "
                                f"Generate button.")
-            logger.info(f"{WHO}: Set applied {applied or 'nothing'}"
+            logger.info(f"{WHO}: {action} applied {applied or 'nothing'}"
                         + (f"; could not place {missing}" if missing else ""))
             return [gr.update(value=report)] + updates
 
+        def apply_config(text):
+            values = _parse_config_string(text)
+            if not values:
+                return no_updates("**Nothing to set** - the box above holds "
+                                  "no configuration string.")
+            return apply_values(values, "Set")
+
+        def remembered_initial():
+            with session.condition:
+                current = copy.deepcopy(session.initial_settings)
+            if current:
+                return current
+            retained = _retained_solver(tab)
+            saved = (retained.get("initial_settings")
+                     if isinstance(retained, dict) else None)
+            return copy.deepcopy(saved) if isinstance(saved, dict) else None
+
+        row_inputs = [row_count]
+        for row in rows:
+            row_inputs.extend([row.target, row.mode, row.choices,
+                               row.line, row.values, row.prompt_mode,
+                               row.loras, row.weights, row.point])
+
+        def set_good(*row_values):
+            payload = _retained_solver(tab)
+            if not payload or not payload.get("observations"):
+                return [gr.update()] + no_updates(
+                    "**Nothing to set GOOD** - run and grade a search first, "
+                    "or Import a session carrying solver state.")
+            initial = remembered_initial()
+            if not initial:
+                return [gr.update()] + no_updates(
+                    "**Nothing to set GOOD** - this retained search predates "
+                    "the initial-settings snapshot. Start a fresh search once "
+                    "so its settings can be memorized.")
+            try:
+                count = int(row_values[0] or 1)
+                genes = _build_genes(
+                    _read_rows(list(row_values), count), _search())
+                if not genes:
+                    raise ValueError("the visible search rows describe no values")
+            except Exception as exc:
+                return [gr.update()] + no_updates(
+                    f"**Set GOOD refused** - {exc}.")
+
+            _SET_GOOD_SERIAL[tab] += 1
+            sampled, error = _sample_good_configuration(
+                payload, genes, initial, _SET_GOOD_SERIAL[tab])
+            if sampled is None:
+                return [gr.update()] + no_updates(
+                    f"**Set GOOD refused** - {error}.")
+            recipe = _settings_string(sampled, target_tokens)
+            applied = apply_values(sampled, "Set GOOD")
+            return [gr.update(value=recipe)] + applied
+
+        def reset_initial():
+            initial = remembered_initial()
+            if not initial:
+                return no_updates(
+                    "**Nothing to reset** - start or resume a search first "
+                    "so its initial settings can be memorized.")
+            return apply_values(initial, "Reset")
+
         apply_button.click(
             fn=apply_config, inputs=[config],
-            outputs=[note] + [component for _token, component in targets],
+            outputs=[note] + target_outputs,
+            show_progress=False)
+        set_good_button.click(
+            fn=set_good, inputs=row_inputs,
+            outputs=[config, note] + target_outputs,
+            show_progress=False)
+        reset_button.click(
+            fn=reset_initial, inputs=[], outputs=[note] + target_outputs,
             show_progress=False)
 
     def _wire_io(self, export_button, import_button, session_file, note,
-                 rows, row_count, headline, tail, targets, canvas_targets,
-                 group_count, is_img2img, duel_group, duel_status):
+                 rows, row_count, headline, targets, canvas_targets,
+                 group_count, is_img2img, resume_button):
         """Export and Import: the whole session as one HTML file.
 
         Export READS the same components Set writes (plus the canvases and
@@ -3054,7 +3630,6 @@ class Script(scripts.Script):
                                   row.choices, row.line, row.values,
                                   row.prompt_mode, row.loras,
                                   row.weights, row.point])
-        export_inputs.extend(tail)
         export_inputs.extend(component for _token, component in targets)
         export_inputs.extend(component for _token, component in canvas_targets)
 
@@ -3063,8 +3638,6 @@ class Script(scripts.Script):
             count = int(next(it) or 1)
             row_values = [{key: _jsonable(next(it)) for key in row_keys}
                           for _ in range(MAX_ROWS)]
-            tail_values = {"vary_seed": _jsonable(next(it)),
-                           "resume": _jsonable(next(it))}
             settings = {token: _jsonable(next(it)) for token, _c in targets}
             canvases = {}
             for token, _component in canvas_targets:
@@ -3074,10 +3647,14 @@ class Script(scripts.Script):
             with session.condition:
                 solver = session.solver_state
                 result = session.result
+            # NO "tail" KEY ANY MORE - the two switches it carried are gone.
+            # A file written by an older build still has one and is still
+            # read: nothing looks for it, so it rides along in the island as
+            # a field this build does not use. See do_import.
             payload = {
                 "app": WHO, "version": EXPORT_VERSION, "tab": tab,
                 "row_count": count, "rows": row_values,
-                "tail": tail_values, "settings": settings,
+                "settings": settings,
                 "canvases": canvases, "solver": solver, "result": result,
             }
             path = os.path.join(tempfile.gettempdir(),
@@ -3110,14 +3687,13 @@ class Script(scripts.Script):
                                    row.weights,
                                    row.lora_refresh, row.lora_dice,
                                    row.point])
-        import_outputs.extend(tail)
         import_outputs.extend(component for _token, component in targets)
         import_outputs.extend(component for _token, component in canvas_targets)
-        # LAST: the duel group and its status line. An import that carries
-        # solver state reveals them, because GOOD/N-GOOD live inside the group
-        # and "import a generator and sample from it" must not require a
-        # search to run first just to make the buttons reachable.
-        import_outputs.extend([duel_group, duel_status])
+        # LAST: RESUME. An import that carries solver state makes it pressable,
+        # and it has to be done HERE rather than left to the tick because the
+        # poll switches itself off whenever nothing is running: on an idle
+        # panel the next tick is the one that never comes.
+        import_outputs.append(resume_button)
 
         def no_ops(message):
             return [gr.update(value=message)] \
@@ -3143,6 +3719,7 @@ class Script(scripts.Script):
 
             count = min(max(int(payload.get("row_count", 1)), 1), MAX_ROWS)
             updates = [gr.update(), count, gr.update(value=_headline(count))]
+            resume_rows = [count]
 
             for index in range(MAX_ROWS):
                 updates.append(gr.update(visible=index < count))
@@ -3161,6 +3738,7 @@ class Script(scripts.Script):
                         if index < len(imported_rows) else None)
                 if not isinstance(data, dict):
                     updates.extend(gr.update() for _ in range(12))
+                    resume_rows.extend([None] * ROW_ARGS)
                     continue
                 # Files from before the mode chooser slimmed down: "Setting"
                 # rows only ever varied the model in practice and "Profile
@@ -3208,12 +3786,14 @@ class Script(scripts.Script):
                                         str(data.get("point", 0)))
                 updates.append(gr.update(**{**props[10],
                                             "value": str(points_value)}))
+                resume_rows.extend([
+                    target_value, mode_value, selected, data.get("line"),
+                    data.get("values"), data.get("prompt_mode"),
+                    data.get("loras"), data.get("weights"),
+                    str(points_value)])
 
-            tail_values = payload.get("tail", {})
-            updates.append(gr.update(value=bool(tail_values.get("vary_seed",
-                                                                False))))
-            updates.append(gr.update(value=bool(tail_values.get("resume",
-                                                                True))))
+            # A v2 file's "tail" - the two switches this panel no longer has
+            # - is deliberately not read: there is nothing to put it in.
 
             applied = []
             for token, _component in targets:
@@ -3242,14 +3822,24 @@ class Script(scripts.Script):
             solver = payload.get("solver")
             if solver:
                 _PENDING_SOLVER[tab] = solver
+                if isinstance(solver.get("initial_settings"), dict):
+                    session.remember_initial(solver["initial_settings"])
+            retained = _retained_solver(tab)
+            can_resume = _solver_matches_rows(retained, resume_rows)
             note_parts = [f"**Imported** {count} row(s), {len(applied)} "
                           f"setting(s), {painted} canvas image(s)."]
             if solver:
-                note_parts.append(
-                    f"Solver state ({solver.get('duels', 0)} duel(s)) is "
-                    f"staged - press Generate with {WHO} to resume the "
-                    f"search, or GOOD/N-GOOD in the panel above to render "
-                    f"samples from it without searching.")
+                if can_resume:
+                    note_parts.append(
+                        f"Solver state ({solver.get('duels', 0)} duel(s)) is "
+                        f"staged - press RESUME in the panel above to "
+                        f"continue that search, or GOOD/N-GOOD to render "
+                        f"samples from it without searching.")
+                else:
+                    note_parts.append(
+                        f"Solver state ({solver.get('duels', 0)} duel(s)) is "
+                        f"staged for GOOD/N-GOOD, but its search rows do not "
+                        f"match this file, so RESUME is unavailable.")
             if missing:
                 note_parts.append("**Not applied** (nothing here holds "
                                   "them): " + ", ".join(missing) + ".")
@@ -3261,21 +3851,19 @@ class Script(scripts.Script):
             logger.info(f"{WHO}: imported a session file"
                         + (f"; could not place {missing}" if missing else ""))
             updates[0] = gr.update(value=" ".join(note_parts))
-            # Imported solver state makes the duel group useful with nothing
-            # running - GOOD/N-GOOD sample from it directly - so reveal it and
-            # say so where those buttons are. Without state the group stays
-            # as it was: revealing empty grading controls would promise a
-            # duel that is not coming.
+            # Imported solver state is always something GOOD/N-GOOD can
+            # project onto edited rows. RESUME is stricter: it goes live only
+            # when that state describes the exact rows imported beside it.
             if solver:
                 with session.condition:
-                    session.status = ("solver state imported - GOOD/N-GOOD "
-                                      "render samples from it; Generate "
-                                      "resumes the search")
-                updates.append(gr.update(visible=True))
-                updates.append(gr.update(
-                    value=_status_markdown(session.snapshot())))
-            else:
-                updates.extend([gr.update(), gr.update()])
+                    session.status = (
+                        "solver state imported - RESUME continues that "
+                        "search, GOOD/N-GOOD render samples from it"
+                        if can_resume else
+                        "solver state imported for GOOD/N-GOOD, but its "
+                        "search rows do not match this file, so RESUME is "
+                        "unavailable")
+            updates.append(gr.update(interactive=can_resume))
             return updates
 
         import_button.click(fn=do_import, inputs=[session_file],
@@ -3289,11 +3877,10 @@ class Script(scripts.Script):
         Everything in here can raise about a misconfiguration, which is why
         run() calls it BEFORE deciding whether this Generate is a search or
         a GOOD/N-GOOD sample render: the two want different error handling - a
-        search wants the stack trace, a sample press wants a status line -
+        search wants the stack trace, a sample press wants a handled refusal,
         and both want the staged request consumed either way.
         """
         row_count = int(args[0] or 1)
-        vary_seed, resume_search = args[1 + MAX_ROWS * ROW_ARGS:ARG_COUNT]
         rows = _read_rows(args, row_count)
         genes = _build_genes(rows, ab_search)
         if not genes:
@@ -3369,10 +3956,42 @@ class Script(scripts.Script):
                             f"already listed on this {count}-point line) - "
                             f"it would move by double the offset.")
                     resolved.add(knot)
-        return (genes, space, cnpro, base_args, base_units,
-                bool(vary_seed), bool(resume_search))
+        return genes, space, cnpro, base_args, base_units
 
     def run(self, p, *args):
+        session = _session(self.is_img2img)
+        tab = "img2img" if self.is_img2img else "txt2img"
+        # WHAT THE PANEL ASKED FOR, CONSUMED FIRST - before the rows are even
+        # looked at, and before anything can raise. Two reasons, one for each
+        # list:
+        #
+        # * an entry left behind by a run that died in validation used to
+        #   hijack a later, unrelated Generate into a one-sample render -
+        #   "the search stopped working", long after the press that caused
+        #   it. Popping here means a failed run consumes its own request.
+        # * a press stages its intent and clicks Generate, so reaching run()
+        #   at all is the evidence that the wait is over - launched or not.
+        demo = self._pop_demo_request()
+        # ONE GENERATION SERVES ONE PRESS, so a Generate already claimed by a
+        # GOOD/N-GOOD press does not also swallow a START staged a moment
+        # later: that press queued a generation of its own, and this is not
+        # it. Left staged, the start is served by the next one.
+        start = None if demo is not None else self._pop_start_request()
+        session.disarm()
+
+        # NOBODY PRESSED ANYTHING IN THIS PANEL, so this is the host's own
+        # Generate and it stays the host's own Generate: returning None hands
+        # the job back and Forge renders the current setup exactly as it
+        # would with no script selected. Selecting this script is how the
+        # panel is opened, not a decision to spend the next press on a
+        # search - see HOW THE SEARCH IS STARTED AND STOPPED.
+        #
+        # BEFORE every check below, including the ones that raise: a plain
+        # Generate must not be refused for a search's reasons - missing
+        # numpy, absent CNPro, or rows that do not describe a search yet.
+        if demo is None and start is None:
+            return None
+
         if len(args) < ARG_COUNT:
             # ui() returned nothing, which it only does when CNPro is absent.
             raise RuntimeError(
@@ -3384,20 +4003,15 @@ class Script(scripts.Script):
                 f"{WHO}: the search engine could not be imported - it needs "
                 f"numpy, which the host normally provides. See the console.")
 
-        session = _session(self.is_img2img)
-        tab = "img2img" if self.is_img2img else "txt2img"
-        # A GOOD/N-GOOD press with no search running started THIS generation
-        # itself (see _wire_duel). Its staged request is consumed FIRST,
-        # before the rows are even looked at: an entry left behind by a run
-        # that died in validation used to hijack a later, unrelated Generate
-        # into a one-sample render - "the search stopped working", long
-        # after the press that actually caused it.
-        demo = self._pop_demo_request()
         try:
-            (genes, space, cnpro, base_args, base_units,
-             vary_seed, resume_search) = self._setup(p, args, ab_search)
+            genes, space, cnpro, base_args, base_units = self._setup(
+                p, args, ab_search)
         except Exception as exc:
             if demo is None:
+                # Clear START's armed state before the traceback goes up, or
+                # the button would keep claiming a search exists when setup
+                # never began.
+                session.finish(f"refused - {exc}")
                 raise
             # The press asked for a sample, not for a stack trace. Rows that
             # do not validate - or no rows at all, on a freshly started UI -
@@ -3410,9 +4024,13 @@ class Script(scripts.Script):
                            f"rows did not validate ({exc})")
             return Processed(p, [])
 
-        # A comparison on two different seeds compares the seeds. Fixed unless
-        # the user asks otherwise, and even then both sides of one duel share
-        # the seed - what varies within a duel is only ever the configuration.
+        # ONE SEED FOR THE WHOLE SEARCH. A comparison on two different seeds
+        # compares the seeds, and a search on a different seed per duel
+        # compares each duel against a different noise field - so the seed in
+        # the host's box is resolved once here and every render of this run
+        # uses it. It is also the render cache's key material: a fixed seed is
+        # what lets a side already shown be shown again for a lookup instead
+        # of a generation (see RENDER_CACHE and search.reuse_probe).
         processing.fix_seed(p)
         base_seed = int(p.seed)
         base_prompt = p.prompt
@@ -3428,18 +4046,23 @@ class Script(scripts.Script):
                                   session)
 
         search = ab_search.PreferenceSearch(space, seed=base_seed)
-        # What Generate continues from, in order of intent: a solver state
-        # staged by Import is the one source the user pointed at explicitly;
-        # otherwise, with "Resume search" ticked, the tab's own retained
-        # state - the last search here, or the disk mirror that survived a
-        # restart. Unticked, staged state STAYS staged (for a later Generate
-        # with the box ticked) and this search starts fresh. Either way the
-        # state only ever resumes onto the SAME search space: observations
-        # replayed onto different rows would silently reindex every choice,
-        # which is worse than starting over, so a mismatch is refused.
+        # WHICH BUTTON WAS PRESSED IS THE WHOLE OF THIS DECISION. RESUME
+        # continues, in order of intent: a solver state staged by Import is
+        # the one source the user pointed at explicitly, then the tab's own
+        # retained state - the last search here, or the disk mirror that
+        # survived a restart. START continues nothing, and leaves staged
+        # state STAGED (for a later RESUME) rather than consuming it.
+        #
+        # Either way the state only ever resumes onto the SAME search space:
+        # observations replayed onto different rows would silently reindex
+        # every choice, which is worse than starting over, so a mismatch is
+        # refused.
         staged, source = None, "imported"
-        if resume_search:
-            staged = _PENDING_SOLVER.pop(tab, None)
+        if start:
+            # Peek first. A failed compatibility check must not consume an
+            # imported state: after the user restores its rows, that same
+            # explicit import is still the state RESUME should use.
+            staged = _PENDING_SOLVER.get(tab)
             if staged is None:
                 staged = session.solver_state or _stored_solver(tab)
                 source = "retained"
@@ -3447,19 +4070,25 @@ class Script(scripts.Script):
         if staged is not None:
             restored = _restore_solver(search, staged, space)
             if restored is None:
-                if source == "imported":
-                    logger.warning(
-                        f"{WHO}: the imported solver state was learned on a "
-                        f"DIFFERENT set of rows, so it cannot be replayed "
-                        f"here - starting fresh. Recreate the rows it names "
-                        f"(they are readable in the session file) to resume "
-                        f"it.")
-                else:
-                    logger.info(
-                        f"{WHO}: the retained solver state was learned on a "
-                        f"different set of rows - starting fresh on these.")
+                message = (
+                    f"resume refused - the {source} solver state belongs to "
+                    f"different search rows; restore those rows or press "
+                    f"START for a fresh search")
+                session.finish(message)
+                logger.warning(f"{WHO}: {message}.")
+                return Processed(p, [])
             else:
+                if source == "imported" \
+                        and _PENDING_SOLVER.get(tab) is staged:
+                    _PENDING_SOLVER.pop(tab, None)
                 resumed = restored
+                saved_initial = staged.get("initial_settings")
+                if isinstance(saved_initial, dict) and saved_initial:
+                    # A real RESUME belongs to the original search, so Reset
+                    # must keep pointing at that search's beginning. The
+                    # current values captured at the press are only the
+                    # fallback for legacy payloads.
+                    session.remember_initial(saved_initial)
                 logger.info(f"{WHO}: resumed the {source} search - "
                             f"{restored} observation(s), "
                             f"{search.duels} graded duel(s).")
@@ -3503,40 +4132,35 @@ class Script(scripts.Script):
             session.record("↻", f"resumed the {source} search: "
                                 f"{resumed} observation(s), "
                                 f"{search.duels} graded duel(s)")
-            payload = _solver_payload(search, base_seed, space)
+            payload = _solver_payload(
+                search, base_seed, space, session.initial_settings)
             with session.condition:
                 session.solver_state = payload
             session.set_capacity(payload["capacity"])
             _store_solver(tab, payload)
+
+        # What is REUSABLE for the duel about to be chosen: a side whose
+        # recipe is in the render cache costs a lookup instead of a ~30s
+        # generation, and the engine's reuse preference (see
+        # ab_search.REUSE_MARGIN) trades on that. Wired ONCE rather than per
+        # duel: the recipe is the cache key, the seed is part of the recipe
+        # and it does not move, so the only thing that changes under this
+        # closure is `renders` - which it reads live.
+        search.reuse_probe = lambda pt: (
+            _config_string(genes, pt, base_units, base_prompt,
+                           base_seed, extras=base_extras) in renders)
         try:
             while True:
                 if session.stopping or state.interrupted \
                         or getattr(state, "stopping_generation", False):
                     break
 
-                # What is REUSABLE for the duel about to be chosen: a side
-                # whose recipe is in the render cache costs a lookup instead
-                # of a ~30s generation, and the engine's reuse preference
-                # (see ab_search.REUSE_MARGIN) trades on that - but only if
-                # it is told the truth, which hangs on THIS duel's seed. The
-                # recipe is the cache key, so with "vary seed" on every duel
-                # renders on a fresh seed, no recipe can repeat, and the
-                # probe correctly answers "nothing is reusable" - the
-                # engine then runs exactly as it did before the probe
-                # existed. Rebuilt per duel because both the seed and the
-                # cache's contents move under it.
-                next_seed = self._seed(base_seed, duel + 1, vary_seed)
-                search.reuse_probe = lambda pt, _seed=next_seed: (
-                    _config_string(genes, pt, base_units, base_prompt,
-                                   _seed, extras=base_extras) in renders)
-
                 point_a, point_b = search.next_duel()
                 duel += 1
                 session.say(f"duel {duel}: generating A", generating="A")
                 state.job = f"DNA duel {duel} - A"
                 processed_a = self._render(p, base_args, cnpro, genes, point_a,
-                                           base_units, base_prompt,
-                                           self._seed(base_seed, duel, vary_seed),
+                                           base_units, base_prompt, base_seed,
                                            side="A", session=session,
                                            cache=renders, extras=base_extras)
                 if session.stopping or state.interrupted:
@@ -3544,8 +4168,7 @@ class Script(scripts.Script):
                 session.say(f"duel {duel}: generating B", generating="B")
                 state.job = f"DNA duel {duel} - B"
                 processed_b = self._render(p, base_args, cnpro, genes, point_b,
-                                           base_units, base_prompt,
-                                           self._seed(base_seed, duel, vary_seed),
+                                           base_units, base_prompt, base_seed,
                                            side="B", session=session,
                                            cache=renders, extras=base_extras)
                 if session.stopping or state.interrupted:
@@ -3598,20 +4221,12 @@ class Script(scripts.Script):
                     answer = session.await_grade()
                 if answer is None:
                     break
-                if answer == "skip":
-                    # Nothing observed, nothing recomputed: a skipped duel is
-                    # the statement that the PAIR could not be judged, which
-                    # says nothing about either configuration.
-                    continue
 
                 score, disliked, similar, (mark_a, mark_b) = answer
                 search.observe(point_a, point_b, score, disliked=disliked,
                                interesting_a=mark_a, interesting_b=mark_b,
                                similar=similar)
                 best = search.best()
-                # base_seed even when the seed varies per duel: the winner is
-                # rendered on it, so it is the seed that reproduces the image
-                # this recipe is about.
                 result = _config_string(genes, best, base_units, base_prompt,
                                         base_seed, extras=base_extras)
                 session.set_result(result, _summary(genes, best, search))
@@ -3619,7 +4234,8 @@ class Script(scripts.Script):
                 # mirror, so nothing that can end this loop - STOP, an
                 # Interrupt, a crash, even a restart - costs more than the
                 # interruption itself.
-                payload = _solver_payload(search, base_seed, space)
+                payload = _solver_payload(
+                    search, base_seed, space, session.initial_settings)
                 with session.condition:
                     session.solver_state = payload
                 # AFTER every answer, which is what makes the button's count
@@ -3633,7 +4249,7 @@ class Script(scripts.Script):
 
         interrupted = state.interrupted or getattr(state, "stopping_generation", False)
         if interrupted:
-            stopped = "interrupted - Generate resumes the search"
+            stopped = "interrupted - RESUME continues the search"
         graded = len(search.observations)
         ending = f"{stopped}, {graded} graded duel{'' if graded == 1 else 's'}"
 
@@ -3699,7 +4315,35 @@ class Script(scripts.Script):
             logger.warning(
                 f"{WHO}: dropped a stale GOOD request - the press that "
                 f"staged it never became a run, so this Generate is treated "
-                f"as the search it looks like.")
+                f"as the plain generation it looks like.")
+        return None
+
+    def _pop_start_request(self):
+        """Whether this generation is a search, and whether it RESUMES.
+
+        None when the panel staged nothing, which is the common case and the
+        one that keeps Generate the host's own button - see run(). Otherwise
+        True for RESUME and False for START, decided at the press rather than
+        read off a control here.
+
+        Stale entries are dropped exactly as the demo ones are, and the cost
+        of not doing so is higher: a survivor would turn some later,
+        unrelated Generate into a search that starts asking for grades.
+        """
+        staged = _PENDING_START["img2img" if self.is_img2img else "txt2img"]
+        while staged:
+            resume, when = staged.pop(0)
+            if time.time() - when <= DEMO_STALE_SECONDS:
+                # THE REST GO WITH IT. Several entries mean several presses
+                # landed before any of them became a run, and they all asked
+                # for the same single thing - one search. Left in the list
+                # they would each start another one as the queue drained.
+                del staged[:]
+                return resume
+            logger.warning(
+                f"{WHO}: dropped a stale START/RESUME press - the click that "
+                f"staged it never became a run, so this Generate is treated "
+                f"as the plain generation it looks like.")
         return None
 
     def _samples(self, request, search, p, base_args, cnpro, genes,
@@ -3736,18 +4380,21 @@ class Script(scripts.Script):
                                                         COLLAGE_MAX)
         if wanted is None:
             points = [search.suggest(good=True)]
+            cache_store = True
         else:
             # Clamped HERE, where the generations are actually spent, and not
             # only in the box's parser: this is the one place that knows a
             # number is about to become GPU minutes.
             points = search.population(wanted)
             report = dict(getattr(search, "population_report", None) or {})
-            # A collage is not worth the render cache: sixty-four entries
-            # would evict every duel image in it (RENDER_CACHE is 32), and
-            # the cache is what the engine's reuse economy trades on. The
-            # entries are distinct by construction anyway, so there is
-            # nothing here for a cache to hit.
-            cache = None
+            # READ THE DUEL CACHE, DO NOT FILL IT. A population is mutually
+            # distinct, not necessarily unseen: its island peaks and observed
+            # high-quality members are often images the user already paid for,
+            # and reusing those is ~20x cheaper than generating them again.
+            # But inserting up to 64 fresh collage entries into a 32-entry LRU
+            # would evict every duel image and destroy the search's reuse
+            # economy. A read-only cache is both halves of the requirement.
+            cache_store = False
         made = []
         for index, point in enumerate(points, 1):
             if session.stopping or state.interrupted \
@@ -3758,11 +4405,18 @@ class Script(scripts.Script):
             session.record(f"?{request.label}", recipe)
             state.job = (f"DNA {request.label} sample" if wanted is None
                          else f"DNA collage {index}/{len(points)}")
+            session.say(
+                (f"rendering {request.label} sample"
+                 if wanted is None else
+                 f"rendering {request.label} sample {index} of {len(points)}"),
+                generating="A")
             shown = self._render(p, base_args, cnpro, genes, point,
                                  base_units, base_prompt, base_seed,
-                                 session=session, cache=cache, extras=extras)
+                                 session=session, cache=cache,
+                                 cache_store=cache_store, extras=extras)
             if not shown.images:
                 continue
+            session.render_complete("A")
             made.append(shown)
             if publish is not None:
                 publish(index, len(points), shown.images[0])
@@ -3805,11 +4459,12 @@ class Script(scripts.Script):
         - and is only ever READ: no observation
         is added, the staged import stays staged for a later real search, and
         a plain Generate afterwards still starts the search it always
-        started. Everything the rows do not own - prompt, canvases,
-        resolution, seed - was read fresh from the UI by THIS generation,
-        which is what makes the buttons a generator the rest of the UI can
-        be tweaked under at will: reach a good state once, then sample from
-        it for as long as it is useful.
+        started. The rows themselves, plus prompt, canvases, resolution and
+        seed, are read fresh from the UI by THIS generation. Saved coordinates
+        are projected onto edited rows rather than refused, which is what makes
+        the buttons a generator the rest of the UI can be tweaked under at
+        will: reach a good state once, then sample from it for as long as it
+        is useful.
 
         The replayed engine is deterministic, so the solver is rebuilt on a
         seed that changes per press (_DEMO_SERIAL) - without that, "varied
@@ -3828,17 +4483,7 @@ class Script(scripts.Script):
 
         search = ab_search.PreferenceSearch(
             space, seed=base_seed + 7919 * _DEMO_SERIAL[tab])
-        if _restore_solver(search, payload, space) is None:
-            session.start_demo("")
-            session.finish(
-                f"{label} refused - the solver state was learned on a "
-                f"DIFFERENT set of rows, so its knowledge does not fit them. "
-                f"Recreate the rows it names (readable in the session file), "
-                f"or run a fresh search on these.")
-            logger.warning(f"{WHO}: the retained solver state does not fit "
-                           f"the current rows, so it cannot generate samples "
-                           f"for them.")
-            return Processed(p, [])
+        _restore_solver(search, payload, space, allow_row_changes=True)
 
         session.start_demo(f"rendering {label} from the learned taste")
         p.extra_generation_params["Script"] = self.title()
@@ -3904,20 +4549,9 @@ class Script(scripts.Script):
             final.infotexts.extend(extra.infotexts)
         return final
 
-    @staticmethod
-    def _seed(base_seed, duel, vary_seed):
-        """The seed BOTH sides of duel `duel` run on.
-
-        Varying it across duels trades a noisier comparison for a
-        recommendation that is about the configuration rather than about one
-        lucky noise field; varying it WITHIN a duel would compare the seeds,
-        which is why that is not on offer.
-        """
-        return base_seed + duel if vary_seed else base_seed
-
     def _render(self, p, base_args, cnpro, genes, point, base_units,
                 base_prompt, seed, side=None, session=None, cache=None,
-                extras=None):
+                cache_store=True, extras=None):
         """One image for one configuration - or the one already made.
 
         The recipe is computed FIRST because it is the identity of the
@@ -3934,6 +4568,7 @@ class Script(scripts.Script):
                 if session is not None and side:
                     session.record(side,
                                    _choices_line(genes, point) + " (reused)")
+                    session.render_complete(side)
                 return hit
         pc = copy.copy(p)
         pc.styles = pc.styles[:]
@@ -3980,7 +4615,9 @@ class Script(scripts.Script):
         except Exception as exc:
             errors.display(exc, "generating an image for CNPro A/B")
             return Processed(p, [])
-        if cache is not None and processed.images:
+        if session is not None and side:
+            session.render_complete(side)
+        if cache is not None and cache_store and processed.images:
             cache[recipe] = processed
             while len(cache) > RENDER_CACHE:
                 cache.pop(next(iter(cache)))
@@ -4286,56 +4923,14 @@ def _summary(genes, point, search):
             f"{looks} - best so far: " + _choices_line(genes, point))
 
 
-def _status_markdown(snap):
-    """The three lines under the duel. Always three, and always one line each.
-
-    THE HEIGHT OF THIS BLOCK IS PART OF ITS CONTRACT. It used to say more
-    while waiting for a grade than while generating - the scale legend and the
-    best-so-far appeared and disappeared with the phase - which changed its
-    height by 50px twice per duel and shoved the Configuration box, the Set
-    button and the trace down and back up again every few seconds, for as long
-    as the search ran. Nothing was flickering: the panel was resizing.
-
-    So the lines are fixed. The phase changes inside line one, the other two
-    are always present, and line one and the summary are both clipped to a
-    single line with the whole of it on hover (a long status used to WRAP
-    inside its fixed-height line and paint over the legend under it) - the
-    full recipe is in the box below, which is where anybody reading it in
-    detail is going to look anyway.
-
-    Emitted as HTML rather than markdown because those three properties belong
-    to specific lines: markdown's `  \\n` gives `<br>`s inside one paragraph,
-    which cannot be clipped individually. Every value that comes from the user
-    - prompts, model names, LoRA names - is escaped on the way in.
-    """
-    head = f"<b>Duel {snap['duel']}</b> · {snap['graded']} graded"
-    head_title = ""
-    if snap["status"]:
-        head_title = html.escape(str(snap["status"]))
-        head += f" · {head_title}"
-    # ONE LINE, always - see the height contract above. The row meanings are
-    # written beside the rows themselves now (Distinct / Similar / Bad
-    # samples), so this says only what the three identical scales mean, which
-    # is the half the labels cannot carry.
-    legend = ("0 = A much better · 5 = even · 10 = B much better &nbsp; "
-              "the ROW says whether they looked alike, or were both bad")
-    summary = html.escape(snap["summary"]) if snap["summary"] else \
-        "nothing graded yet - the first answer starts the model off"
-    return (f"<div class='cnpro-ab-line cnpro-ab-clip' "
-            f"title='{head_title}'>{head}</div>"
-            f"<div class='cnpro-ab-line cnpro-ab-dim'>{legend}</div>"
-            f"<div class='cnpro-ab-line cnpro-ab-dim cnpro-ab-clip' "
-            f"title='{summary}'>{summary}</div>")
-
-
 def _inference_progress():
     """Where the current render is, 0..1, straight off the host's counters.
 
-    Read live at tick time rather than book-kept on the session: the sampler
-    already publishes its step for the host's own progress bar, and a second
-    account of the same number could only ever disagree with it. Which RENDER
-    the number belongs to is the session's `generating` - the tick never uses
-    this without it.
+    Read live at tick time; the session does not count sampling steps itself.
+    It only enforces the lifecycle fact the host counters cannot express:
+    progress within one render is monotone, and the render returning means
+    1.0 even while the host briefly resets its counters during finalization.
+    Which RENDER the raw number belongs to is the session's `generating`.
     """
     steps = int(getattr(state, "sampling_steps", 0) or 0)
     if steps <= 0:
@@ -4353,18 +4948,27 @@ def _phase_css(eid, snap, progress, capacity=None):
       - the button stays a button, the fill is a pseudo-element behind its
       label. While B renders, A shows a FULL bar: the pair then reads as
       "A finished, B under way" at a glance.
+      Progress is monotone within the render (latched by `_Session`) and a
+      completed displayed image stays FULL after the render ends. Removing
+      the rule at completion made 100% look like 0%, and exposed the host's
+      brief finalization reset as an end -> zero -> end flash.
     * While a duel awaits its grade, the grade-here nudge beside the scale
       is faded in - generation over, the next move is the user's. It lives
       in CSS opacity rather than component visibility so that its appearing
       cannot move a single pixel of the rows it points at.
 
-    * The parked column is as wide as N-GOOD's label needs, and only the
-      DIGIT COUNT is sent - "how many characters", never a pixel width.
-      style.css turns it into one, in `ch`, which is the width of a digit in
-      the button's own font: the column then fits "3 GOOD" and "9999 GOOD"
-      exactly, in whatever theme and at whatever font size, and GOOD above
-      it reads the same variable so the two stay one column. A pixel width
-      computed here would be this file guessing at a font it never sees.
+    * The parked 2x2's CELL SIZE, as a digit count - "how many characters",
+      never a pixel width. style.css turns it into one, in `ch`, which is
+      the width of a digit in the button's own font, so the cell fits
+      "3 GOOD" and "9999 GOOD" exactly in whatever theme and at whatever
+      font size. A pixel width computed here would be this file guessing at
+      a font it never sees.
+
+      ONE NUMBER SIZES THE WHOLE BLOCK. All four buttons and both column
+      offsets are written in terms of that cell, so this is the only thing
+      that can resize the parked controls, and it cannot resize one of them
+      without resizing the rest - which is what keeps them a grid rather
+      than four buttons that happen to line up.
 
     Empty when the phase needs nothing painted and the count is unknown,
     which is the idle common case the tick then dedupes away entirely. Note
@@ -4377,13 +4981,20 @@ def _phase_css(eid, snap, progress, capacity=None):
     if capacity is not None:
         rules.append(f"#{eid}_duel .cnpro-ab-grades"
                      f"{{--cnpro-ab-digits:{len(str(int(capacity)))}}}")
-    if snap["running"] and snap["generating"] in ("A", "B"):
+    if snap["generating"] in ("A", "B"):
         percent = int(round(min(max(progress, 0.0), 1.0) * 100))
         if snap["generating"] == "A":
             rules.append(f"#{eid}_interesting_a{{--cnpro-ab-fill:{percent}%}}")
         else:
             rules.append(f"#{eid}_interesting_a{{--cnpro-ab-fill:100%}}")
             rules.append(f"#{eid}_interesting_b{{--cnpro-ab-fill:{percent}%}}")
+    elif snap.get("awaiting") or snap.get("image_a") is not None:
+        # The fill is progress, not activity. A displayed completed render is
+        # 100%, including after the loop finishes; clearing the CSS here reads
+        # visually as progress falling back to zero.
+        rules.append(f"#{eid}_interesting_a{{--cnpro-ab-fill:100%}}")
+        if snap.get("awaiting") or snap.get("image_b") is not None:
+            rules.append(f"#{eid}_interesting_b{{--cnpro-ab-fill:100%}}")
     if snap["awaiting"]:
         rules.append(f"#{eid}_duel .cnpro-ab-grade-hint{{opacity:1}}")
     return f"<style>{''.join(rules)}</style>" if rules else ""

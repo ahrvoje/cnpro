@@ -105,12 +105,11 @@
     const SCALE_STEP = 0.25;
     // The WEIGHT axis grid (main + the three band profiles), high -> low, which
     // is the order the selects list. Not a regular step series on purpose: a
-    // weight is a share of the control, so the low end - where the difference
-    // between 0.05 and 0.1 is a doubling - is worth more stops than the high
-    // end, where three stops between 0.6 and 1 were barely apart and 0.6/0.7/0.8
-    // did not read as different choices. One quarter-stop, 0.75, replaces all
-    // three. 0 and 1 are the hard limits of the axis and both are on the grid.
-    const WEIGHT_SCALE_GRID = [1, 0.75, 0.5, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0];
+    // weight is a share of the control. Keep the strong quarter landmarks and
+    // the two useful weak-control stops; the intermediate 0.15/0.2/0.35 stops
+    // were removed from the picker by user decision. 0 and 1 are the hard
+    // limits of the axis and both are on the grid.
+    const WEIGHT_SCALE_GRID = [1, 0.75, 0.5, 0.25, 0.1, 0.05, 0];
     const MARGIN = { left: 16, right: 16, top: 22, bottom: 24 };
     // step separators disappear below this cell width - denser dotted lines
     // read as haze, not as cells

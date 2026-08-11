@@ -22,12 +22,12 @@ WHAT IS PINNED HERE
 5. **The field table names fields that exist.** the script's list of searchable unit
    settings is written out by hand; a field renamed in the dataclass would
    leave a row that offers a setting nothing reads, silently.
-6. **The dislike row means what it says.** A grade on the second row ("and I
-   dislike both") pushes both sides below the prior mean while the grade
-   still orders them - with comparisons alone the posterior is translation-
-   invariant and a bad region could not be marked, only ranked. A normal
-   grade carries NO verdict about the pair, and a dislike arms the redirect:
-   the next duel explores, and the streak clears on the first normal grade.
+6. **The three rows mean what they say.** A bottom-row grade pushes both sides
+   below par while the grade still orders them; either on-track row pushes
+   both above par and also supplies its similar/distinct label. A legacy
+   comparison with no row verdict remains comparison-only. A dislike arms the
+   redirect: the next duel explores, and the streak clears on the first
+   on-track grade.
 7. **Taste is allowed to be bimodal.** Against a two-peak synthetic taste the
    frontier has to hold BOTH peaks, visibly separated, and portfolio() has to
    draw good samples from the good end and bad samples from the bad end.
@@ -46,8 +46,9 @@ WHAT IS PINNED HERE
     round-trips its JSON island verbatim (prompts containing "</script>"
     included), keeps a human-readable half, and a replayed solver holds the
     SAME posterior as the search it came from - hyperparameters included -
-    while a state from different rows is refused rather than silently
-    reindexed.
+    while RESUME refuses state from different rows. GOOD/N-GOOD deliberately
+    differ: edited rows remain live generator controls, so saved coordinates
+    are projected onto their current values.
 12. **Reuse is an economy, not a rut.** With a host probe wired, already-
     rendered sides are shown measurably more often (they are ~20x cheaper
     than generating) while the SAME convergence bar still holds - the swap
@@ -63,6 +64,14 @@ WHAT IS PINNED HERE
     winning combination - the cross-combination guess the GP's product
     kernel cannot make. A conditional weight's trend is learned per pick:
     one LoRA preferring low weights must not drag another's trend down.
+14. **Set GOOD and Reset have an origin.** One sampled good point is applied
+    on top of the exact settings captured at search launch; untouched fields
+    survive, Reset's snapshot is copied rather than referenced, and that
+    snapshot rides in the retained solver payload through JSON.
+15. **RESUME means these rows, and N-GOOD means one row.** A retained solver
+    enables RESUME only when its dimension signature matches the visible
+    search rows. N-GOOD composes every returned sample into one horizontal
+    strip, never a near-square grid.
 
 Needs numpy (the search engine). Everything else is stubbed, because the parts
 under test are arithmetic and string building - the host is not involved in
@@ -338,7 +347,7 @@ def test_search(search, numpy):
               "spends two generations and a judgement on nothing"
               % (name, closest))
 
-    # -- a dislike is an anchored statement, not a comparison --------------
+    # -- an explicit row is anchored; a row-less legacy call is not ----------
     #
     # "I dislike both" has to have an ADDRESS: both configurations below the
     # prior mean. Without the anchor the posterior is translation-invariant
@@ -358,9 +367,9 @@ def test_search(search, numpy):
     plain.observe(left, right, 5)
     mean_plain, _ = plain._posterior([left, right], with_covariance=False)
     check(abs(float(mean_plain[0])) < 0.05 and abs(float(mean_plain[1])) < 0.05,
-          "a NORMAL tie moved the pair off par to (%.3f, %.3f) - the top "
-          "row must carry no verdict about the pair, only the comparison, "
-          "or every ordinary grade quietly marks a region"
+          "a row-less legacy tie moved the pair off par to (%.3f, %.3f) - "
+          "similar=None means the caller supplied no absolute row verdict, "
+          "so only the comparison may be recorded"
           % (float(mean_plain[0]), float(mean_plain[1])))
 
     lessbad = search.PreferenceSearch(build_space(search), seed=0)
@@ -728,11 +737,12 @@ def test_similarity_metric(search, numpy):
     b = tied.space.perturb(a, numpy.random.default_rng(2))
     before = len(tied.observations)
     tied.observe(a, b, 7, similar=True)
-    check(len(tied.observations) == before + 2,
-          "a 'similar' verdict added %d observation(s), not two. Two images "
-          "that look the same are worth the same, which is a stronger claim "
-          "than the loosely-assigned grade beside it - dropping it throws "
-          "away the more reliable half of the answer"
+    check(len(tied.observations) == before + 4,
+          "a 'similar and on-track' verdict added %d observation(s), not "
+          "four: the comparison, its visual tie, and two above-par anchors. "
+          "Dropping the tie wastes the more reliable similarity statement; "
+          "dropping the anchors leaves N-GOOD unable to distinguish good "
+          "from merely less bad"
           % (len(tied.observations) - before))
 
     # The censoring defence, end to end.
@@ -780,10 +790,9 @@ def test_capacity(search, numpy):
     `capacity` is the number the panel's N box shows and the number N-GOOD
     spends generations on, so what is tested is that it MEANS something:
 
-    * it is bounded below by the keepers - the frontier has already proved
-      those are good and different, so a capacity under their count would
-      be the model contradicting itself, and N-GOOD would be offered fewer
-      samples than STOP is about to print recipes for;
+    * it never force-admits a keeper. A frontier always has a relative
+      champion, including after an all-bad session; N-GOOD requires separate
+      posterior support that an entry is above par;
     * it TRACKS THE TASTE. A taste with one sharp optimum has a handful of
       good answers and a taste where only the model matters has a whole
       subspace of them. This is the test with teeth: a "capacity" that
@@ -824,8 +833,20 @@ def test_capacity(search, numpy):
         for _ in range(duels):
             a, b = engine.next_duel()
             gap = taste(b) - taste(a) + rng.normal(0, 0.3)
+            disliked = taste(a) < 0 and taste(b) < 0
+            # The live panel always answers exactly one of its three rows.
+            # Top/middle both mean ON TRACK and differ only in whether the
+            # render looks alike; bottom means both bad and intentionally has
+            # no similarity label. A capacity bench that passes no row for a
+            # usable pair withholds the absolute-quality signal N-GOOD is
+            # specifically supposed to consume.
+            similar = (None if disliked else
+                       (int(a[0]) == int(b[0])
+                        and int(a[1]) == int(b[1])
+                        and int(a[2]) == int(b[2])
+                        and abs(float(a[3]) - float(b[3])) < 0.25))
             engine.observe(a, b, round(min(max(5 + 5 * gap / 1.2, 0), 10)),
-                           disliked=(taste(a) < 0 and taste(b) < 0))
+                           disliked=disliked, similar=similar)
         engine.frontier()
         return engine
 
@@ -1689,9 +1710,23 @@ def test_recipe(dna, search):
         search.Dimension.range("w", 0.0, 1.0, 0.05)])
     check(dna._restore_solver(search.PreferenceSearch(other_space, seed=0),
                               state, other_space) is None,
-          "solver state replayed onto a DIFFERENT space - a changed label "
-          "list silently reindexes every choice, which is worse than "
-          "starting fresh")
+          "RESUME replayed solver state onto a DIFFERENT space - old "
+          "comparisons must retain their meaning there, even though GOOD "
+          "is allowed to project them onto edited rows")
+
+    projected = search.PreferenceSearch(other_space, seed=0)
+    projected_count = dna._restore_solver(
+        projected, state, other_space, allow_row_changes=True)
+    check(projected_count == len(original.observations),
+          "GOOD-style replay refused a different set of rows instead of "
+          "projecting the learned coordinates onto their current values")
+    check(all(len(point) == len(other_space.dimensions)
+              and 0 <= int(point[0]) < len(other_space.dimensions[0].labels)
+              and other_space.dimensions[1].low <= float(point[1])
+                  <= other_space.dimensions[1].high
+              for point in projected.points),
+          "projecting retained knowledge produced a point outside the "
+          "currently edited rows: %r" % (projected.points,))
 
     # -- the default weighted-channel grids -------------------------------
     check(dna.LORA_WEIGHTS == [0.2, 0.6, 1.0],
@@ -1808,6 +1843,98 @@ def test_demo_session(dna):
     check(script._pop_demo_request() is None and not staged,
           "the staged queue was not drained one-per-run")
 
+
+def test_demo_accepts_edited_rows(dna, search):
+    """A finished search remains a generator after its rows are edited."""
+    old_space = search.Space([
+        search.Dimension.choice("old choice", ["a", "b", "c"]),
+        search.Dimension.range("old range", 0.0, 1.0, 0.1),
+    ])
+    payload = {
+        "signature": dna._space_signature(old_space),
+        "observations": [[[2, 1.0], [0, 0.0], 0.8],
+                         [None, [2, 1.0], search.ON_TRACK_P]],
+        "similarities": [],
+        "interesting": [[2, 1.0]],
+        "on_track_anchors": True,
+        "duels": 1,
+    }
+    edited_space = search.Space([
+        search.Dimension.choice("edited choice", ["new"]),
+        search.Dimension.range("edited range", 0.2, 0.4, 0.1),
+        search.Dimension.choice("added row", ["first", "second"]),
+    ])
+
+    script = dna.Script()
+    session = dna._Session()
+    rendered = types.SimpleNamespace(images=["rendered"], infotexts=["info"])
+    seen = []
+
+    def samples(*args, **_kwargs):
+        seen.append(args[1])
+        return [rendered], "GOOD sample rendered"
+
+    script._samples = samples
+    p = types.SimpleNamespace(extra_generation_params={})
+    tab = "txt2img"
+    marker = object()
+    previous = dna._PENDING_SOLVER.get(tab, marker)
+    dna._PENDING_SOLVER[tab] = payload
+    try:
+        result = script._demo_run(
+            dna._Demo(), p, search, edited_space, [], [],
+            types.SimpleNamespace(args_from=0), {}, "prompt", 7, session)
+    finally:
+        if previous is marker:
+            dna._PENDING_SOLVER.pop(tab, None)
+        else:
+            dna._PENDING_SOLVER[tab] = previous
+
+    check(result is rendered and len(seen) == 1,
+          "GOOD refused the retained solver after the rows were edited "
+          "instead of rendering from it")
+    projected = set(seen[0].points) if seen else set()
+    check(projected == {(0, 0.2, 0), (0, 0.4, 0)},
+          "GOOD did not project old coordinates onto the edited rows: %r"
+          % (projected,))
+    check("refused" not in session.status.lower(),
+          "GOOD still reports a row-mismatch refusal: %r" % session.status)
+
+
+def test_collage_cache_policy(dna):
+    """N-GOOD reads paid-for duel renders without evicting them on misses."""
+    script = dna.Script()
+    p = types.SimpleNamespace(styles=[], override_settings={},
+                              extra_generation_params={})
+    recipe = dna._config_string([], (), {}, "base prompt", 11)
+    hit = types.SimpleNamespace(images=["already rendered"])
+    cache = {recipe: hit}
+    calls = []
+    original = dna.process_images
+
+    def render(processing):
+        calls.append(processing)
+        return types.SimpleNamespace(images=["new render"], infotexts=[""])
+
+    dna.process_images = render
+    try:
+        got = script._render(
+            p, [], types.SimpleNamespace(args_from=0), [], (), {},
+            "base prompt", 11, cache=cache, cache_store=False)
+        check(got is hit and not calls,
+              "a read-only N-GOOD cache lookup regenerated an image already "
+              "paid for during a duel")
+
+        empty = {}
+        script._render(
+            p, [], types.SimpleNamespace(args_from=0), [], (), {},
+            "base prompt", 11, cache=empty, cache_store=False)
+        check(len(calls) == 1 and not empty,
+              "a fresh collage render entered the duel cache - a large "
+              "collage would evict the very images reuse is meant to save")
+    finally:
+        dna.process_images = original
+
     # The N box is free text beside a button, and the press has already
     # happened by the time it is read.
     for text, wanted in (("12", 12), ("  7 ", 7), ("", dna.CAPACITY_DEFAULT),
@@ -1818,6 +1945,252 @@ def test_demo_session(dna):
               "the N box read %r as %r rather than %r - it is free text next "
               "to a button that spends GPU minutes, so every reading of it "
               "has to be a number in range" % (text, got, wanted))
+
+
+def test_collage_layout(dna):
+    """N-GOOD is one horizontal comparison strip, whatever N is."""
+    try:
+        from PIL import Image
+    except Exception as exc:
+        SKIPS.append("Pillow is absent, so collage geometry was not checked "
+                     "(%s)" % exc)
+        return
+
+    samples = [Image.new("RGB", (20 + index, 12 + 2 * index),
+                         (40 * index, 0, 0))
+               for index in range(1, 6)]
+    sheet = dna._collage(samples)
+    cell_w = max(image.width for image in samples)
+    cell_h = max(image.height for image in samples)
+    wanted = (len(samples) * cell_w
+              + (len(samples) + 1) * dna.COLLAGE_GAP,
+              cell_h + 2 * dna.COLLAGE_GAP)
+    check(sheet is not None and sheet.size == wanted,
+          "N-GOOD composed five samples as %r instead of the one-row strip "
+          "%r - the collage must be N columns by one row, not a square-ish "
+          "grid" % (getattr(sheet, "size", None), wanted))
+
+
+def test_resume_matches_visible_rows(dna, search):
+    """RESUME is available only for the exact space shown in the panel."""
+    matcher = getattr(dna, "_solver_matches_rows", None)
+    if not check(callable(matcher),
+                 "RESUME has no shared row-compatibility predicate - its "
+                 "paint and click paths can then disagree about whether the "
+                 "visible search can continue"):
+        return
+    values = [1] + [None] * (dna.MAX_ROWS * dna.ROW_ARGS)
+    values[1:1 + dna.ROW_ARGS] = [
+        dna.TARGET_PROMPT, dna.MODE_MODEL, [], "Main", "first\nsecond",
+        dna.PROMPT_REPLACE, "", "", "0"]
+    genes = dna._build_genes(dna._read_rows(values, 1), search)
+    state = {
+        "signature": dna._space_signature(dna._space(genes, search)),
+        "observations": [[None, [0, 0.4], search.ON_TRACK_P]],
+    }
+    check(matcher(state, values, search),
+          "RESUME rejected solver state learned over the visible rows")
+
+    edited = list(values)
+    edited[5] = "first\nthird"
+    check(not matcher(state, edited, search),
+          "RESUME accepted solver state from different visible row values - "
+          "pressing it would advertise a continuation and start fresh")
+    check(not matcher({**state, "observations": []}, values, search),
+          "RESUME accepted a matching shell with no observations to resume")
+
+
+def test_loop_controls(dna):
+    """START/STOP and RESUME, and the promise that Generate is not one of them.
+
+    THE PROPERTY WORTH PINNING IS THE NEGATIVE ONE. Selecting this script
+    used to mean the next Generate spent itself on a search; it does not any
+    more, and "a plain Generate is handed back to the host" is invisible from
+    the outside until the day it regresses - at which point pressing Generate
+    to check a prompt opens a duel loop instead. `run()` returning None is
+    the whole of that contract, so it is checked first and directly.
+
+    The rest is the state machine the two buttons share:
+
+    * a press STAGES its intent and clicks Generate, because a gradio handler
+      cannot invoke the host's pipeline - so what the press meant has to
+      survive the trip, and START and RESUME must not arrive as each other;
+    * the session reads BUSY from the press rather than from the loop, or the
+      window between the click and the host picking the job up is a window in
+      which the panel offers START again and a second search gets staged;
+    * a burst of presses is still one search - they all asked for the same
+      single thing, and a queue of them would start another one every time
+      the host drained a job;
+    * a stale press is dropped, exactly as a stale GOOD press is, for a
+      strictly worse failure: a hijacked Generate that starts asking for
+      grades rather than one that renders an unasked-for sample.
+    """
+    import time as _time
+
+    tab = "txt2img"
+    session = dna._SESSIONS[tab]
+    staged = dna._PENDING_START[tab]
+    script = dna.Script()
+
+    def reset():
+        staged[:] = []
+        dna._PENDING_DEMO[tab][:] = []
+        dna._PENDING_SOLVER.pop(tab, None)
+        session.running = session.launching = session.stopping = False
+        session.solver_state = None
+
+    reset()
+    check(script.run(None) is None,
+          "a Generate with nothing staged was not handed back to the host - "
+          "selecting this script would then turn the host's own button into "
+          "a search, which is exactly what it must not do")
+
+    for resume in (False, True):
+        reset()
+        staged.append((resume, _time.time()))
+        got = script._pop_start_request()
+        check(got is resume,
+              "a staged %s press came back as %r - which button was pressed "
+              "is decided at the press and travels with the entry, and the "
+              "two mean opposite things about the retained state"
+              % ("RESUME" if resume else "START", got))
+        check(not staged, "the staged press was not consumed by the run it "
+                          "started")
+
+    reset()
+    staged[:] = [(False, _time.time()), (False, _time.time()),
+                 (True, _time.time())]
+    check(script._pop_start_request() is False and not staged,
+          "a burst of presses left searches queued behind the first - each "
+          "would start another one as the host drained the queue")
+
+    reset()
+    staged[:] = [(False, _time.time() - dna.DEMO_STALE_SECONDS - 1)]
+    check(script._pop_start_request() is None,
+          "a stale START press survived to hijack a later, unrelated "
+          "Generate into a search")
+
+    reset()
+    dna._PENDING_DEMO[tab].append((dna._Demo(), _time.time()))
+    staged.append((False, _time.time()))
+    try:
+        script.run(None)
+    except Exception:
+        # No rows against the stubs, so this run dies just after the two
+        # pops - which is all this case is about.
+        pass
+    check(len(staged) == 1,
+          "a GOOD generation swallowed the START staged behind it - that "
+          "press queued a generation of its own and never gets served")
+
+    # The panel reads busy from the PRESS, not from the loop.
+    reset()
+    session.arm("starting")
+    check(session.snapshot()["launching"] and not session.snapshot()["running"],
+          "arm() did not put the session in the staged-but-not-started state "
+          "the button and the poll both read")
+    session.request_stop()
+    check(not session.launching,
+          "STOP over a press that never became a run left the panel armed - "
+          "the button reads STOP for as long as it is, so it has to be able "
+          "to take that back")
+    session.arm("starting")
+    script.run(None)
+    check(not session.launching,
+          "reaching run() did not disarm the session - a press whose click "
+          "never became a run would leave the panel reading 'starting' "
+          "forever")
+    reset()
+
+
+def test_set_good_and_reset_state(dna, search):
+    """Set GOOD samples from the learned taste; Reset has an exact origin."""
+    initial = {
+        "u0.enabled": True,
+        "u0.model": "canny",
+        "u0.weight_profile": "0@1;1@1",
+        "u0.module": "none",
+        "prompt": "the initial prompt",
+        "neg_prompt": "blur",
+        "steps": 28,
+        "seed": 123,
+    }
+
+    # Applying a point starts from the snapshot, not from whatever currently
+    # happens to be in the UI. Both a unit row and a prompt row are included
+    # so this catches an implementation that only rewrites the easy scalar.
+    model = dna.Gene(dna.Gene.KIND_SETTING, 0, unit_index=0,
+                     field="model", values=["canny", "depth"])
+    prompt = dna.Gene(dna.Gene.KIND_PROMPT, 1,
+                      values=["golden hour", "rain"],
+                      prompt_mode=dna.PROMPT_APPEND, weights=[0.8, 1.2])
+    model.offset = 0
+    prompt.offset = 1
+    configured = dna._configuration_for_point(
+        [model, prompt], (1, 0, 1), initial)
+    check(configured.get("u0.model") == "depth",
+          "Set GOOD did not apply the sampled unit value")
+    check(configured.get("prompt") ==
+          "the initial prompt, (golden hour:1.2)",
+          "Set GOOD composed its prompt against something other than the "
+          "initial search prompt: %r" % configured.get("prompt"))
+    check(configured.get("neg_prompt") == "blur"
+          and configured.get("steps") == 28
+          and configured.get("u0.module") == "none",
+          "Set GOOD lost untouched initial settings: %r" % configured)
+    check(initial["u0.model"] == "canny"
+          and initial["prompt"] == "the initial prompt",
+          "sampling mutated the memorized Reset snapshot")
+
+    # The complete snapshot uses Set's existing grammar, so Reset and the
+    # visible Configuration box cannot disagree about escaping or types.
+    snapshot_text = dna._settings_string(initial, list(initial))
+    snapshot_read = dna._parse_config_string(snapshot_text)
+    check(snapshot_read.get("prompt") == "the initial prompt"
+          and snapshot_read.get("u0.model") == "canny"
+          and snapshot_read.get("steps") == "28",
+          "the initial snapshot does not round-trip through Set's grammar: %r"
+          % snapshot_read)
+
+    # One positively anchored model and one negatively anchored model make
+    # the sampled GOOD unambiguous. This exercises retained-state replay, not
+    # merely the deterministic point-to-settings helper above.
+    one_gene = dna.Gene(dna.Gene.KIND_SETTING, 0, unit_index=0,
+                        field="model", values=["canny", "depth"])
+    one_gene.offset = 0
+    space = dna._space([one_gene], search)
+    learned = search.PreferenceSearch(space, seed=123)
+    bad, good = (0,), (1,)
+    learned.observations.extend([
+        (None, learned._row(bad), 0.02),
+        (None, learned._row(good), 0.98),
+    ])
+    learned._dirty = True
+    payload = dna._solver_payload(learned, 123, space, initial)
+    payload = json.loads(json.dumps(payload))
+    check(payload.get("initial_settings") == initial,
+          "the retained solver payload lost the settings Reset needs after "
+          "a reload/restart: %r" % payload.get("initial_settings"))
+    sampled, error = dna._sample_good_configuration(
+        payload, [one_gene], initial, serial=1)
+    check(error is None and sampled is not None,
+          "Set GOOD could not sample the retained solver: %r" % error)
+    if sampled is not None:
+        check(sampled.get("u0.model") == "depth",
+              "Set GOOD sampled %r instead of the only positively anchored "
+              "configuration" % sampled.get("u0.model"))
+        check(sampled.get("prompt") == initial["prompt"]
+              and sampled.get("steps") == initial["steps"],
+              "Set GOOD did not rebuild from the memorized initial settings")
+
+    session = dna._Session()
+    mutable = {"prompt": "before", "input_order": [1, 2]}
+    session.remember_initial(mutable)
+    mutable["prompt"] = "after"
+    mutable["input_order"].append(3)
+    check(session.initial_settings ==
+          {"prompt": "before", "input_order": [1, 2]},
+          "Reset remembered a live reference rather than the initial values")
 
 
 def test_point_gene(dna, search):
@@ -1887,7 +2260,7 @@ def test_point_gene(dna, search):
             pass
 
 
-def test_persistence(dna):
+def test_persistence(dna, search, numpy):
     """Nothing ends a search irrecoverably - the fix for "A/B and GOOD/N-GOOD
     stop working" after a STOP or an Interrupt.
 
@@ -1939,7 +2312,37 @@ def test_persistence(dna):
     check(not session.trace and not session.result and not session.summary,
           "a FRESH start kept the previous search's record - these rows have "
           "never been tried, so a Tried box full of another space's recipes "
-          "is worse than an empty one")
+           "is worse than an empty one")
+
+    # PRE-SCHEMA REPLAY: the old file retained the similarity row but not the
+    # shared "on track" half of its meaning.  That is enough information to
+    # recover the two above-par anchors exactly once.  Current payloads carry
+    # the marker and must not receive the anchors twice on every resume.
+    space = build_space(search)
+    a, b = space.baseline(), space.perturb(
+        space.baseline(), numpy.random.default_rng(17))
+    old_state = {
+        "signature": dna._space_signature(space),
+        "observations": [[list(a), list(b), 0.7],
+                         [list(a), list(b), 0.5]],
+        "similarities": [[list(a), list(b), False, 1.0]],
+        "interesting": [], "duels": 1,
+    }
+    restored = search.PreferenceSearch(space, seed=1)
+    dna._restore_solver(restored, old_state, space)
+    means, _ = restored._posterior([a, b], with_covariance=False)
+    check(len(restored.observations) == 4 and float(min(means)) > 0.0,
+          "a pre-anchor saved search did not recover both samples' old "
+          "on-track verdict during replay")
+    current_state = dict(old_state)
+    current_state["observations"] = [
+        *old_state["observations"], [None, list(a), search.ON_TRACK_P],
+        [None, list(b), search.ON_TRACK_P]]
+    current_state["on_track_anchors"] = True
+    restored_current = search.PreferenceSearch(space, seed=1)
+    dna._restore_solver(restored_current, current_state, space)
+    check(len(restored_current.observations) == 4,
+          "a current saved search duplicated its on-track anchors on replay")
 
     tab = "persistence-test"
     payload = {"observations": [[None, [1], 0.9]], "duels": 3,
@@ -2007,9 +2410,10 @@ def test_phase_css(dna):
           "it must mark the user's turn, not the machine's")
     waiting = dna._phase_css("cnpro_ab_txt2img", snap(awaiting=True), 0.0)
     check(".cnpro-ab-grade-hint{opacity:1}" in waiting
-          and "--cnpro-ab-fill" not in waiting,
-          "a duel awaiting its grade must fade the nudge in and carry no "
-          "fill: %r" % (waiting,))
+          and "#cnpro_ab_txt2img_interesting_a{--cnpro-ab-fill:100%}" in waiting
+          and "#cnpro_ab_txt2img_interesting_b{--cnpro-ab-fill:100%}" in waiting,
+          "a duel awaiting its grade must fade the nudge in and keep both "
+          "completed fills at 100%%: %r" % (waiting,))
     clamped = dna._phase_css("x", snap(running=True, generating="A"), 2.0)
     check("100%" in clamped and "200%" not in clamped,
           "progress above 1 was not clamped: %r" % (clamped,))
@@ -2038,11 +2442,38 @@ def test_phase_css(dna):
     session.say("duel 1: generating A", generating="A")
     check(session.snapshot()["generating"] == "A",
           "say(generating='A') did not mark the side being rendered")
+    # EXACT REPORTED FLICKER: terminal progress, the host's finalization
+    # reset, then terminal again. Once this render has started the middle 0
+    # must be unable to move the latch backwards. A stale terminal value at
+    # the START of the next side is the opposite case and must be ignored.
+    check(session.track_progress(1.0) == 0.0,
+          "a new A render inherited the previous render's stale 100%")
+    check(abs(session.track_progress(0.42) - 0.42) < 1e-9
+          and session.track_progress(1.0) == 1.0
+          and session.track_progress(0.0) == 1.0
+          and session.track_progress(1.0) == 1.0,
+          "render progress did not stay monotone across the reported "
+          "42% -> 100% -> 0% -> 100% sequence")
+    session.say("duel 1: generating B", generating="B")
+    check(session.snapshot()["progress"] == 0.0
+          and session.track_progress(1.0) == 0.0
+          and abs(session.track_progress(0.2) - 0.2) < 1e-9,
+          "starting B did not reset A's completion latch, or accepted A's "
+          "stale terminal counter as B's progress")
+    session.render_complete("B")
+    check(session.snapshot()["progress"] == 1.0,
+          "a successfully returned render was not forced to terminal progress")
     session.publish(1, None, None, "waiting")
     published = session.snapshot()
     check(published["generating"] is None and published["awaiting"],
-          "publish() must clear the rendering side and set awaiting - the "
-          "fill would otherwise persist over the finished duel")
+          "publish() must clear the active rendering side and set awaiting; "
+          "the completed fill is now derived from the published images")
+    completed = dna._phase_css("cnpro_ab_txt2img", published,
+                               published["progress"])
+    check("interesting_a{--cnpro-ab-fill:100%}" in completed
+          and "interesting_b{--cnpro-ab-fill:100%}" in completed,
+          "publishing the completed duel cleared its terminal fills: %r"
+          % completed)
     session.say("rendering keeper 1")
     check(session.snapshot()["generating"] is None,
           "an unrelated say() kept a stale rendering side")
@@ -2050,6 +2481,15 @@ def test_phase_css(dna):
     check(session.snapshot()["generating"] == "A",
           "a demo run renders into the A slot, and A's chrome must carry "
           "its progress")
+    session.track_progress(0.6)
+    session.render_complete("A")
+    session.publish_demo("sample", "done")
+    demo_done = session.snapshot()
+    check(demo_done["generating"] is None
+          and demo_done["progress"] == 1.0
+          and "interesting_a{--cnpro-ab-fill:100%}" in dna._phase_css(
+              "cnpro_ab_txt2img", demo_done, demo_done["progress"]),
+          "a completed GOOD sample did not keep its A indicator at 100%")
     session.finish("done")
     check(session.snapshot()["generating"] is None,
           "finish() kept a stale rendering side")
@@ -2123,7 +2563,13 @@ def main():
     test_recipe(dna, ab_search)
     test_point_gene(dna, ab_search)
     test_demo_session(dna)
-    test_persistence(dna)
+    test_demo_accepts_edited_rows(dna, ab_search)
+    test_collage_cache_policy(dna)
+    test_collage_layout(dna)
+    test_resume_matches_visible_rows(dna, ab_search)
+    test_loop_controls(dna)
+    test_set_good_and_reset_state(dna, ab_search)
+    test_persistence(dna, ab_search, numpy)
     test_phase_css(dna)
     test_field_table(dna)
     return report()

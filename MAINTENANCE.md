@@ -35,7 +35,7 @@ pieces would move.
   two-handle gutter slider. **The stops follow what the axis MEANS**
   (2026-08-01, `scaleGrid` in weight_profile.js): a WEIGHT axis — the main
   profile and the three band profiles, which share the step plot — offers
-  `1, 0.8, 0.7, 0.6, 0.5, 0.35, 0.25, 0.2, 0.15, 0.1, 0.05, 0` and cannot
+  `1, 0.75, 0.5, 0.25, 0.1, 0.05, 0` and cannot
   express anything outside [0, 1] at all, denser at the low end where the
   difference between 0.05 and 0.1 is a doubling. A weight is a share of the
   control, so above 1 is a unit pulling harder than the whole of itself, and

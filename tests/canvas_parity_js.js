@@ -115,6 +115,7 @@ const CASES = [
     'drop-onto-occluded-active-layer',
     'layer-deleted',
     'stack-then-global-adjust',
+    'edges-feather-detail',
 ];
 
 (async () => {
@@ -161,6 +162,9 @@ const CASES = [
         try {
             await page.setContent(html, {waitUntil: 'load'});
             out.cases[kase] = await page.evaluate(runCase, UUID, kase);
+            if (kase === 'edges-feather-detail' && process.env.CNPRO_SHOT) {
+                await page.screenshot({path: process.env.CNPRO_SHOT, fullPage: true});
+            }
         } catch (e) {
             out.cases[kase] = {error: String(e && e.message || e)};
         }
@@ -191,6 +195,17 @@ async function runCase(UUID, kase) {
         }
         x.fillStyle = '#000'; x.fillRect(0, 0, 12, 12);
         x.fillStyle = '#fff'; x.fillRect(w - 12, h - 12, 12, 12);
+        return c.toDataURL('image/png');
+    };
+    const mkEdges = () => {
+        const c = document.createElement('canvas');
+        c.width = 400; c.height = 300;
+        const x = c.getContext('2d');
+        x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+        x.fillStyle = '#000'; x.fillRect(38, 44, 150, 92);
+        x.fillRect(235, 62, 92, 168);
+        x.strokeStyle = '#000'; x.lineWidth = 1;
+        x.beginPath(); x.moveTo(25, 260); x.lineTo(375, 255); x.stroke();
         return c.toDataURL('image/png');
     };
     const decode = (url) => new Promise((ok, no) => {
@@ -228,6 +243,18 @@ async function runCase(UUID, kase) {
         g.dispatchEvent(new Event('input', {bubbles: true}));
         await sleep(1000);
     };
+    const setSlider = (prefix, value) => {
+        const slider = el(prefix);
+        slider.value = String(value);
+        slider.dispatchEvent(new Event('input', {bubbles: true}));
+    };
+    const blackPixels = (decoded) => {
+        let n = 0;
+        for (let i = 0; i < decoded.data.length; i += 4) {
+            if (decoded.data[i] + decoded.data[i + 1] + decoded.data[i + 2] < 384) n++;
+        }
+        return n;
+    };
 
     const fc = new ForgeCanvas(UUID, false, true, false, 300,
         '#000000', false, 25, false, false, 100, false, 0, false);
@@ -253,6 +280,7 @@ async function runCase(UUID, kase) {
     }
     const top = st.layers[st.layers.length - 1];
 
+    let edgeFeather = null;
     switch (kase) {
         case 'single-layer-after-drop': await drop(mk(320, 240, 77)); break;
         case 'global-gamma':            await nudge(155); break;
@@ -301,12 +329,34 @@ async function runCase(UUID, kase) {
         case 'layer-deleted':        st.layers.splice(0, 1); st.activeLayer = 0;
                                      await nudge(102); break;
         case 'stack-then-global-adjust': await nudge(168); break;
+        case 'edges-feather-detail': {
+            fc.loadImage(mkEdges());
+            await sleep(900);
+            setSlider('edgeOpacity_', 100);
+            setSlider('maskOpacity_', 100);
+            setSlider('edgeThickness_', 4); // THICKNESS_STOPS[4] = 1px-scale trace
+            setSlider('edgeFeather_', 100);
+            await sleep(1000);
+            const detailAt100 = blackPixels(await pixels(el('image_').src));
+
+            setSlider('edgeThickness_', 7); // THICKNESS_STOPS[7] = 10
+            setSlider('edgeFeather_', 0);
+            await sleep(1000);
+            const thickAt0 = blackPixels(await pixels(el('image_').src));
+
+            setSlider('edgeFeather_', 100);
+            await sleep(1000);
+            const thickAt100 = blackPixels(await pixels(el('image_').src));
+            edgeFeather = {detailAt100, thickAt0, thickAt100};
+            break;
+        }
         case 'two-layers':           await nudge(102); break;
         default:                     await nudge(100); break;
     }
     await sleep(900);
 
     const res = {case: kase, layers: st.layers.length, mode: st.mode || null};
+    if (edgeFeather) res.edgeFeather = edgeFeather;
     let displayed, control;
     try {
         displayed = await pixels(el('image_').src);

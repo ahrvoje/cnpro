@@ -69,6 +69,12 @@ weight for one is not evidence about the other - so between two points whose
 picks differ the weight contributes nothing to the kernel, and each pick
 learns its own weight response from its own observations alone.
 
+The similarity rows calibrate this kernel as well as the diversity filters.
+Their noisy-OR rates act as perceptual ARD: evidence transfers farther across
+a dimension the user calls visually inert and less across one they call vivid.
+A conditional weight has one visual rate per parent pick, matching its utility
+semantics. With no similarity labels every rate is exactly 1, the prior kernel.
+
 CHOOSING THE NEXT DUEL
 ----------------------
 Two independent samples are drawn from the posterior over a candidate pool and
@@ -90,12 +96,12 @@ single answer - a person who likes two unrelated looks is the normal case,
 not a degenerate one. Three mechanisms widen it without giving up
 convergence, on a fixed cycle (see EXPLORE_CYCLE):
 
-* **The frontier.** `frontier()` is the diverse top of the posterior: up to
-  FRONTIER_SIZE configurations, each polished by coordinate ascent, each at
+* **The frontier.** `frontier()` is the diverse top of the posterior: its
+  public result is capped at FRONTIER_SIZE readable recipes, but acquisition
+  retains up to ATTRACTOR_ARCHIVE_SIZE polished basins internally, each at
   least FRONTIER_SEPARATION from the others. The candidate pool is built
-  around ALL of them rather than around one incumbent, so a second-best
-  basin keeps being refined instead of starving the moment the champion
-  pulls ahead by a hair.
+  around the full archive rather than one incumbent or the four-entry report,
+  so a fifth strong basin does not starve because of a presentation limit.
 * **Cross-basin duels.** Every cycle one duel is champion-of-one-basin vs
   champion-of-another. Comparisons are the only thing that anchors two
   regions' utilities to the same scale; without these, two basins that were
@@ -201,25 +207,21 @@ to a promising unvisited combination without paying a generation per
 intermediate step. It is gated behind SURROGATE_MIN_DUELS because a trend
 fitted to three comparisons is a guess wearing a lab coat.
 
-THE SECOND ROW, AND THE ANCHOR
-------------------------------
+THE THREE ROWS, AND ABSOLUTE QUALITY
+------------------------------------
 A single comparison cannot say "both of these are bad" - "both great" and
-"both awful" are the same statement about the difference. So `observe`
-takes a flag, DISLIKED: the panel shows the same 0..10 scale twice, and
-grading on the second row means "and I dislike both of them". Nothing
-extra is asked of the user - the judgement is the one they already have
-the moment a pair appears, and the click that grades the duel simply
-lands one row lower. The grade still steers inside the region (which side
-is LESS bad is information like any other); the row adds one absolute
-probit observation per side against the prior mean 0 - "par", what the GP
-believes about a configuration nobody has asked about. That is what lets
-a whole subspace be marked as avoid-this without spending duels ranking
-its interior, and what gives `portfolio(good=False)` an address for "bad"
-- with comparisons alone the posterior is translation-invariant and no
-region is ever anywhere.
+"both awful" are the same statement about the difference. The ROW supplies
+the missing absolute statement. Top and middle both say "on track" and add a
+soft above-par probit observation for EACH side; bottom says both are unusable
+and adds a below-par one for each. The 0..10 grade still orders the pair inside
+either region. Nothing extra is asked: the click already lands on exactly one
+of those rows. This anchors both ends of utility, lets bad subspaces be avoided
+without ranking their interiors, and prevents N-GOOD from calling the least
+awful member of an all-bad session "good" merely because every set has a
+relative winner.
 
-THE THIRD ROW: WHAT A COMPARISON CANNOT SAY
--------------------------------------------
+SIMILARITY: WHAT A COMPARISON CANNOT SAY
+-----------------------------------------
 A graded duel encodes a DIFFERENCE in utility. It cannot encode a DISTANCE -
 "these two are the same image" and "these two are equally good" are not the
 same statement, and no amount of grading produces the first. So the panel's
@@ -241,21 +243,22 @@ the fraction of its span. It is what decides whether a duel is worth asking
 (FRONTIER_SEPARATION), which configurations a collage may hold together
 (`population`) and how many distinct good answers the space has (`capacity`).
 All eighteen of those tests call one function, so making that function
-LEARNED upgrades every one of them at once: `Space.weights` scales each
-dimension's contribution, fitted from the similarity labels by
-`_fit_metric`, shrunk toward the old constants so that a session with no
-labels behaves exactly as before.
+LEARNED upgrades every one of them at once. Numeric choice lists use their
+actual normalized spacing; conditional weights contribute only under a shared
+parent pick and learn one rate per pick. `_fit_metric` shrinks every rate
+toward the old constant so a session with no labels keeps the prior.
 
 The model is noisy-OR: each dimension independently has some rate of
 producing a visible change, distance is the sum of those rates, and
 P(distinct) = 1 - exp(-distance). Concave in the distance, linear in the
-weights, ~one parameter per row - so it fits from a handful of labels and
-cannot overfit into anything exotic.
+rates, roughly one parameter per row (one per parent level for a conditional
+weight) - so it fits from a handful of labels and cannot overfit into anything
+exotic.
 
-TWO HONEST LIMITS. The metric is LINEAR IN THE DIMENSIONS, so it cannot say
-"these two models look alike at LoRA 0.2 and not at 1.0"; that is a real
-loss and interaction terms are the escape hatch if it ever bites. And the
-labels are CENSORED: every duel path filters on separation, so a dimension
+TWO HONEST LIMITS. Outside declared pick/weight relationships the metric is
+LINEAR IN THE DIMENSIONS, so it cannot learn arbitrary visual interactions;
+that is a real loss and interaction terms are the escape hatch if it ever
+bites. And the labels are CENSORED: every duel path filters on separation, so a dimension
 the metric has shrunk stops being asked about and can never be un-shrunk by
 ordinary play - the estimate would be self-confirming. `_probe_duel` is the
 answer to that, and the reason it exists: at a fixed mean rate it asks
@@ -264,10 +267,11 @@ allowed, so a wrongly-shrunk dimension gets the one question that can
 restore it. The weights are also floored (METRIC_MIN) so nothing can vanish
 outright.
 
-A similarity label pays a dividend on the UTILITY side too: two
-configurations that look the same must be worth the same, which is a
-stronger statement than a graded 5 (a noisy soft label). So the middle row
-also records an extra tie observation, pinning the pair together.
+A similarity label pays two dividends on the UTILITY side. Two configurations
+that look the same must be worth the same, so the middle row records an extra
+tie; and the fitted visual rates enter the GP kernel itself, deciding how far
+the grade transfers through each parameter rather than only filtering future
+pairs.
 
 "INTERESTING" IS NOT A GRADE
 ----------------------------
@@ -276,10 +280,11 @@ whatever the grades said - usually bad - but which touches a characteristic
 the user wants to see in good samples. The mark therefore never enters the
 likelihood: no observation, no utility, the sample stays exactly as bad as
 it was graded. It enters the ACQUISITION instead, as a donor: a share of
-every candidate pool is hybrids that transplant a few of the donor's
-coordinates into an attractor - the tempting characteristic, tried inside a
-good configuration - and the hybrids then earn their place through ordinary
-duels or vanish. See mark_interesting / _hybrid / INTERESTING_SHARE.
+every candidate pool is hybrids that transplant a few of the donor's semantic
+genes into an attractor - the tempting characteristic, tried inside a good
+configuration - and the hybrids then earn their place through ordinary duels
+or vanish. A pick and its conditional weight transplant together. See
+mark_interesting / _hybrid / INTERESTING_SHARE.
 
 THE SEARCH IS ALSO A GENERATOR
 ------------------------------
@@ -305,6 +310,11 @@ probability the user's own similar/distinct clicks calibrated. That last
 point is the whole reason the numbers mean anything: a bar written as a
 distance can be - and was - set to a value at which the model itself
 expected 82% of the pairs to look identical.
+
+The good pool is absolute as well as relative: a candidate must be supported
+above par and within one judgement-noise margin of the champion. The latter is
+computed from the posterior variance of their DIFFERENCE, including their
+covariance; marginal variances cannot describe that event.
 
 Nothing in this module imports gradio, the host, or the rest of CNPro. It is
 numpy and stdlib, so `tests/test_ab_search.py` runs it directly.
@@ -522,6 +532,15 @@ RIVAL_SAMPLES = 16
 FRONTIER_SIZE = 4
 FRONTIER_SEPARATION = 0.5
 
+#: Basins retained internally for acquisition and N-GOOD. FRONTIER_SIZE is a
+#: presentation limit - four recipes are enough for a STOP report a human can
+#: read - and must not be the model's memory limit. In a fifteen-degree space
+#: it is entirely plausible to have more than four supported modes; dropping
+#: the fifth from every local pool makes it decay from under-sampling rather
+#: than evidence. The archive is refreshed once per graded duel and cached, so
+#: widening it does not multiply status()/capacity() work.
+ATTRACTOR_ARCHIVE_SIZE = 12
+
 #: THE COLLAGE'S PROMISE, WRITTEN AS A PROBABILITY. Every pair of entries
 #: N-GOOD returns is at least this likely to LOOK different - not "this far
 #: apart in some units", which is what every version of this before it said
@@ -663,6 +682,15 @@ SELECTION_DRAWS = 3
 QUALITY_MARGIN = 1.0
 CAPACITY_CONFIDENCE = 0.85
 
+#: A collage entry must also have posterior support for being ABOVE PAR.
+#: Closeness to the champion alone is a relative statement: after a run of
+#: bottom-row verdicts the least awful point is still the champion, and the old
+#: keeper override admitted it to N-GOOD unconditionally. The top/middle rows
+#: now provide the positive anchors this test consumes. 0.60 is deliberately
+#: evidence-seeking rather than severe: "on track" is a viability verdict, and
+#: a candidate already has to clear the stricter near-champion test above.
+GOOD_VS_PAR_CONFIDENCE = 0.60
+
 #: The largest capacity ever reported. A space can hold more good
 #: configurations than anybody will ever render, and past a few thousand the
 #: exact number stops being information - it is "more than you will use".
@@ -678,11 +706,12 @@ CAPACITY_MAX = 9999
 POPULATION_OVERSAMPLE = 8
 POPULATION_POOL_MAX = 1024
 
-#: THE LEARNED SEPARATION METRIC - see THE THIRD ROW in the module docstring.
-#: One weight per dimension, scaling its contribution to `Space.separation`.
+#: THE LEARNED SEPARATION METRIC - see SIMILARITY in the module docstring.
+#: One rate per ordinary dimension and one per parent level for a conditional
+#: weight, scaling its contribution to `Space.separation`.
 #:
 #: SHRUNK TOWARD 1, which is the old hand-written metric exactly: with no
-#: similarity labels every weight sits at the prior and nothing in the engine
+#: similarity labels every rate sits at the prior and nothing in the engine
 #: behaves differently than it did before the row existed. METRIC_SHRINK is
 #: the strength of that pull in the fit; the data outgrows it naturally, since
 #: the likelihood grows with the label count and the penalty does not.
@@ -699,8 +728,9 @@ METRIC_MIN = 0.05
 METRIC_MAX = 3.0
 
 #: Gradient steps and step size for that fit. The objective is smooth, tiny
-#: (one parameter per row), warm-started from the previous fit and re-run only
-#: when a label arrives, so this is a rounding error next to one generation.
+#: (roughly one parameter per row), warm-started from the previous fit and
+#: re-run only when a label arrives, so this is a rounding error next to one
+#: generation.
 METRIC_STEPS = 60
 METRIC_RATE = 0.15
 
@@ -740,11 +770,11 @@ SEED_BATCH = 64
 #: definition is "overall bad, we can't use it, but this characteristic is
 #: tempting" - so the mark never touches the likelihood: the sample stays
 #: exactly as bad as it was graded. What it does is donate: hybrid
-#: candidates transplant a few of the marked configuration's coordinates
+#: candidates transplant a few of the marked configuration's semantic genes
 #: into a good base (an attractor), which is literally "this characteristic,
 #: in a good sample", and the hybrids then live or die by ordinary duels.
 #: The share is deliberately modest and the transplant deliberately small
-#: (1-3 dimensions): a characteristic is usually carried by few coordinates,
+#: (1-3 genes): a characteristic is usually carried by few genes,
 #: and flooding the pool with a bad sample's genome would be valuing the
 #: mark as if it meant "good".
 INTERESTING_MAX = 12
@@ -760,6 +790,16 @@ INTERESTING_SHARE = 0.15
 #: away before anything acts on it - measured on the hidden-gem bench, where
 #: gems were found and then LOST for exactly that reason).
 SURPRISE_P = 0.35
+
+#: What either ON-TRACK row says about EACH side against par: the probability
+#: that the configuration is usable/better than an unjudged one. The row
+#: wording is explicit - distinct *and on track*, or similar *and on track* -
+#: and throwing that half away left the model with negative anchors only. It
+#: could identify "less bad" while having no evidence that anything was good,
+#: then N-GOOD force-admitted that relative winner. Kept softer than a dislike
+#: (0.70 versus 0.15) because "on track" means viable, not exceptional; the
+#: 0..10 comparison still decides how the two are ordered inside that region.
+ON_TRACK_P = 0.70
 
 #: What a dislike-both click says about EACH side against par: the
 #: probability that the configuration beats a par one. 0.15 rather than the
@@ -957,11 +997,6 @@ class Space:
     def __init__(self, dimensions):
         self.dimensions = list(dimensions)
         self._numeric = np.array([d.numeric for d in self.dimensions], dtype=bool)
-        # How much each dimension counts toward `separation`, LEARNED from
-        # the panel's similarity row - see METRIC_SHRINK and _fit_metric.
-        # All ones is the hand-written metric this started as, and is what a
-        # session with no similarity labels keeps.
-        self.weights = [1.0] * len(self.dimensions)
         # (weight dim index, pick dim index) for every conditional weight -
         # resolved by IDENTITY, because the parent is the instance the caller
         # paired it with, not any dimension that happens to look alike.
@@ -973,6 +1008,30 @@ class Space:
                 if candidate is dimension.parent:
                     self.conditional.append((index, parent_index))
                     break
+        self._conditional_parent = dict(self.conditional)
+
+        # THE PERCEPTUAL METRIC'S PARAMETERS. Ordinary dimensions get one
+        # rate. A conditional weight gets one rate PER PARENT PICK: 0.8 of
+        # LoRA A can be visually inert while the same movement on LoRA B is
+        # decisive, and averaging those into one coefficient is exactly the
+        # kind of false distance that lets N-GOOD buy "diversity" without a
+        # visible change. The public `weights` list remains one value per UI
+        # dimension for status/reporting; a conditional entry is the mean of
+        # its contextual rates. `_metric_rates` is what the model uses.
+        self._metric_specs = []
+        for index, dimension in enumerate(self.dimensions):
+            parent = self._conditional_parent.get(index)
+            if parent is not None:
+                parent_dim = self.dimensions[parent]
+                if parent_dim.kind == Dimension.CHOICE and parent_dim.labels:
+                    self._metric_specs.extend(
+                        (index, level) for level in range(len(parent_dim.labels)))
+                    continue
+            self._metric_specs.append((index, None))
+        self._metric_rates = np.ones(len(self._metric_specs), dtype=float)
+        self.weights = [1.0] * len(self.dimensions)
+        self.conditional_weights = {}
+        self.set_metric_rates(self._metric_rates)
 
     def __len__(self):
         return len(self.dimensions)
@@ -981,6 +1040,36 @@ class Space:
     def live(self):
         """Indices of the dimensions that actually vary."""
         return [i for i, d in enumerate(self.dimensions) if not d.trivial]
+
+    @property
+    def atomic_groups(self):
+        """Live coordinates that form one semantic gene for transplantation.
+
+        A LoRA/prompt pick and its conditional weight are two kernel
+        coordinates but one characteristic. An Interesting donor must never
+        contribute one without the other: "this LoRA was interesting" paired
+        with some unrelated weight is not the feature the user marked.
+        """
+        live = set(self.live)
+        children = {}
+        for child, parent in self.conditional:
+            if child in live:
+                children.setdefault(parent, []).append(child)
+        groups, used = [], set()
+        for index in self.live:
+            if index in used or index in self._conditional_parent:
+                continue
+            group = [index]
+            group.extend(child for child in children.get(index, [])
+                         if child not in used)
+            used.update(group)
+            groups.append(tuple(group))
+        # A live child of a trivial/non-live parent still has a meaningful
+        # within-parent weight and therefore remains its own gene.
+        for index in self.live:
+            if index not in used:
+                groups.append((index,))
+        return groups
 
     @property
     def size(self):
@@ -1028,31 +1117,95 @@ class Space:
             int(v) if d.kind == Dimension.CHOICE else round(float(v), 6)
             for d, v in zip(self.dimensions, point))
 
+    @staticmethod
+    def _delta(dimension, x, y):
+        """One dimension's normalized structural distance.
+
+        Numeric CHOICES are numeric here as well as in the utility kernel.
+        Treating the list ``0, .25, .5, .75, 1`` as five unrelated labels
+        made one adjacent notch buy the same collage separation as the whole
+        span, despite the class docstring promising the opposite.
+        """
+        if dimension.numeric:
+            return abs(dimension.encode(x) - dimension.encode(y))
+        return 0.0 if int(x) == int(y) else 1.0
+
     def deltas(self, a, b):
         """The UNWEIGHTED per-dimension distances between two points.
 
-        A differing category counts 1 - two models are either the same model
-        or a different one, there is no half. A range dimension counts the
-        fraction of its own span that separates the two values, so the number
-        means the same thing whether the knob runs 0..1 or 0.5..1.5.
+        A differing OPAQUE category counts 1 - two models are either the same
+        model or a different one, there is no half. A range or numeric-choice
+        dimension counts the fraction of its own span that separates the two
+        values, so the number means the same thing whether a typed grid runs
+        0..1 or 0.5..1.5. A conditional child contributes zero across two
+        parent picks because its values are not comparable there.
 
         These are also the FEATURES the similarity fit runs on (see
         _fit_metric): "which rows differ between the two images the user just
         called the same, and by how much" is exactly this vector.
         """
         values = []
-        for dimension, x, y in zip(self.dimensions, a, b):
-            if dimension.kind == Dimension.CHOICE:
-                values.append(0.0 if int(x) == int(y) else 1.0)
+        for index, (dimension, x, y) in enumerate(
+                zip(self.dimensions, a, b)):
+            parent = self._conditional_parent.get(index)
+            # A child's values are not comparable across parent picks. This
+            # is already the utility kernel's rule; failing to mirror it here
+            # let every LoRA row contribute TWO apparent differences when
+            # only the pick had a defined meaning.
+            if parent is not None and int(a[parent]) != int(b[parent]):
+                values.append(0.0)
             else:
-                span = dimension.high - dimension.low
-                values.append(abs(float(x) - float(y)) / span if span > 0 else 0.0)
+                values.append(self._delta(dimension, x, y))
         return values
+
+    @property
+    def metric_rates(self):
+        return self._metric_rates.copy()
+
+    def set_metric_rates(self, rates):
+        """Install fitted noisy-OR rates and publish their compact reading."""
+        values = np.asarray(rates, dtype=float)
+        if values.shape != (len(self._metric_specs),):
+            raise ValueError("metric rate count does not match the space")
+        self._metric_rates = values.copy()
+        compact = [1.0] * len(self.dimensions)
+        contextual = {}
+        for index, (dimension_index, level) in enumerate(self._metric_specs):
+            value = float(values[index])
+            if level is None:
+                compact[dimension_index] = value
+            else:
+                contextual.setdefault(dimension_index, []).append(value)
+        for dimension_index, per_level in contextual.items():
+            contextual[dimension_index] = list(per_level)
+            compact[dimension_index] = float(np.mean(per_level))
+        self.weights = compact
+        self.conditional_weights = contextual
+
+    def metric_features(self, a, b):
+        """Expanded unweighted features used by the perceptual fit.
+
+        Conditional children occupy one column per parent level. Only the
+        column belonging to a shared parent pick can be non-zero; across two
+        picks every child column is zero because the values have no common
+        meaning there.
+        """
+        base = self.deltas(a, b)
+        features = []
+        for dimension_index, level in self._metric_specs:
+            value = base[dimension_index]
+            if level is not None:
+                parent = self._conditional_parent[dimension_index]
+                value = (value if int(a[parent]) == level
+                         and int(b[parent]) == level else 0.0)
+            features.append(value)
+        return features
 
     def separation(self, a, b):
         """How far apart two configurations are, in "visible change" units -
-        the per-dimension distances above, each scaled by what the similarity
-        row has taught about that dimension.
+        the structural distances above, each scaled by what the similarity
+        rows taught about that dimension and, for a conditional weight, its
+        shared parent pick.
 
         THE ONE FUNCTION EVERY DISTANCE TEST CALLS. Whether a duel is worth
         asking, how different a keeper has to be, what a collage may hold
@@ -1060,10 +1213,7 @@ class Space:
         this number against a threshold - so `weights` moving is the whole of
         how a learned metric reaches them. See MIN_DUEL_SEPARATION.
         """
-        total = 0.0
-        for weight, delta in zip(self.weights, self.deltas(a, b)):
-            total += weight * delta
-        return total
+        return float(np.dot(self._metric_rates, self.metric_features(a, b)))
 
     def raw_separation(self, a, b):
         """`separation` under the PRIOR weights - the metric as it was before
@@ -1082,19 +1232,20 @@ class Space:
         if not points:
             return np.zeros((0, 0))
         values = np.asarray(points, dtype=float)
+        encoded = self.encode(points)
         total = np.zeros((len(points), len(points)))
-        for index, dimension in enumerate(self.dimensions):
-            weight = self.weights[index]
-            column = values[:, index]
+        for rate, (index, level) in zip(self._metric_rates,
+                                        self._metric_specs):
+            dimension = self.dimensions[index]
+            column = encoded[:, index] if dimension.numeric else values[:, index]
             delta = np.abs(column[:, None] - column[None, :])
-            if dimension.kind == Dimension.CHOICE:
-                # An index is an exact small integer in a float array, so the
-                # tolerance is only there to say "not the same category".
-                total += weight * (delta > 1e-9).astype(float)
-            else:
-                span = dimension.high - dimension.low
-                if span > 0:
-                    total += weight * delta / span
+            if not dimension.numeric:
+                delta = (delta > 1e-9).astype(float)
+            if level is not None:
+                parent = self._conditional_parent[index]
+                at_level = np.abs(values[:, parent] - level) < 0.5
+                delta = delta * (at_level[:, None] & at_level[None, :])
+            total += float(rate) * delta
         return total
 
     def encode(self, points):
@@ -1128,6 +1279,11 @@ class PreferenceSearch:
     prints, so it must be meaningful after every single answer).
     """
 
+    # Export/replay code receives an engine instance rather than this module;
+    # exposing the schema's anchor probability here lets it upgrade old states
+    # without copying a model constant into the UI layer.
+    ON_TRACK_P = ON_TRACK_P
+
     def __init__(self, space, seed=0, seed_duels=SEED_DUELS,
                  pool_size=POOL_SIZE):
         self.space = space
@@ -1142,7 +1298,8 @@ class PreferenceSearch:
         self.observations = []
         self.duels = 0              # graded duels + verdicts, NOT len(observations)
         # (point_a, point_b, distinct, mass) from the panel's top two rows -
-        # see THE THIRD ROW. BY VALUE, not by index into self.points: these
+        # see SIMILARITY in the module docstring. BY VALUE, not by index into
+        # self.points: these
         # outlive the observation cap (_forget_oldest rebuilds the point
         # list, which would silently reindex them), and what they are about
         # is a pair of CONFIGURATIONS, not a pair of graded duels. `mass` is
@@ -1159,6 +1316,9 @@ class PreferenceSearch:
         self._levels_shown = set()  # (dimension index, choice index) seen so far
         self._attractors = []       # every distinct basin, proven or not
         self._keepers = []          # the floored, public frontier
+        self._frontier_public = []  # floored archive, before display slicing
+        self._frontier_stamp = -1   # duel at which that archive was computed
+        self._frontier_limit = 0
         self._redirect = False      # last duel was disliked - change the subject
         self._dislike_streak = 0    # consecutive disliked duels
         self._surprise = None       # unexpected winner awaiting its follow-up
@@ -1229,12 +1389,14 @@ class PreferenceSearch:
 
         `similar` is which of the panel's top two rows the click landed on -
         True for "rather SIMILAR samples, and we are on track", False for
-        "rather distinct", None when the answer carries no such verdict (the
-        dislike row, or any caller that does not ask the question). It is not
-        a grade and it never touches the ordering: it trains the SEPARATION
-        METRIC - see THE THIRD ROW in the module docstring and _fit_metric -
-        which is what decides whether a duel is worth asking at all, how
-        different a keeper has to be, and what a collage may hold together.
+        "rather distinct, and we are on track", None when the answer carries
+        no such verdict (the dislike row, or an old caller that does not ask
+        the question). It trains the SEPARATION METRIC - see SIMILARITY in
+        the module docstring and _fit_metric - which is what decides whether a
+        duel is worth asking at all, how different a keeper has to be, and
+        what a collage may hold together. The shared "on track" half also
+        anchors BOTH samples above par; without it the model knows only
+        relative winners and cannot distinguish good from merely less bad.
 
         `similar=True` also records an extra TIE observation on the pair, and
         that is not double-counting: two configurations that look the same
@@ -1288,6 +1450,14 @@ class PreferenceSearch:
         if disliked:
             for index in (index_a, index_b):
                 self.observations.append((None, index, DISLIKED_P))
+        elif similar is not None:
+            # The top two rows partition the ON-TRACK case. This is absolute
+            # information just as the bottom row's "both bad" is: the grade
+            # orders the pair, while these two anchors say both belong on the
+            # usable side of par. Old callers that pass similar=None retain
+            # comparison-only behavior because they never asked this question.
+            for index in (index_a, index_b):
+                self.observations.append((None, index, ON_TRACK_P))
         if similar is not None:
             mass = 1.0
             if not similar and self._pair_key(point_a, point_b) not in self._probed:
@@ -1346,8 +1516,9 @@ class PreferenceSearch:
         which is just "distinct unless every differing dimension happened to
         be invisible". It is the right shape for the question - a difference
         somewhere is enough, and differences accumulate rather than average -
-        and it has ONE PARAMETER PER ROW, so a dozen labels are already
-        informative and there is nothing exotic for it to overfit into.
+        and it has roughly ONE PARAMETER PER ROW (one per parent level for a
+        conditional weight), so a dozen labels are already informative and
+        there is nothing exotic for it to overfit into.
 
         The log-likelihood is concave in the distance and the distance is
         linear in the weights, so the objective is smooth and well behaved;
@@ -1361,10 +1532,12 @@ class PreferenceSearch:
         dimension must never be allowed to reach zero.
         """
         if not self.similarities:
-            self.space.weights = [1.0] * len(self.space.dimensions)
+            self.space.set_metric_rates(
+                np.ones(len(self.space._metric_specs), dtype=float))
             return
         features = np.array(
-            [self.space.deltas(a, b) for a, b, _d, _m in self.similarities],
+            [self.space.metric_features(a, b)
+             for a, b, _d, _m in self.similarities],
             dtype=float)
         distinct = np.array([1.0 if d else 0.0
                              for _a, _b, d, _m in self.similarities])
@@ -1374,7 +1547,7 @@ class PreferenceSearch:
         # duel the probe ASKED counts in full.
         mass = np.array([m for _a, _b, _d, m in self.similarities])
 
-        v = np.log(np.clip(np.array(self.space.weights, dtype=float),
+        v = np.log(np.clip(self.space.metric_rates,
                            METRIC_MIN, METRIC_MAX))
         for _ in range(METRIC_STEPS):
             weights = np.exp(v)
@@ -1394,33 +1567,50 @@ class PreferenceSearch:
             # nothing and an overshoot on one emphatic label costs a metric.
             v = v + np.clip(step, -0.25, 0.25)
             v = np.clip(v, math.log(METRIC_MIN), math.log(METRIC_MAX))
-        self.space.weights = [float(w) for w in np.exp(v)]
+        self.space.set_metric_rates(np.exp(v))
 
     # -- the model -------------------------------------------------------
 
     def _kernel(self, u, v, lengthscale, theta):
-        """k(u, v) as a product over dimensions - see the module docstring."""
+        """k(u, v) as a product over perceptually weighted dimensions.
+
+        The similarity rows do not merely decide which pairs may appear on a
+        collage. They say where utility should transfer: two configurations
+        the user repeatedly calls visually identical should share evidence,
+        while a vivid change should decorrelate quickly. With every metric
+        rate at its prior value 1 this is the original mixed kernel exactly.
+        """
         if u.size == 0 or v.size == 0:
             return np.zeros((u.shape[0], v.shape[0]))
-        numeric = self.space.numeric_mask
         delta = u[:, None, :] - v[None, :, :]
-        # A conditional weight is not transferable across its parent pick: a
-        # LoRA's best weight says nothing about a different LoRA's. Between
-        # two points whose picks differ, the weight's delta is zeroed - the
-        # pair's similarity is then the pick difference alone, the same
-        # whether the weights happen to match or not. (Counting the weight
-        # there would claim that lora B at 0.2 says more about lora A at 0.2
-        # than lora B at 0.9 does, which is exactly the false transfer.)
-        for child, parent in self.space.conditional:
-            differs = np.abs(delta[:, :, parent]) > 1e-9
-            delta[:, :, child] = np.where(differs, 0.0, delta[:, :, child])
         log_k = np.zeros(delta.shape[:2])
-        if numeric.any():
-            scaled = delta[:, :, numeric] / max(lengthscale, 1e-6)
-            log_k -= 0.5 * np.sum(scaled * scaled, axis=2)
-        if (~numeric).any():
-            differs = np.abs(delta[:, :, ~numeric]) > 1e-9
-            log_k -= theta * np.sum(differs, axis=2)
+        for index, dimension in enumerate(self.space.dimensions):
+            difference = delta[:, :, index]
+            rate = self.space.weights[index]
+            parent = self.space._conditional_parent.get(index)
+            if parent is not None:
+                # A conditional weight is not transferable across its parent
+                # pick, and its learned visibility is contextual as well.
+                parent_difference = np.abs(delta[:, :, parent]) > 1e-9
+                difference = np.where(parent_difference, 0.0, difference)
+                contextual = self.space.conditional_weights.get(index)
+                if contextual:
+                    rate_matrix = np.zeros_like(difference)
+                    parent_dimension = self.space.dimensions[parent]
+                    for level, level_rate in enumerate(contextual):
+                        encoded_level = parent_dimension.encode(level)
+                        same_level = ((np.abs(u[:, None, parent] - encoded_level)
+                                       < 1e-9)
+                                      & (np.abs(v[None, :, parent] - encoded_level)
+                                         < 1e-9))
+                        rate_matrix = np.where(same_level, level_rate,
+                                               rate_matrix)
+                    rate = rate_matrix
+            if dimension.numeric:
+                scaled = difference / max(lengthscale, 1e-6)
+                log_k -= 0.5 * rate * scaled * scaled
+            else:
+                log_k -= theta * rate * (np.abs(difference) > 1e-9)
         return np.exp(log_k)
 
     def _likelihood(self, f, noise):
@@ -1702,21 +1892,25 @@ class PreferenceSearch:
         return self.space.perturb(anchor, self.rng, count=len(self.space))
 
     def _hybrid(self, donor, base):
-        """`base` with 1-3 live coordinates transplanted from `donor`.
+        """`base` with 1-3 semantic genes transplanted from `donor`.
 
         The donor is an "interesting" configuration - overall bad, one
         characteristic worth keeping - and the base is a good one. A
-        characteristic is usually carried by FEW coordinates, so the
-        transplant is small: a hybrid that took half the donor's genome
-        would mostly inherit what made the donor bad.
+        characteristic is usually carried by FEW genes, so the transplant is
+        small: a hybrid that took half the donor's genome would mostly inherit
+        what made the donor bad. A conditional pick+weight pair is one gene,
+        never two independently sampled coordinates; splitting it can create
+        a LoRA/weight combination the user did not mark at all.
         """
-        live = self.space.live
-        if not live:
+        groups = self.space.atomic_groups
+        if not groups:
             return tuple(base)
         child = list(base)
-        count = min(int(self.rng.integers(1, 4)), len(live))
-        for index in self.rng.choice(live, size=count, replace=False):
-            child[index] = donor[index]
+        count = min(int(self.rng.integers(1, 4)), len(groups))
+        for group_index in self.rng.choice(
+                len(groups), size=count, replace=False):
+            for index in groups[int(group_index)]:
+                child[index] = donor[index]
         return tuple(child)
 
     def _surrogate_features(self, points):
@@ -2464,15 +2658,13 @@ class PreferenceSearch:
         holding forty distinct samples between them is a different thing to
         know than either half alone.
 
-        OVER `_good_pool`, LIKE EVERYTHING ELSE HERE, and the keepers being
-        automatically eligible in it is what makes this reliable rather than
-        lucky. A second peak the frontier has PROVED is often still short of
-        the quality floor a fresh draw has to clear - the floor carries the
-        posterior variance, and a basin with few observations near it is
-        uncertain by construction. Sampled without the keepers forced in,
-        the runner-up basin was missing from the good set entirely on two
-        seeds out of three, and this reported one island for a taste with
-        two peaks that the frontier was holding at that very moment.
+        OVER `_good_pool`, LIKE EVERYTHING ELSE HERE. Frontier members seed
+        that pool and the full internal basin archive supplies their
+        neighbourhoods, but none bypasses the absolute quality test: the
+        champion of a session whose every verdict was "bad" is still bad.
+        The difference-variance calculation in `_quality` preserves a
+        supported runner-up without granting a presentation keeper immunity
+        from the evidence.
 
         IT NEEDS THE SIMILARITY ROW. Under the prior metric every dimension
         counts 1.0, which is over ISLAND_HOP, so every categorical
@@ -2550,19 +2742,25 @@ class PreferenceSearch:
         """
         if not self.observations:
             return [self.space.baseline()]
+        count = max(int(count), 1)
+        archive_limit = max(count, ATTRACTOR_ARCHIVE_SIZE)
+        if self._frontier_stamp == self.duels \
+                and self._frontier_limit >= archive_limit:
+            return list(self._frontier_public[:count])
         self._fit()
 
         # One polish per maximin center (see _diverse_centers), with twice as
-        # many centers as slots: two centers can still share a basin (their
-        # distinguishing dims may be numeric, which the freeze below leaves
-        # loose), and without the surplus every such collapse would cost the
-        # frontier a member. Non-champion centers are polished with the
-        # OPAQUE categorical dims that distinguish them from every kept
-        # member frozen - see _polish for why letting those move hands the
-        # runner-up basin to the champion.
+        # many centers as ARCHIVE slots: two centers can still share a basin
+        # (their distinguishing dims may be numeric, which the freeze below
+        # leaves loose), and without the surplus every such collapse would
+        # cost a basin. FRONTIER_SIZE is only how many recipes STOP prints;
+        # acquisition and N-GOOD retain the wider archive. Non-champion
+        # centers are polished with the OPAQUE categorical dims that
+        # distinguish them from every retained member frozen - see _polish
+        # for why letting those move hands the runner-up basin to the champion.
         result = []
-        for center in self._diverse_centers(self.f, count * 2):
-            if len(result) >= count:
+        for center in self._diverse_centers(self.f, archive_limit * 2):
+            if len(result) >= archive_limit:
                 break
             frozen = {index for index, dimension
                       in enumerate(self.space.dimensions)
@@ -2599,8 +2797,11 @@ class PreferenceSearch:
                 if float(_cdf((score - champion_score) / scale))
                 >= KEEP_VS_CHAMPION
                 and float(_cdf(score / scale)) >= KEEP_VS_PAR]
-        self._keepers = [point for point, _score in result]
-        return list(self._keepers)
+        self._frontier_public = [point for point, _score in result]
+        self._keepers = list(self._frontier_public[:FRONTIER_SIZE])
+        self._frontier_stamp = self.duels
+        self._frontier_limit = archive_limit
+        return list(self._frontier_public[:count])
 
     def suggest(self, good=True):
         """ONE configuration from the good (or bad) end, varied per call.
@@ -2648,21 +2849,51 @@ class PreferenceSearch:
     # the size of that region is a thing the model can be asked about rather
     # than a number the user has to guess.
 
-    def _quality(self, means, variances, champion):
-        """Which candidates the model is CONFIDENT are within a judgement
-        noise of the champion - see QUALITY_MARGIN / CAPACITY_CONFIDENCE.
+    def _quality(self, means, covariance, champion=None):
+        """Candidates confidently near the champion AND above par.
 
-        The marginal posterior variance is used rather than the variance of
-        the difference from the champion, which is what the test is really
-        about. The two differ by the covariance between the point and the
-        champion, which is positive wherever it matters (a candidate near
-        the champion is correlated with it), so ignoring it OVERSTATES the
-        uncertainty and the test is conservative in the safe direction: it
-        can refuse to count a good configuration, never invent one.
+        The first event is ``f(x) >= f(champion) - margin``. Its uncertainty
+        is therefore the variance of a DIFFERENCE,
+
+            var(x) + var(champion) - 2 cov(x, champion),
+
+        not x's marginal variance. Near points are strongly correlated with
+        the champion; discarding that covariance made the model reject the
+        well-supported interior of a good basin while retaining whatever
+        isolated points happened to clear the scalar approximation.
+
+        The second event is ``f(x) > 0``. It consumes the absolute signal in
+        the three rows: top/middle anchor both samples on the usable side of
+        par, bottom anchors both below it. A relative winner from an entirely
+        bad session can no longer enter N-GOOD merely because every search has
+        to have a champion.
+
+        A one-dimensional variance array is accepted for the historical test
+        harness and treated conservatively (no covariance available). Live
+        selection always passes the full posterior covariance.
         """
+        means = np.asarray(means, dtype=float)
+        uncertainty = np.asarray(covariance, dtype=float)
+        if means.size == 0:
+            return np.zeros(0, dtype=bool)
+        if uncertainty.ndim == 2:
+            variances = np.maximum(np.diag(uncertainty), 1e-12)
+            champion_index = int(np.argmax(means))
+            champion_score = float(means[champion_index])
+            difference_variance = np.maximum(
+                variances + variances[champion_index]
+                - 2.0 * uncertainty[:, champion_index], 1e-12)
+        else:
+            variances = np.maximum(uncertainty, 1e-12)
+            champion_score = (float(champion) if champion is not None
+                              else float(means.max()))
+            difference_variance = variances
         margin = QUALITY_MARGIN * max(self._hyper[2], 1e-3)
-        deviation = np.sqrt(np.maximum(variances, 1e-12))
-        return _cdf((means - champion + margin) / deviation) >= CAPACITY_CONFIDENCE
+        near = _cdf((means - champion_score + margin)
+                    / np.sqrt(difference_variance))
+        above_par = _cdf(means / np.sqrt(variances))
+        return ((near >= CAPACITY_CONFIDENCE)
+                & (above_par >= GOOD_VS_PAR_CONFIDENCE))
 
     def _champion_score(self, means):
         """The utility the quality floor is measured against.
@@ -2768,8 +2999,14 @@ class PreferenceSearch:
         have not looked at") are represented at every size.
         """
         self._fit()
-        keepers = list(self._keepers or self.frontier())
-        centers = self._diverse_centers(self.f, FRONTIER_SIZE)
+        if not self._attractors or self._frontier_stamp != self.duels:
+            self.frontier()
+        keepers = list(self._keepers)
+        # The internal archive, not the four-entry STOP presentation. A fifth
+        # supported basin must keep receiving local candidates or it is erased
+        # by the acquisition policy rather than rejected by evidence.
+        centers = list(self._attractors) or self._diverse_centers(
+            self.f, ATTRACTOR_ARCHIVE_SIZE)
         seen = {self.space.key(point) for point in keepers}
         pool = int(min(max(POOL_SIZE, int(count) * POPULATION_OVERSAMPLE),
                        POPULATION_POOL_MAX))
@@ -2781,11 +3018,7 @@ class PreferenceSearch:
                 uniform=pool // 2)
             if self.space.key(point) not in seen]
         means, cov = self._posterior(candidates)
-        good = self._quality(means, np.diag(cov), self._champion_score(means))
-        # The keepers are always eligible: the frontier has already proved
-        # they are good, by its own floor, so an early press returns them
-        # rather than an empty sheet.
-        good[:len(keepers)] = True
+        good = self._quality(means, cov)
         keep = np.flatnonzero(good)
         if not len(keep):
             return [], np.zeros(0), (lambda draws=1: np.zeros((draws, 0)))
@@ -2826,10 +3059,9 @@ class PreferenceSearch:
 
         FEWER THAN ASKED IS AN ANSWER. Nothing here relaxes the quality floor
         or the bar to fill a quota: a collage padded with mediocre or
-        near-duplicate entries would misreport the model's own belief. The
-        one exception is announced rather than silent - see the fallback at
-        the end, for the case where the model cannot yet promise anything
-        about anything.
+        near-duplicate entries would misreport the model's own belief. If the
+        model cannot yet support any good entry, the result is empty and the
+        panel says so.
 
         WHAT WAS ACHIEVED IS REPORTED, in `population_report`: how many
         islands the entries came from, the lowest pairwise probability on
@@ -2848,11 +3080,11 @@ class PreferenceSearch:
         Thompson logic the duels are chosen by), so two presses of one
         solver state are two different samples of one taste.
 
-        THE KEEPERS ARE ALWAYS ELIGIBLE. Everything else has to clear the
-        quality floor, which carries the posterior uncertainty and therefore
-        admits nothing at all early in a search - but the frontier has
-        already proved the keepers are good and different, by its own floor,
-        so an early press returns them rather than an empty collage.
+        KEEPERS ARE CANDIDATES, NOT EXEMPTIONS. Every entry clears the same
+        near-champion and above-par posterior tests. This deliberately allows
+        an empty result early, or after an all-bad session: rendering the
+        relative winner under a GOOD label would be a stronger false claim
+        than saying the model has no supported good population yet.
         """
         count = max(int(count), 1)
         if not self.observations:
@@ -2991,8 +3223,13 @@ class PreferenceSearch:
             "islands": len(self.islands()),
             "confidence": self.confidence(),
             # What the similarity row has taught about each row's visibility
-            # - all ones until it has been used. See _fit_metric.
+            # - all ones until it has been used. Conditional rows expose the
+            # compact mean here and their per-pick rates separately below.
             "metric": list(self.space.weights),
+            "metric_contexts": {
+                self.space.dimensions[index].name: list(rates)
+                for index, rates in self.space.conditional_weights.items()
+            },
             "similarities": len(self.similarities),
             "lengthscale": self._hyper[0],
             "theta": self._hyper[1],

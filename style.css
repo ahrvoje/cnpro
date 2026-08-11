@@ -2858,12 +2858,85 @@
    CNPro A/B panel (scripts/CNPro_AB.py)
    --------------------------------------------------------------------------- */
 
-/* The header line carries FOUR different kinds of thing - tool buttons, a
-   sentence, and two checkboxes - and gradio gives each of them a different
-   idea of vertical placement: the buttons are their own height, the markdown
-   block sits at the top of its box, and a checkbox is a label plus a control.
-   Centring the row is what makes the four read as one line rather than as a
-   staircase. `!important` for the reason spelled out over .cnpro-ab-grades:
+/* Configuration actions: Set and Set GOOD share the top row; RESET is the
+   full-width inverse below them. The column owns every gap and every button
+   margin so gradio's generic button reset cannot turn the intended 2x2 block
+   into three unrelated controls. */
+.cnpro-ab-answer {
+    align-items: flex-start !important;
+    flex-wrap: nowrap !important;
+}
+
+/* Gradio stretches the Textbox BLOCK to the row but leaves its label at its
+   one-line content height, which produces a full-height invisible box around a
+   short visible field. Make the label own the block's assigned height and the
+   textarea own everything below the label text. The Configuration control is
+   then at least as high as the adjacent action stack by construction. Only the
+   MINIMUM is coupled: the action stack keeps its natural height, while a native
+   textarea resize may make Configuration and the row as tall as the user wants. */
+.cnpro-ab-configuration {
+    align-self: stretch !important;
+    min-width: 0 !important;
+}
+
+.cnpro-ab-configuration > label {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 100% !important;
+}
+
+.cnpro-ab-configuration textarea {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+}
+
+.cnpro-ab-set-actions {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+    gap: 4px !important;
+    align-self: flex-start !important;
+}
+
+.cnpro-ab-set-actions > .compact,
+.cnpro-ab-set-actions > .form,
+.cnpro-ab-set-actions > .form > .form {
+    gap: 4px !important;
+    flex-wrap: nowrap !important;
+}
+
+.cnpro-ab-set-actions > .compact {
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+}
+
+.cnpro-ab-set-actions button {
+    min-height: 32px !important;
+    margin: 0 !important;
+    /* These are wide action buttons, never prose. A narrower panel may move
+       the action block, but its labels must remain one line. */
+    white-space: nowrap !important;
+}
+
+.cnpro-ab-set-actions > .compact > button {
+    flex: 1 1 0 !important;
+    width: 0 !important;
+}
+
+.cnpro-ab-set-actions > button {
+    flex: 1 1 0 !important;
+    width: 100% !important;
+}
+
+/* The header line carries two different kinds of thing - tool buttons and a
+   sentence - and gradio gives each of them a different idea of vertical
+   placement: the buttons are their own height, and the markdown block sits at
+   the top of its box. Centring the row is what makes them read as one line
+   rather than as a staircase. (It carried two checkboxes as well until the
+   panel grew its own START/STOP; the rules for those are gone, this one is
+   not - the staircase was never about them.)
+   `!important` for the reason spelled out over .cnpro-ab-grades:
    gradio's svelte-scoped Row classes outrank a single class here, and an
    extension's style.css arrives as a plain <link> with no borrowed
    specificity. */
@@ -2881,9 +2954,9 @@
     container-type: inline-size;
 }
 
-/* The markdown block is the row's SPRING - it takes the slack so the switches
-   stay pinned right - and gradio gives a <p> inside it a margin that would
-   push the sentence off the buttons' centre line. */
+/* The markdown block is the row's SPRING - it takes whatever width is going -
+   and gradio gives a <p> inside it a margin that would push the sentence off
+   the buttons' centre line. */
 .cnpro-ab-headline-row .cnpro-ab-headline {
     min-width: 0;
     overflow: hidden;
@@ -2896,27 +2969,10 @@
     text-overflow: ellipsis;
 }
 
-/* Checkboxes in a compact Row still carry the block padding they would need
-   as a standalone control, which on this line is a band of empty box around
-   two words. The label is what the user aims at, so it keeps its own hit
-   area; only the wrapper's padding goes. */
-.cnpro-ab-headline-row .cnpro-ab-switch {
-    padding: 0 !important;
-    border: none !important;
-    background: transparent !important;
-    flex-grow: 0 !important;
-}
-
-.cnpro-ab-headline-row .cnpro-ab-switch label {
-    margin: 0 !important;
-    padding: 0 !important;
-    white-space: nowrap;
-}
-
 /* Narrow panels: the sentence is the one thing here that can be inferred from
    what is on screen (the rows are visible, and the +/- tooltips say what they
-   do), so it is what gives way - before the switches, which cannot be read
-   off anything, and before the buttons. */
+   do), so it is what gives way - before the buttons, whose symbols are the
+   controls themselves. */
 @container (max-width: 500px) {
     .cnpro-ab-headline-row .cnpro-ab-headline {
         display: none !important;
@@ -2934,12 +2990,13 @@
    under it reads as "left image / right image" without a legend.
 
    The symmetric padding is what makes that exact rather than approximate.
-   STOP is taken out of the flow and pinned right, so centring the buttons in
-   the remaining space would put them half of STOP's width to the left of the
-   seam; reserving that width on BOTH sides keeps the content box concentric
-   with the row. It also means the buttons can never run underneath STOP when
-   the panel is narrow enough to wrap them - which is the failure the obvious
-   `margin-left: auto` version has, and it only shows up at small widths. */
+   START/STOP is taken out of the flow and pinned right, so centring the
+   buttons in the remaining space would put them half of that button's width
+   to the left of the seam; reserving that width on BOTH sides keeps the
+   content box concentric with the row. It also means the buttons can never
+   run underneath it when the panel is narrow enough to wrap them - which is
+   the failure the obvious `margin-left: auto` version has, and it only shows
+   up at small widths. */
 /* `!important` ON THE FLEX PROPERTIES, all of them, and it is not defensive
    noise. Gradio styles its Row with svelte-scoped classes - two classes deep
    - which outrank a single `.cnpro-ab-grades`, so every one of these lost
@@ -2979,9 +3036,10 @@
 
        The right band is the one that has to be measured; the left simply
        matches it. It holds the row's label immediately beside its buttons,
-       then the parked controls beyond it (GOOD over "N GOOD", STOP over
-       SKIP) - the far-right column is reserved for STOP and SKIP alone, so
-       a fast hand overshooting a 10 cannot land on a collage instead.
+       then the parked controls beyond it (GOOD over "N GOOD", START/STOP
+       over RESUME) - the far-right column is reserved for the loop's own two
+       buttons alone, so a fast hand overshooting a 10 cannot land on a
+       collage instead.
 
        IT IS COMPUTED, not written down, because the collage button carries
        its own count - "3 GOOD", "12 GOOD" - and a band measured for one of
@@ -3015,15 +3073,35 @@
 
        The strip therefore wants ~1142px of panel to have all of this at
        once. Under that it gives things up in a fixed order - see below. */
+    /* THE PARKED 2x2 IS ONE GRID FROM ONE CELL SIZE, and these three
+       declarations are the whole of it. Every button in the block, both
+       column offsets and the band reserved for them are written in terms of
+       `--cnpro-ab-parked-w`, so "the four are the same size and their edges
+       line up" is not something to keep true - there is no second figure it
+       could disagree with.
+
+       IT WAS FOUR SIZES. GOOD and "N GOOD" shared a width; START, STOP and
+       RESUME each sized to their own LABEL, so the right column was a
+       different width from the left one, a different width in each row, and
+       - the part that made it read as broken - a different width from
+       itself the moment START became STOP. A button whose left edge moves
+       when its own caption changes cannot be aligned with anything. */
     /* Digits in the collage button's count. Overwritten by the tick; 1 is
        the right default because the panel opens before any search has said
        otherwise, and CAPACITY_DEFAULT is 1. */
     --cnpro-ab-digits: 1;
-    /* The GOOD / "N GOOD" column: room for " GOOD" and one digit, plus a
-       digit's width for each extra one. */
-    --cnpro-ab-demo: calc(80px + (var(--cnpro-ab-digits) - 1) * 1ch);
-    /* Everything parked: STOP/SKIP (80px), a 4px gap, then that column. */
-    --cnpro-ab-parked: calc(84px + var(--cnpro-ab-demo));
+    /* ONE CELL: room for " GOOD" and one digit, plus a digit's width for
+       each extra one. The widest label the block ever has to hold is the
+       collage button's, so sizing the cell to that sizes it for all four -
+       "RESUME" and "12 GOOD" are the two to check when this changes. */
+    --cnpro-ab-parked-w: calc(80px + (var(--cnpro-ab-digits) - 1) * 1ch);
+    /* Between the two columns, and between the two rows by construction:
+       the rows are the same height, so a button centred in each sits at the
+       same offset from the seam without anything saying so. */
+    --cnpro-ab-parked-gap: 4px;
+    /* Everything parked: two cells and the gap between them. */
+    --cnpro-ab-parked: calc(2 * var(--cnpro-ab-parked-w)
+                            + var(--cnpro-ab-parked-gap));
     /* Plus the row's label, at the widest panel only. */
     --cnpro-ab-right: calc(var(--cnpro-ab-parked) + 140px);
     /* The left band MIRRORS the right - see the centring identity above. */
@@ -3166,8 +3244,8 @@
     box-shadow: inset 0 0 0 2px rgba(var(--cnpro-ab-row, 128, 128, 128), 0.9);
 }
 
-/* THE PARKED CONTROLS - STOP, SKIP, GOOD and the collage button - are the
-   rules below, and they share one vertical anchor, written here once.
+/* THE PARKED CONTROLS - START/STOP, RESUME, GOOD and the collage button -
+   are the rules below, and they share one vertical anchor, written here once.
 
    CENTRED BY AUTO MARGINS, not by `top: 50%` + `translateY(-50%)`, which is
    what they used and what let them slide. A transform is a single property
@@ -3184,10 +3262,34 @@
    Absolutely positioned, in the padding the row reserves for them above, so
    that they are out of the flow the buttons are centred in. `flex` and
    `margin-left` still carry !important because gradio writes flex
-   properties onto every block in a Row, and a STOP allowed to grow fills
-   the leftover width. */
-.cnpro-ab-grades button.cnpro-ab-stop,
-.cnpro-ab-grades button.cnpro-ab-skip,
+   properties onto every block in a Row, and a button allowed to grow fills
+   the leftover width.
+
+   ONE BOX, WRITTEN ONCE, AND NOTHING BELOW RESTATES IT. All four read the
+   same cell width and the same box model here, so their sizes cannot drift
+   apart - the rules further down say only WHERE each one goes, in terms of
+   that same width. The horizontal half of the alignment is therefore an
+   identity rather than a coincidence, and the vertical half already was:
+   the three grade rows hold identical content, so they are the same height,
+   so a button auto-centred in each lands on the same offset.
+
+   THE LABEL IS NOT ALLOWED TO SIZE THE BUTTON, and that is what actually
+   broke: `width` alone loses to the intrinsic minimum of a long caption, so
+   `min-width` and `max-width` pin the box from both sides and `nowrap` plus
+   `hidden` make a caption that does not fit clip instead of push. START,
+   STOP and RESUME are three different lengths in the same slot; without
+   this, that slot is three different widths and the block reads as four
+   loose buttons rather than as a 2x2.
+
+   `border-width` and `box-sizing` are the height half of the same
+   statement. Gradio gives `.primary`, `.secondary` and `.stop` their own
+   border declaration each - same token today, three declarations - and one
+   theme changing one of them would make START a different height from
+   RESUME for no reason visible in this file. Pinning both to gradio's own
+   token (never to a measured pixel value) makes the three variants one box
+   whatever the theme does with them. */
+.cnpro-ab-grades button.cnpro-ab-run,
+.cnpro-ab-grades button.cnpro-ab-resume,
 .cnpro-ab-grades button.cnpro-ab-demo {
     position: absolute;
     top: 0;
@@ -3197,12 +3299,29 @@
     margin-bottom: auto !important;
     flex: 0 0 auto !important;
     margin-left: 0 !important;
+
+    box-sizing: border-box !important;
+    width: var(--cnpro-ab-parked-w) !important;
+    min-width: var(--cnpro-ab-parked-w) !important;
+    max-width: var(--cnpro-ab-parked-w) !important;
+    border-width: var(--button-border-width, 0px) !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    white-space: nowrap;
+    overflow: hidden;
 }
 
-/* STOP sits at the far end, away from the grades. It ends the search, the
-   grade buttons continue it, and the two must not be neighbours that a fast
-   hand can confuse - the whole row is being clicked at speed. */
-.cnpro-ab-grades button.cnpro-ab-stop {
+/* START/STOP sits at the far end, away from the grades. It ends the search,
+   the grade buttons continue it, and the two must not be neighbours that a
+   fast hand can confuse - the whole row is being clicked at speed.
+
+   IT IS THE SAME BUTTON in both states, so it does not move when the label
+   changes: a control that jumps between START and STOP is two controls to a
+   hand that has learned where one of them is. The shared rule above is what
+   makes that true of its WIDTH as well as of its position - "START" and
+   "STOP" are different lengths, and a box that sized to them would slide by
+   the difference twice per search. */
+.cnpro-ab-grades button.cnpro-ab-run {
     right: 0;
 }
 
@@ -3220,39 +3339,36 @@
     opacity: 0.65;
 }
 
-/* SKIP lives directly under STOP - same far-right column, one row down - in
-   the padding the row reserves, and for the same reason: it is not a grade,
-   and a fast hand working the scale must not be able to hit it by
-   overshooting a 10. Capitals to match: STOP, SKIP. They are the same kind
-   of thing (neither is an answer, both end the duel in front of you) and the
-   lower-case one read as a link rather than as the third button.
+/* RESUME lives directly under START/STOP - same far-right column, one row
+   down - in the padding the row reserves, and for the same reason: it is not
+   a grade, and a fast hand working the scale must not be able to hit it by
+   overshooting a 10. Capitals to match: START, STOP, RESUME. They are the
+   same kind of thing (all three are the loop's own controls, none is an
+   answer) and a lower-case one would read as a link rather than as the
+   button beneath the button.
 
    WHICH ROW IT IS PAINTED ON IS DECIDED IN THE PANEL, not here - these
    controls are absolutely positioned inside whichever grade row declares
-   them, and SKIP is declared on the SIMILAR row so that the four parked
-   controls form one 2x2 block. Declared on the last row, as it was, it sat
-   alone under an empty slot and read as having fallen off the block. */
-.cnpro-ab-grades button.cnpro-ab-skip {
+   them, and RESUME is declared on the SIMILAR row so that the four parked
+   controls form one 2x2 block. Declared on the last row it would sit alone
+   under an empty slot and read as having fallen off the block. */
+.cnpro-ab-grades button.cnpro-ab-resume {
     right: 0;
 }
 
-/* GOOD and N GOOD park inboard of STOP and SKIP: on-demand samples from the
-   good end of the solver's belief - pure inference, so they sit with the
-   controls that are not grades, away from the scale a fast hand works. */
-/* The width is EXPLICIT, not left to the label. These four controls are
-   stacked by hand at fixed offsets (0, 84, 168) inside a fixed padding
-   band, so a button that sized to its own text would move the arithmetic
-   with every relabelling - "N GOOD" is two characters wider than "GOOD",
-   which is enough to slide it under the N box beside it. */
+/* GOOD and N GOOD park inboard of START/STOP and RESUME: on-demand samples
+   from the good end of the solver's belief - pure inference, so they sit with
+   the controls that are not grades, away from the scale a fast hand works.
+
+   ONE CELL INBOARD, spelled as the cell width plus the gap rather than as
+   the 84px it used to be. That number was the right-hand column's width and
+   the gap added together by hand, in a file where the column's width lives
+   in a variable - so a wider cell (a three-digit count) moved the column
+   the offset was measured against and left the two overlapping by the
+   difference. Written this way the two columns are adjacent by
+   construction, at any count and any font. */
 .cnpro-ab-grades button.cnpro-ab-demo {
-    right: 84px;
-    /* ONE WIDTH FOR BOTH, read from the same variable the band is built
-       from: GOOD has nothing to size itself to, "12 GOOD" does, and a
-       column whose two buttons measured themselves independently would step
-       in and out by a digit every time the count changed. */
-    width: var(--cnpro-ab-demo);
-    padding-left: 0;
-    padding-right: 0;
+    right: calc(var(--cnpro-ab-parked-w) + var(--cnpro-ab-parked-gap));
     opacity: 0.85;
 }
 
@@ -3365,9 +3481,7 @@
 }
 
 /* The interesting toggles: one under each image half, dim because they are
-   the exceptional gesture, not the routine one. Their state lives in the
-   session and is echoed by the status line - the button itself stays
-   stateless, which is what lets a toggle be a plain gradio Button. */
+   the exceptional gesture, not the routine one. */
 .cnpro-ab-interesting {
     gap: 4px;
 }
@@ -3389,9 +3503,10 @@
    --cnpro-ab-fill on that side's button, and this pseudo-element wears it
    as a left-to-right fill behind the label - the button stays a button,
    the fill cannot be clicked, and while B renders A holds a full bar so
-   the pair reads as "A done, B under way". When nothing renders the var
-   unsets and the width transition sweeps the bar away instead of
-   snapping. */
+   the pair reads as "A done, B under way". A completed displayed image
+   keeps the var at 100%; only the explicit start of a new render resets it.
+   That prevents host finalization's transient counter reset from painting a
+   finished bar empty. */
 .cnpro-ab-interesting button.cnpro-ab-mark::before {
     content: "";
     position: absolute;
@@ -3511,76 +3626,6 @@
    wrapper contributes no geometry anywhere on the page. */
 .cnpro-ab-phase-css {
     display: none !important;
-}
-
-/* THIS BLOCK MUST NOT CHANGE HEIGHT. Everything below it - the recipe box,
-   Set, the trace - moves when it does, and it is rewritten on every poll for
-   the whole length of a search. Measured before the fix: it swung between 61
-   and 96px about twice a second, which is the "Configuration jumping down up
-   down" that was reported. Two separate causes, and both had to go:
-
-   1. WHAT IS IN IT changed with the phase - the scale legend and the
-      best-so-far appeared only while waiting for a grade. Fixed in
-      _status_markdown: always three lines, always one line each.
-   2. GRADIO BLANKS AN OUTPUT WHILE ITS CALL IS PENDING, so even an unchanged
-      value empties the block for a frame. Only a floor can cover that, and
-      the floor has to be bigger than the content - which is why the content
-      is pinned here rather than left to the prose styles.
-
-   The margin reset is the load-bearing part. Markdown output lands inside
-   gradio's prose wrapper, whose block children carry margins: three lines
-   that measure 3 x 16.8 = 50px of text rendered as a 96px block, so a floor
-   sized from the text alone never bridged the collapse. With the margins
-   gone, full and empty are the same height and nothing below can move. */
-/* A FIXED height, not a floor. A floor covers the block being emptied while
-   its call is pending; it does not cover the block being briefly TALLER,
-   which is what a value swap does - measured at 61px settled and 96px for a
-   frame, four times over four duels, which is precisely the jump that was
-   reported as still happening after the floor went in. Whatever gradio
-   renders mid-swap now happens inside a box of constant height, and nothing
-   below it can move for any reason at all.
-
-   In em, so it follows the block's own font size (14px here, not the 12px
-   --text-sm suggests) rather than pinning a pixel count that a theme change
-   would clip. */
-/* ONE variable for the line box, and the container is three of them. The
-   first attempt derived the height from `em` on the container, which is a
-   different font size from the one the LINES render at - gradio's prose
-   wrapper sets its own - so the box came out 52px around 61px of text and
-   clipped the bottom line. Deriving both from the same number is the only
-   way those two cannot drift apart again. */
-.cnpro-ab-status {
-    --cnpro-ab-line: 1.3rem;
-    line-height: var(--cnpro-ab-line);
-    opacity: 0.85;
-    height: calc(3 * var(--cnpro-ab-line) + 4px);
-    overflow: hidden;
-}
-
-.cnpro-ab-status > *,
-.cnpro-ab-status p {
-    margin: 0 !important;
-}
-
-.cnpro-ab-status .cnpro-ab-line {
-    height: var(--cnpro-ab-line);
-    line-height: var(--cnpro-ab-line);
-    margin: 0 !important;
-    padding: 0;
-}
-
-.cnpro-ab-status .cnpro-ab-dim {
-    opacity: 0.8;
-}
-
-/* The best-so-far names a model, a factor and a LoRA weight, and wraps to two
-   lines the moment any of them is long - which would move the panel exactly
-   as the old phase-dependent lines did. One line, ellipsis, whole thing on
-   hover; the complete recipe is in the box directly below. */
-.cnpro-ab-status .cnpro-ab-clip {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 /* The duel images are the point of the panel, so they get ALL of the width:

@@ -417,107 +417,99 @@
         return canvas;
     }
 
-    // Edges-mask feathering: the white mask diffuses into the edges from
-    // their boundary. The slider value is the share of the original edge
-    // (non-white) pixels whitened away (0 = untouched, 100 = all edges
-    // eaten): pixel depths (chamfer 3-4 distance to the nearest edge-free
-    // pixel) are ranked and the budget eats the shallowest pixels first;
-    // beyond the front an exponential partial bleach exp(-(depth-front)/band)
-    // remains - the equilibrium profile of diffusion against an absorbing
-    // front. The band grows with the front depth (floor of ~1.5px), which is
-    // the single-parameter middle ground between a sharp erosion cutoff and
-    // homogeneous whitening.
+    // Edges-mask feathering is topology-preserving thinning, not erosion.
+    // Zhang-Suen deletion peels broad contours from both sides but never
+    // removes their one-pixel skeleton, so detail that arrived one pixel wide
+    // stays byte-identical even at 100. The slider controls how much of the
+    // removable area is eaten, shallow thinning phases first; its fractional
+    // phase is a soft boundary. At 100 only the precise centre lines remain.
     function featherMask(mask, w, h, feather) {
+        if (feather <= 0) return;
         const n = w * h;
-        let total = 0;
-        const INF = 0x3fffffff;
-        const dist = new Int32Array(n); // chamfer units: 3 = one pixel step
+        const alive = new Uint8Array(n);
+        const removedAt = new Uint16Array(n);
+        let foreground = 0;
+        let minX = w, minY = h, maxX = -1, maxY = -1;
         for (let i = 0; i < n; i++) {
             if (mask[i] > 0) {
-                dist[i] = INF;
-                total++;
+                alive[i] = 1;
+                foreground++;
+                const x = i % w, y = (i / w) | 0;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
             }
         }
-        if (!total) return;
-        if (feather >= 100) {
-            mask.fill(0);
-            return;
-        }
-        // two-pass chamfer distance transform; out-of-image stays untraversed,
-        // so border-hugging edges are eaten from the image interior only
-        for (let y = 0; y < h; y++) {
-            for (let x = 0; x < w; x++) {
-                const i = y * w + x;
-                let d = dist[i];
-                if (d === 0) continue;
-                if (x > 0 && dist[i - 1] + 3 < d) d = dist[i - 1] + 3;
-                if (y > 0) {
-                    const j = i - w;
-                    if (dist[j] + 3 < d) d = dist[j] + 3;
-                    if (x > 0 && dist[j - 1] + 4 < d) d = dist[j - 1] + 4;
-                    if (x < w - 1 && dist[j + 1] + 4 < d) d = dist[j + 1] + 4;
+        if (!foreground) return;
+
+        // Pixels on the frame stay eligible as protected skeleton. Skipping
+        // the outer row/column also keeps a border-hugging contour from being
+        // shifted inwards when there is no image content on its outer side.
+        const x0 = Math.max(1, minX), x1 = Math.min(w - 2, maxX);
+        const y0 = Math.max(1, minY), y1 = Math.min(h - 2, maxY);
+        const phaseSizes = [0];
+        let phase = 0, removable = 0;
+
+        while (x0 <= x1 && y0 <= y1) {
+            let cycleRemoved = 0;
+            for (let pass = 0; pass < 2; pass++) {
+                phase++;
+                const remove = [];
+                for (let y = y0; y <= y1; y++) {
+                    for (let x = x0; x <= x1; x++) {
+                        const i = y * w + x;
+                        if (!alive[i]) continue;
+                        const p2 = alive[i - w],     p3 = alive[i - w + 1];
+                        const p4 = alive[i + 1],     p5 = alive[i + w + 1];
+                        const p6 = alive[i + w],     p7 = alive[i + w - 1];
+                        const p8 = alive[i - 1],     p9 = alive[i - w - 1];
+                        const neighbours = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+                        if (neighbours < 2 || neighbours > 6) continue;
+                        const transitions = (!p2 && p3) + (!p3 && p4)
+                            + (!p4 && p5) + (!p5 && p6) + (!p6 && p7)
+                            + (!p7 && p8) + (!p8 && p9) + (!p9 && p2);
+                        if (transitions !== 1) continue;
+                        if (pass === 0) {
+                            if (p2 && p4 && p6) continue;
+                            if (p4 && p6 && p8) continue;
+                        } else {
+                            if (p2 && p4 && p8) continue;
+                            if (p2 && p6 && p8) continue;
+                        }
+                        remove.push(i);
+                    }
                 }
-                dist[i] = d;
-            }
-        }
-        let dmax = 0;
-        for (let y = h - 1; y >= 0; y--) {
-            for (let x = w - 1; x >= 0; x--) {
-                const i = y * w + x;
-                let d = dist[i];
-                if (d === 0) continue;
-                if (x < w - 1 && dist[i + 1] + 3 < d) d = dist[i + 1] + 3;
-                if (y < h - 1) {
-                    const j = i + w;
-                    if (dist[j] + 3 < d) d = dist[j] + 3;
-                    if (x < w - 1 && dist[j + 1] + 4 < d) d = dist[j + 1] + 4;
-                    if (x > 0 && dist[j - 1] + 4 < d) d = dist[j - 1] + 4;
+                phaseSizes[phase] = remove.length;
+                for (const i of remove) {
+                    alive[i] = 0;
+                    removedAt[i] = phase;
                 }
-                dist[i] = d;
-                if (d > dmax) dmax = d;
+                removable += remove.length;
+                cycleRemoved += remove.length;
             }
+            if (!cycleRemoved) break;
         }
-        // Depth histogram -> the front shell theta where the whitened-pixel
-        // budget (feather% of all edge pixels) runs out. Depths are integer
-        // chamfer shells and one shell can hold most of a thin line's pixels,
-        // so a whole-shell cutoff would make the slider jump: shells below
-        // theta are erased outright and the theta shell absorbs the
-        // fractional remainder of the budget as a uniform partial bleach
-        // (shellFrac) - exact in whitened mass, monotone in the slider.
-        const histo = new Uint32Array(dmax + 1);
-        for (let i = 0; i < n; i++) {
-            if (mask[i] > 0) histo[dist[i]]++;
-        }
-        const target = total * feather / 100; // fractional pixel budget
-        let theta = dmax;
-        let thetaPrev = 0; // deepest fully erased shell (0 = none yet)
-        let shellFrac = 1;
-        for (let d = 1, acc = 0; d <= dmax; d++) {
-            if (!histo[d]) continue;
-            if (acc + histo[d] >= target) {
-                theta = d;
-                shellFrac = (target - acc) / histo[d];
+
+        // A mask that was already one pixel wide has no removable area.
+        if (!removable) return;
+        const target = removable * Math.min(100, feather) / 100;
+        let theta = phaseSizes.length - 1, shellFrac = 1, acc = 0;
+        for (let p = 1; p < phaseSizes.length; p++) {
+            const size = phaseSizes[p];
+            if (!size) continue;
+            if (acc + size >= target) {
+                theta = p;
+                shellFrac = (target - acc) / size;
                 break;
             }
-            acc += histo[d];
-            thetaPrev = d;
+            acc += size;
         }
-        // The diffusive tail beyond the front. Every term is globally
-        // monotone in the slider - amplitude is the slider fraction itself
-        // and the anchor psi is the CONTINUOUS front position (interpolated
-        // across the straddled shell); anchoring or scaling the tail by the
-        // per-shell values instead sawtooths whenever the front crosses a
-        // shell (whitening would locally RETREAT while the slider grows).
-        const psi = thetaPrev + (theta - thetaPrev) * shellFrac;
-        const amp = feather / 100;
-        const band = Math.max(4.5, 0.5 * psi); // chamfer units, >= 1.5px
         for (let i = 0; i < n; i++) {
-            if (!mask[i]) continue;
-            const d = dist[i];
-            const wFront = d < theta ? 1 : (d === theta ? shellFrac : 0);
-            const wTail = amp * Math.exp(-Math.max(0, d - psi) / band);
-            const whiteness = Math.min(1, Math.max(wFront, wTail));
-            mask[i] = Math.round(mask[i] * (1 - whiteness));
+            const p = removedAt[i];
+            if (!p) continue;                 // protected centreline
+            if (p < theta) mask[i] = 0;
+            else if (p === theta) mask[i] = Math.round(mask[i] * (1 - shellFrac));
         }
     }
 
@@ -1477,7 +1469,7 @@
             edgeOpacity: 0,      // 0 = edges transparent (original shows) .. 100 = opaque black edges
             maskOpacity: 0,      // 0 = edge-free areas transparent .. 100 = opaque white mask
             edgeThickness: 2,    // one of THICKNESS_STOPS
-            edgeFeather: 0,      // % of edge pixels eaten by the white mask (featherMask)
+            edgeFeather: 0,      // 0 = original edge width, 100 = protected one-pixel skeleton
             rotate: 0,
             // pen: strokes live on the ACTIVE LAYER in layer-local pixels
             // (see commitPenStroke); penErase flips the pen into the eraser
