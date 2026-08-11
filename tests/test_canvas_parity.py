@@ -25,6 +25,10 @@ per-layer gamma/invert), global adjustments, geometry, crop, pen strokes and
 drops. There is no tolerance: both sides are PNG and no resampling happens
 between them, so the only correct answer is zero differing pixels.
 
+It also drives the layer list and pins the layer-target contract: canvas clicks
+never select a layer. Drag, zoom, adjustments, pen, and eraser must keep and edit
+the manually selected layer even over another raster or outside its bounds.
+
 The crop tool being open is the contract's one stated exception (the display is
 the full frame being edited, gradio holds the committed crop). It is asserted as
 an exception rather than skipped.
@@ -143,6 +147,35 @@ def main():
                  "(%d black pixels before, %d after)"
                  % (edge["thickAt0"], edge["thickAt100"]))
 
+    targeting = (cases.get("layer-selection-locked") or {}).get("layerTargeting")
+    if not targeting:
+        fail("the real-browser layer selection case did not report its edit targets")
+    else:
+        for name in ("overlap", "outside"):
+            result = targeting.get(name) or {}
+            if result.get("active") != (0 if name == "overlap" else 1):
+                fail("%s drag changed the manual layer selection (active=%r)"
+                     % (name, result.get("active")))
+            if not result.get("selectedMoved"):
+                fail("%s drag did not move the selected layer" % name)
+            if result.get("otherMoved"):
+                fail("%s drag moved an unselected layer" % name)
+        for name, selected_key, other_key in (
+                ("zoom", "selectedScaled", "otherScaled"),
+                ("adjustment", "selectedChanged", "otherChanged"),
+                ("pen", "selectedAdded", "otherAdded"),
+                ("erase", "selectedAdded", "otherAdded")):
+            result = targeting.get(name) or {}
+            if result.get("active") != 1:
+                fail("%s changed the manual layer selection (active=%r)"
+                     % (name, result.get("active")))
+            if not result.get(selected_key):
+                fail("%s did not edit the selected layer" % name)
+            if result.get(other_key):
+                fail("%s edited an unselected layer" % name)
+        if not (targeting.get("erase") or {}).get("erase"):
+            fail("eraser stroke was not recorded as an erase on the selected layer")
+
     return report(data)
 
 
@@ -164,6 +197,9 @@ def report(data=None):
         print("     Edge feather: fine trace at 100 = %d black pixels; thick "
               "trace %d->%d black pixels"
               % (edge["detailAt100"], edge["thickAt0"], edge["thickAt100"]))
+    if (cases.get("layer-selection-locked") or {}).get("layerTargeting"):
+        print("     Layer selection stayed manual across overlap/outside drag, "
+              "zoom, adjustment, pen, and eraser")
     return 0
 
 

@@ -3,6 +3,9 @@
 //
 //     the raster the control receives is the flattened canvas the user sees.
 //
+// It also pins the layer-target contract: only the layer list selects a layer;
+// canvas edits keep that selection and target it regardless of pointer position.
+//
 // Both sides are read from the page and decoded, then compared PIXEL BY PIXEL:
 //
 //   displayed  =  image_<uuid>.src            (what is on screen)
@@ -114,6 +117,7 @@ const CASES = [
     'drop-onto-stack',
     'drop-onto-occluded-active-layer',
     'layer-deleted',
+    'layer-selection-locked',
     'stack-then-global-adjust',
     'edges-feather-detail',
 ];
@@ -236,6 +240,28 @@ async function runCase(UUID, kase) {
         window.dispatchEvent(new PointerEvent('pointerup', o(x1, y1)));
         await sleep(700);
     };
+    const canvasPoint = (u, v) => {
+        const r = el('image_').getBoundingClientRect();
+        return {x: r.left + r.width * u, y: r.top + r.height * v};
+    };
+    const dragCanvas = async (u, v, dx, dy) => {
+        const cont = el('imageContainer_');
+        const p = canvasPoint(u, v);
+        const o = (x, y, buttons) => ({bubbles: true, cancelable: true,
+            clientX: x, clientY: y, pointerId: 2, buttons,
+            isPrimary: true, pointerType: 'mouse'});
+        cont.dispatchEvent(new PointerEvent('pointerdown', o(p.x, p.y, 1)));
+        cont.dispatchEvent(new PointerEvent('pointermove', o(p.x + dx, p.y + dy, 1)));
+        cont.dispatchEvent(new PointerEvent('pointerup', o(p.x + dx, p.y + dy, 0)));
+        await sleep(700);
+    };
+    const wheelCanvas = async (u, v, deltaY) => {
+        const p = canvasPoint(u, v);
+        el('imageContainer_').dispatchEvent(new WheelEvent('wheel', {
+            bubbles: true, cancelable: true, clientX: p.x, clientY: p.y, deltaY,
+        }));
+        await sleep(700);
+    };
     // always drive the pipeline through a real control, never by hand
     const nudge = async (value) => {
         const g = el('gammaSlider_');
@@ -281,6 +307,7 @@ async function runCase(UUID, kase) {
     const top = st.layers[st.layers.length - 1];
 
     let edgeFeather = null;
+    let layerTargeting = null;
     switch (kase) {
         case 'single-layer-after-drop': await drop(mk(320, 240, 77)); break;
         case 'global-gamma':            await nudge(155); break;
@@ -328,6 +355,80 @@ async function runCase(UUID, kase) {
                                      await drop(mk(320, 240, 91)); break;
         case 'layer-deleted':        st.layers.splice(0, 1); st.activeLayer = 0;
                                      await nudge(102); break;
+        case 'layer-selection-locked': {
+            const bottom = st.layers[0];
+            const selected = st.layers[1];
+            const place = (L) => ({x: L.x, y: L.y, scale: L.scale});
+            const moved = (a, b) => Math.abs(a.x - b.x) > 0.01 || Math.abs(a.y - b.y) > 0.01;
+            const select = (idx) => {
+                const rows = [...el('layerList_').querySelectorAll('.forge-layer-row')];
+                rows[st.layers.length - 1 - idx].click();
+            };
+
+            // The selected bottom layer is under the smaller top layer here.
+            // A drag at the overlap must move the bottom layer, not select the
+            // topmost raster under the pointer.
+            select(0);
+            const overlapBottom0 = place(bottom), overlapTop0 = place(selected);
+            await dragCanvas(0.5, 0.5, 24, 16);
+            layerTargeting = {overlap: {
+                active: st.activeLayer,
+                selectedMoved: moved(overlapBottom0, place(bottom)),
+                otherMoved: moved(overlapTop0, place(selected)),
+            }};
+
+            // Select the smaller layer manually, then drag and zoom from a
+            // corner outside its raster. Empty selected-layer space still
+            // targets that selected layer.
+            select(1);
+            const outsideBottom0 = place(bottom), outsideTop0 = place(selected);
+            await dragCanvas(0.04, 0.04, 24, 16);
+            layerTargeting.outside = {
+                active: st.activeLayer,
+                selectedMoved: moved(outsideTop0, place(selected)),
+                otherMoved: moved(outsideBottom0, place(bottom)),
+            };
+            const zoomBottom0 = place(bottom), zoomTop0 = place(selected);
+            await wheelCanvas(0.04, 0.04, -100);
+            layerTargeting.zoom = {
+                active: st.activeLayer,
+                selectedScaled: Math.abs(selected.scale - zoomTop0.scale) > 0.001,
+                otherScaled: Math.abs(bottom.scale - zoomBottom0.scale) > 0.001,
+            };
+
+            // Adjustment handlers share target(); pen and eraser commit
+            // directly through activeLayerObj(). Exercise both paths after
+            // pointer activity outside the selected raster.
+            const bottomInvert0 = bottom.invert, topInvert0 = selected.invert;
+            el('invertButton_').click();
+            await sleep(700);
+            layerTargeting.adjustment = {
+                active: st.activeLayer,
+                selectedChanged: selected.invert !== topInvert0,
+                otherChanged: bottom.invert !== bottomInvert0,
+            };
+            el('penButton_').click();
+            await sleep(300);
+            const bottomStrokes0 = bottom.strokes.length, topStrokes0 = selected.strokes.length;
+            await dragCanvas(0.04, 0.04, 12, 8);
+            layerTargeting.pen = {
+                active: st.activeLayer,
+                selectedAdded: selected.strokes.length === topStrokes0 + 1,
+                otherAdded: bottom.strokes.length !== bottomStrokes0,
+            };
+            el('penEraserButton_').click();
+            await dragCanvas(0.04, 0.04, 12, 8);
+            const last = selected.strokes[selected.strokes.length - 1];
+            layerTargeting.erase = {
+                active: st.activeLayer,
+                selectedAdded: selected.strokes.length === topStrokes0 + 2,
+                otherAdded: bottom.strokes.length !== bottomStrokes0,
+                erase: !!(last && last.erase),
+            };
+            el('penButton_').click();
+            await sleep(700);
+            break;
+        }
         case 'stack-then-global-adjust': await nudge(168); break;
         case 'edges-feather-detail': {
             fc.loadImage(mkEdges());
@@ -357,6 +458,7 @@ async function runCase(UUID, kase) {
 
     const res = {case: kase, layers: st.layers.length, mode: st.mode || null};
     if (edgeFeather) res.edgeFeather = edgeFeather;
+    if (layerTargeting) res.layerTargeting = layerTargeting;
     let displayed, control;
     try {
         displayed = await pixels(el('image_').src);

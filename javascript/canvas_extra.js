@@ -2655,16 +2655,17 @@
 
         // ---- layers: continuously editable stack upstream of everything
         //
-        // The layers menu IS the tool (like the pen): while it is open, click
-        // selects the topmost layer under the pointer, drag moves the active
-        // layer, wheel scales it around the pointer. All transforms live in
-        // stage pixels; penView() supplies the exact screen<->stage mapping,
-        // so selection and dragging stay correct under pan/zoom/crop/rotation.
+        // The layers menu IS the tool (like the pen): its list is the ONLY
+        // layer-selection surface. A canvas drag moves that selected layer and
+        // the wheel scales it around the pointer, even when the pointer is
+        // outside the selected layer's raster or over another layer. All
+        // transforms live in stage pixels; penView() supplies the exact
+        // screen<->stage mapping under pan/zoom/crop/rotation.
 
         // the four stage-space corners of a layer, mapped to screen space
         function layerScreenQuad(view, L) {
             // local corners through the full placement transform: the quad
-            // (outline, ghost, hit test) follows the layer's flip/rotation
+            // (outline and ghost) follows the layer's flip/rotation
             return [
                 view.toScreen(layerLocalToStage(L, {x: 0, y: 0})),
                 view.toScreen(layerLocalToStage(L, {x: L.w, y: 0})),
@@ -2756,7 +2757,7 @@
                 const idx = i;
                 const row = document.createElement('div');
                 row.className = 'forge-layer-row' + (idx === st.activeLayer ? ' forge-layer-row-active' : '');
-                row.title = 'Active layer: click to select. The pen and eraser draw into the active layer; drag moves it, wheel scales it.';
+                row.title = 'Click to select this layer. Canvas clicks keep this selection; the pen and eraser draw into it, drag moves it, and the wheel scales it.';
                 const label = document.createElement('span');
                 label.className = 'forge-layer-label';
                 const scale = Math.round(L.scale * 100);
@@ -3206,27 +3207,12 @@
                 const view = penView();
                 if (!view) return;
                 const p = view.toOriginal(e.clientX, e.clientY);
-                // topmost layer under the pointer wins; empty space keeps the
-                // current selection (a control-map layer is mostly transparent,
-                // so the hit test uses the layer's bounding box, not pixels)
-                for (let i = st.layers.length - 1; i >= 0; i--) {
-                    const L = st.layers[i];
-                    // an empty layer with no strokes has nothing to see or
-                    // drag; its stage-sized bbox would eat every click
-                    if (!L.w || (!L.src && !L.strokes.length)) continue;
-                    // bbox test in the layer's LOCAL space, so it follows the
-                    // layer's flip/rotation exactly
-                    const q = stageToLayerLocal(L, p);
-                    if (q.x >= 0 && q.x <= L.w && q.y >= 0 && q.y <= L.h) {
-                        st.activeLayer = i;
-                        st.layerDrag = {px: p.x, py: p.y, startX: L.x, startY: L.y};
-                        try {
-                            container.setPointerCapture(e.pointerId);
-                        } catch (err) {}
-                        syncUI(); // the adjustment controls retarget to the new active layer
-                        break;
-                    }
-                }
+                const L = activeLayerObj();
+                if (!L) return;
+                st.layerDrag = {px: p.x, py: p.y, startX: L.x, startY: L.y};
+                try {
+                    container.setPointerCapture(e.pointerId);
+                } catch (err) {}
                 return;
             }
             if (st.mode === 'pick-gray') {
