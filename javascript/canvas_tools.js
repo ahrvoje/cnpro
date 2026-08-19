@@ -148,7 +148,7 @@
             },
             menu: {
                 id: 'layersBox', cls: 'forge-layers-box',
-                note: 'layers menu: the stack is armed while this menu is open - click selects the topmost layer under the pointer, drag moves the active layer, wheel scales it around the pointer. Rows run topmost-first; the pen/eraser draw into the active layer. The rightmost field of a row is that layer\'s opacity in percent (100 = opaque), applied when the stack is flattened.',
+                note: 'layers menu: the stack is armed while this menu is open - click selects the topmost layer under the pointer, drag moves the active layer, wheel scales it around the pointer. Rows run topmost-first; the pen/eraser draw into the active layer. The rightmost field of a row is that layer\'s opacity in percent (100 = opaque), applied when the stack is flattened. A row\'s ◎ button toggles focus view: only focused layers show, at 100%, inside a magenta canvas frame - a display aid on the overlay, never part of the composite.',
                 rows: [
                     raw('<div class="forge-cc-row">\n' +
                         '    <button id="layerAddButton_forge_mixin" class="forge-btn forge-no-select" title="Add an empty layer on top and make it active - fill it any way an image ever gets in: drag &amp; drop, paste, the open button, the ControlNet insert buttons, or just paint on it">＋</button>\n' +
@@ -161,7 +161,7 @@
             overlays: [
                 {id: 'layersOverlay', tag: 'canvas', cls: 'forge-layers-overlay',
                  attrs: 'width="1" height="1"',
-                 note: 'active-layer outline + drag/scale ghost while the layers tool is open'},
+                 note: 'active-layer outline + drag/scale ghost + focus view while the layers tool is open'},
             ],
         },
 

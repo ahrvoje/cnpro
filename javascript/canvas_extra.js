@@ -90,6 +90,13 @@
         // draws into the raster and must keep working at full strength while
         // the layer as a whole is faded, and the value stays freely reversible.
         opacity: 1,
+        // focus view (the row's ◎ button): while ANY layer has it, the layers
+        // overlay shows only the focused layers, at full opacity, over an
+        // opaque ground - a display aid drawn on the OVERLAY canvas only.
+        // Never part of the composite, so opacity/blend settings and what the
+        // control receives do not change; layers without the field (older
+        // sessions) read as unfocused.
+        focus: false,
         strokes: [], strokeKey: 0,
         // per-layer adjustments, same names as the global (whole-canvas) state
         // in st so every control can write to either one through target():
@@ -731,6 +738,12 @@
     // what the contract means by "the canvas" - the crop is committed the moment
     // it is dragged, not when the tool is closed. Everywhere else, display and
     // committed value are the same canvas object.
+    //
+    // FOCUS VIEW is not a second divergence in this channel: it never touches
+    // the display canvas or the gradio value. It is painted on the layers
+    // OVERLAY (updateLayersOverlay), covering the true canvas while the layers
+    // tool is open, and the magenta frame is its tell. The composite - and so
+    // what generates - is the full stack at the stored opacities throughout.
     //
     // TIMING is part of the contract: edits render through a 120 ms debounce,
     // and a Generate click flushes any pending render in the CAPTURE phase
@@ -2677,9 +2690,12 @@
         function updateLayersOverlay() {
             // visible while layer targeting is on, even mid picker/pen use -
             // the outline always shows what the controls act on
-            const L = (st.mode === 'layers' || st.showLayers) ? activeLayerObj() : null;
-            const view = L ? penView() : null;
-            if (!L || !view || !L.w) {
+            const targeting = st.mode === 'layers' || st.showLayers;
+            const L = targeting ? activeLayerObj() : null;
+            const focused = targeting ? st.layers.filter((l) => l.focus) : [];
+            const view = (L || focused.length) ? penView() : null;
+            const outline = !!(L && L.w);
+            if (!view || (!outline && !focused.length)) {
                 layersOverlay.style.display = 'none';
                 return;
             }
@@ -2697,39 +2713,68 @@
             }
             const ctx = layersOverlay.getContext('2d');
             ctx.clearRect(0, 0, w, h);
-            const q = layerScreenQuad(view, L);
-            // ghost: while the layer is being dragged/scaled the full pipeline
-            // render lags behind (it only runs debounced / on release), so the
-            // layer bitmap itself is drawn translucently at its live position.
-            // The affine transform is built from three mapped corners, which
-            // reproduces rotation and flip without knowing about them.
-            const ghost = st.layerDrag || performance.now() < (st.ghostUntil || 0);
-            if (ghost && (L.img || L.strokes.length)) {
-                const lc = ensureLayerCanvas(L);
+            // FOCUS VIEW: the focused layers alone, at 100% opacity, over an
+            // opaque ground that hides every other layer. Drawn HERE, on the
+            // overlay, so the composite underneath - the raster the control
+            // receives - is exactly what it was; unfocusing just uncovers it.
+            // The magenta frame marks the canvas bounds for orientation, since
+            // an isolated layer may leave most of the stage empty.
+            if (focused.length) {
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, w, h);
+                for (const l of st.layers) {
+                    if (!l.focus || !l.w || !(l.img || l.strokes.length)) continue;
+                    const lc = ensureLayerCanvas(l);
+                    const fq = layerScreenQuad(view, l);
+                    ctx.save();
+                    ctx.globalCompositeOperation = l.blend === 'lighten' ? 'lighten' : 'source-over';
+                    ctx.setTransform(
+                        (fq[1].x - fq[0].x) / l.w, (fq[1].y - fq[0].y) / l.w,
+                        (fq[3].x - fq[0].x) / l.h, (fq[3].y - fq[0].y) / l.h,
+                        fq[0].x, fq[0].y);
+                    ctx.drawImage(lc, 0, 0);
+                    ctx.restore();
+                }
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = '#ff2ec8';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(1, 1, w - 2, h - 2);
+            }
+            if (outline) {
+                const q = layerScreenQuad(view, L);
+                // ghost: while the layer is being dragged/scaled the full pipeline
+                // render lags behind (it only runs debounced / on release), so the
+                // layer bitmap itself is drawn translucently at its live position.
+                // The affine transform is built from three mapped corners, which
+                // reproduces rotation and flip without knowing about them.
+                const ghost = st.layerDrag || performance.now() < (st.ghostUntil || 0);
+                if (ghost && (L.img || L.strokes.length)) {
+                    const lc = ensureLayerCanvas(L);
+                    ctx.save();
+                    ctx.globalAlpha = 0.5;
+                    ctx.setTransform(
+                        (q[1].x - q[0].x) / L.w, (q[1].y - q[0].y) / L.w,
+                        (q[3].x - q[0].x) / L.h, (q[3].y - q[0].y) / L.h,
+                        q[0].x, q[0].y);
+                    ctx.drawImage(lc, 0, 0);
+                    ctx.restore();
+                }
                 ctx.save();
-                ctx.globalAlpha = 0.5;
-                ctx.setTransform(
-                    (q[1].x - q[0].x) / L.w, (q[1].y - q[0].y) / L.w,
-                    (q[3].x - q[0].x) / L.h, (q[3].y - q[0].y) / L.h,
-                    q[0].x, q[0].y);
-                ctx.drawImage(lc, 0, 0);
+                ctx.strokeStyle = '#3aa0ff';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([6, 4]);
+                ctx.beginPath();
+                ctx.moveTo(q[0].x, q[0].y);
+                for (let i = 1; i < 4; i++) ctx.lineTo(q[i].x, q[i].y);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#3aa0ff';
+                ctx.font = '11px sans-serif';
+                ctx.fillText('L' + (st.activeLayer + 1) + '  ' + Math.round(L.scale * 100) + '%',
+                    Math.min(q[0].x, q[1].x) + 4, Math.min(q[0].y, q[3].y) - 5);
                 ctx.restore();
             }
-            ctx.save();
-            ctx.strokeStyle = '#3aa0ff';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([6, 4]);
-            ctx.beginPath();
-            ctx.moveTo(q[0].x, q[0].y);
-            for (let i = 1; i < 4; i++) ctx.lineTo(q[i].x, q[i].y);
-            ctx.closePath();
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = '#3aa0ff';
-            ctx.font = '11px sans-serif';
-            ctx.fillText('L' + (st.activeLayer + 1) + '  ' + Math.round(L.scale * 100) + '%',
-                Math.min(q[0].x, q[1].x) + 4, Math.min(q[0].y, q[3].y) - 5);
-            ctx.restore();
             layersOverlay.style.display = 'block';
         }
         st.updateLayersOverlay = updateLayersOverlay;
@@ -2786,7 +2831,19 @@
                         fn();
                     });
                     row.appendChild(b);
+                    return b;
                 };
+                // FOCUS VIEW, a per-row toggle (several rows may hold it at
+                // once): purely a view, drawn by updateLayersOverlay - the
+                // composite is untouched, so no scheduleRender here and the
+                // stored opacity keeps its value while being SHOWN at 100%.
+                mkBtn('◎', L.focus
+                    ? 'Focus view is on: click to unfocus this layer; when no layer is focused the normal view returns'
+                    : 'Focus view: show only this layer (and any other focused layers) at 100% opacity; all other layers are hidden and a magenta frame marks the canvas bounds. Display only - opacity settings and what gets generated do not change',
+                    false, () => {
+                    L.focus = !L.focus;
+                    syncUI();
+                }).classList.toggle('forge-layer-focus-on', !!L.focus);
                 mkBtn('◍', L.blend === 'lighten'
                     ? 'Blend: lighten (per-pixel max) - the black background of a control map stays transparent to what lies below; click for normal'
                     : 'Blend: normal (opaque over) - click for lighten (per-pixel max), the union mode for bright-on-black control maps (canny/pose/depth)',

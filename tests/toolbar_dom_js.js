@@ -66,9 +66,23 @@ if (!fs.existsSync(CANVAS_HTML)) {
 const {JSDOM} = loadJsdom();
 
 const UUID = 'testuuid';
-const template = fs.readFileSync(CANVAS_HTML, 'utf8').split('forge_mixin').join(UUID);
+const OUT_UUID = 'testoutput';
+const rawTemplate = fs.readFileSync(CANVAS_HTML, 'utf8');
+const template = rawTemplate.split('forge_mixin').join(UUID);
 
-const dom = new JSDOM('<!doctype html><html><body>' + template + '</body></html>');
+// TWO CANVASES, WRAPPED THE WAY PRODUCTION WRAPS THEM
+// (lib_cnpro/controlnet_ui/controlnet_ui_group.py): the input canvas inside
+// .cnet-input-image-group, the output-mask canvas inside
+// .cnet-output-mask-group. The registry scopes the weight-mask slots to these
+// groups (G to both, C/M/F to the output group only, since the GCMF move
+// 2026-08-02), so a bare, unwrapped template puts EVERY scoped button
+// out-of-scope and can verify nothing about them. Most checks run on the
+// input canvas (UUID); the output one exists for the per-surface reveal.
+const dom = new JSDOM('<!doctype html><html><body>'
+    + '<div class="cnet-input-image-group">' + template + '</div>'
+    + '<div class="cnet-output-mask-group">'
+    + rawTemplate.split('forge_mixin').join(OUT_UUID) + '</div>'
+    + '</body></html>');
 const {window} = dom;
 
 // Both modules are browser IIFEs assigning onto window.
@@ -170,8 +184,37 @@ toolbarIds.forEach((id) => {
 
 out.reveal = {shown: shown, error: revealError, visible: visible, hidden: hidden};
 out.audit = api.audit(UUID);
+
+// ---- 5b. the OUTPUT-MASK canvas: inject + reveal + audit on the second
+// surface. All four mask slots are in scope there; the audit suppresses its
+// visibility half inside .cnet-output-mask-group (style.css hides the chrome
+// there on purpose - jsdom loads no stylesheet, so only the audit's own
+// suppression can keep it quiet).
+let outputError = null;
+let outputShown = null;
+try {
+    api.inject(OUT_UUID);
+    outputShown = api.revealToolbar(OUT_UUID);
+} catch (exc) {
+    outputError = String(exc && exc.stack || exc);
+}
+const outputVisible = [];
+const outputHidden = [];
+toolbarIds.forEach((id) => {
+    const n = document.getElementById(id + '_' + OUT_UUID);
+    if (!n) return;
+    (n.style.display === 'none' ? outputHidden : outputVisible).push(id);
+});
+out.outputReveal = {shown: outputShown, error: outputError,
+                    visible: outputVisible, hidden: outputHidden};
+out.outputAudit = api.audit(OUT_UUID);
+
 out.deferred = Object.keys(api.deferred());
 out.toolbarIds = toolbarIds;
+// the registry's {buttonId: selector} scope map, so the python side derives
+// the per-surface expectations instead of restating them
+const registry = global.window.cnproCanvasTools;
+out.scopesMap = registry && registry.scopes ? registry.scopes() : {};
 out.selfCheck = api.selfCheck();
 
 // ---- 6. injecting twice must be a no-op, not a duplication ------------------
@@ -320,8 +363,10 @@ const rowSpecs = [];
 out.rowSpecs = rowSpecs;
 // ...and how many labels actually carry a sizer in the DOM. If the walk above
 // ever stops seeing some rows again, these two numbers part company and the
-// test says so, instead of quietly checking fewer things.
+// test says so, instead of quietly checking fewer things. Counted on the
+// INPUT canvas only - the document holds a second (output-mask) canvas whose
+// sizers would double the number.
 out.sizerLabelsInDom = document.querySelectorAll(
-    '.forge-range-row .forge-toolbar-label[data-label-max]').length;
+    '.cnet-input-image-group .forge-range-row .forge-toolbar-label[data-label-max]').length;
 
 process.stdout.write(JSON.stringify(out));

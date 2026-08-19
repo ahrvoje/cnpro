@@ -570,7 +570,18 @@
                           e.target.closest('input[type="range"], input[type="number"]');
             // Menus only. The host's own scribble sliders in box-b are its
             // business, and it already has key+wheel shortcuts for them.
-            if (!input || !input.closest('.forge-toolbar-box-c')) return;
+            if (!input || !input.closest('.forge-toolbar-box-c')) {
+                // A wheel over the LAYER LIST between its inputs is a scroll:
+                // the list overflows past a few layers, and the browser's own
+                // scrolling does the work - it just must not ALSO reach the
+                // host's zoom handler on the container. So: stop, don't
+                // preventDefault. A list short enough not to scroll keeps the
+                // fall-through every other menu surface has.
+                const list = e.target && e.target.closest &&
+                             e.target.closest('.forge-layer-list');
+                if (list && list.scrollHeight > list.clientHeight) e.stopPropagation();
+                return;
+            }
             if (input.disabled) return;
 
             e.preventDefault();

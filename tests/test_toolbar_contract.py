@@ -24,12 +24,14 @@ WHAT IS PINNED HERE
 2. No deferred reason names a button that has left the registry.
 3. `canvas_extra.js` actually calls the contract, and does not rely on the class
    selector as its primary path.
-4. The weight-mask buttons specifically are revealed -- named, so that if the
-   generic rule is ever weakened this still fails.
+4. The weight-mask buttons specifically are revealed ON THEIR HOME SURFACE --
+   named, so that if the generic rule is ever weakened this still fails. Since
+   the GCMF move (2026-08-02) that is two surfaces: G reveals on the input
+   canvas AND the output-mask canvas, C/M/F on the output-mask canvas only.
 5. The renderer emits exactly the ids the registry claims, with the classes the
    reveal and the stylesheet key off.
-6. The reverse of 4, on the host's own canvases: the weight-mask buttons carry
-   a registry `scope` and stay hidden outside `.cnet-input-image-group`, where
+6. The reverse of 4, on the host's own canvases (no group wrapper): the
+   weight-mask buttons carry a registry `scope` and stay hidden there, where
    nothing wires them -- revealed there they are visible-but-inert chrome --
    and the audit does not cry wolf about it.
 
@@ -139,15 +141,29 @@ def test_runtime_behaviour(data):
         fail("the canvas modules logged problems at load:\n  %s"
              % "\n  ".join(data["selfCheckErrors"]))
 
-    # 4. a clean attach reveals everything except the deferred few
+    # 4. a clean attach ON THE INPUT CANVAS reveals everything except the
+    #    deferred few and the buttons scoped to another surface. Since the
+    #    GCMF move (2026-08-02) the C/M/F band masks belong to the OUTPUT
+    #    mask canvas only and G to both surfaces, so "everything visible"
+    #    stopped being true on any single canvas. The expected sets are
+    #    DERIVED from the registry's own scope strings, so reveal and
+    #    registry cannot drift apart without failing here.
+    scopes_map = data.get("scopesMap", {})
+
+    def scoped_off(surface):
+        return {b for b, sel in scopes_map.items()
+                if "." + surface not in [s.strip() for s in sel.split(",")]}
+
     clean = data["scenarios"]["clean"]
-    expected_shown = len(ids) - len(deferred)
+    input_hidden = deferred | scoped_off("cnet-input-image-group")
+    expected_shown = len(ids) - len(input_hidden)
     if clean["shown"] != expected_shown:
-        fail("revealToolbar reported %d controls shown, expected %d"
-             % (clean["shown"], expected_shown))
-    if sorted(clean["hidden"]) != sorted(deferred):
-        fail("after reveal, hidden = %r but only the deferred set %r should be hidden"
-             % (sorted(clean["hidden"]), sorted(deferred)))
+        fail("revealToolbar reported %d controls shown on the input canvas, "
+             "expected %d" % (clean["shown"], expected_shown))
+    if sorted(clean["hidden"]) != sorted(input_hidden):
+        fail("after reveal on the input canvas, hidden = %r but expected "
+             "deferred + output-side scoped = %r"
+             % (sorted(clean["hidden"]), sorted(input_hidden)))
     if clean["audit"]:
         fail("audit() complains about a correctly revealed toolbar: %r" % clean["audit"])
 
@@ -160,10 +176,33 @@ def test_runtime_behaviour(data):
              "that were never injected."
              % (len(clean["unresolved"]), len(ids), clean["unresolved"][:6]))
 
-    # 5. the controls that started all of this must actually end up visible
-    for wm in ("wmaskButton", "wmaskCoarseButton", "wmaskMidButton", "wmaskFineButton"):
-        if wm not in clean["visible"]:
-            fail("%s is not visible after a clean attach" % wm)
+    # 5. the controls that started all of this, per surface, BY NAME. The
+    #    derived check above would bless a registry whose scopes were edited
+    #    by accident; this one pins the current design: G is the one slot
+    #    both surfaces share, C/M/F live on the output-mask canvas only.
+    if "wmaskButton" not in clean["visible"]:
+        fail("wmaskButton (G) is not visible on the input canvas - it is "
+             "scoped to both surfaces and must reveal here")
+    for wm in ("wmaskCoarseButton", "wmaskMidButton", "wmaskFineButton"):
+        if wm not in clean["hidden"]:
+            fail("%s is revealed on the INPUT canvas - the band masks are "
+                 "output-side since the GCMF move and nothing wires them here" % wm)
+    output = data["scenarios"].get("outputSurface")
+    if output is None:
+        fail("the harness has no outputSurface scenario - the output-mask "
+             "canvas reveal is asserted nowhere")
+    else:
+        output_hidden = deferred | scoped_off("cnet-output-mask-group")
+        if sorted(output["hidden"]) != sorted(output_hidden):
+            fail("after reveal on the output-mask canvas, hidden = %r but "
+                 "expected %r" % (sorted(output["hidden"]), sorted(output_hidden)))
+        for wm in ("wmaskButton", "wmaskCoarseButton", "wmaskMidButton", "wmaskFineButton"):
+            if wm not in output["visible"]:
+                fail("%s is not visible on the output-mask canvas" % wm)
+        if output["audit"]:
+            fail("audit() cries wolf on the output-mask canvas, where style.css "
+                 "suppresses the chrome on purpose and the audit must skip the "
+                 "visibility half: %r" % output["audit"])
 
     # 6. audit must DETECT each failure mode, not merely run
     hidden = data["scenarios"]["oneHidden"]

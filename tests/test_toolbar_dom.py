@@ -139,22 +139,58 @@ def main():
              "aborts EVERYTHING - toolbar, Topaz probe, listeners - for this canvas."
              % ", ".join(absent_gate))
 
-    # 4. reveal must show exactly the non-deferred controls
+    # 4. reveal must show exactly the controls that belong on each surface.
+    #    The harness wraps the two canvases the way production does
+    #    (controlnet_ui_group.py): input inside .cnet-input-image-group,
+    #    output-mask inside .cnet-output-mask-group. Buttons the registry
+    #    scopes to the other surface stay hidden - the expected sets are
+    #    DERIVED from the registry's own scope strings.
+    scopes_map = data.get("scopesMap", {})
+
+    def scoped_off(surface):
+        return {b for b, sel in scopes_map.items()
+                if "." + surface not in [s.strip() for s in sel.split(",")]}
+
     rev = data["reveal"]
     if rev["error"]:
         fail("revealToolbar() threw:\n%s" % rev["error"])
-    expected_visible = [i for i in data["toolbarIds"] if i not in data["deferred"]]
+    input_hidden = set(data["deferred"]) | scoped_off("cnet-input-image-group")
+    expected_visible = [i for i in data["toolbarIds"] if i not in input_hidden]
     if sorted(rev["visible"]) != sorted(expected_visible):
-        fail("visible after reveal = %r\nexpected = %r"
+        fail("visible after reveal on the input canvas = %r\nexpected = %r"
              % (sorted(rev["visible"]), sorted(expected_visible)))
-    if sorted(rev["hidden"]) != sorted(data["deferred"]):
-        fail("hidden after reveal = %r but only the deferred set %r should be hidden"
-             % (sorted(rev["hidden"]), sorted(data["deferred"])))
+    if sorted(rev["hidden"]) != sorted(input_hidden):
+        fail("hidden after reveal on the input canvas = %r but expected "
+             "deferred + output-side scoped = %r"
+             % (sorted(rev["hidden"]), sorted(input_hidden)))
 
-    # 5. the controls this whole saga is about
-    for wm in ("wmaskButton", "wmaskCoarseButton", "wmaskMidButton", "wmaskFineButton"):
-        if wm not in rev["visible"]:
-            fail("%s is not visible after attaching to a real canvas" % wm)
+    # 5. the controls this whole saga is about, by name, per surface: G is
+    #    the one slot both surfaces share, C/M/F are output-side since the
+    #    GCMF move (2026-08-02).
+    if "wmaskButton" not in rev["visible"]:
+        fail("wmaskButton (G) is not visible after attaching to a real input canvas")
+    for wm in ("wmaskCoarseButton", "wmaskMidButton", "wmaskFineButton"):
+        if wm not in rev["hidden"]:
+            fail("%s is revealed on the INPUT canvas - the band masks are "
+                 "output-side and nothing wires them here" % wm)
+    orev = data.get("outputReveal")
+    if orev is None:
+        fail("the harness reports no outputReveal - the output-mask surface "
+             "was never attached, so the C/M/F reveal is unverified")
+    else:
+        if orev["error"]:
+            fail("inject/reveal threw on the output-mask canvas:\n%s" % orev["error"])
+        output_hidden = set(data["deferred"]) | scoped_off("cnet-output-mask-group")
+        if sorted(orev["hidden"]) != sorted(output_hidden):
+            fail("hidden after reveal on the output-mask canvas = %r but "
+                 "expected %r" % (sorted(orev["hidden"]), sorted(output_hidden)))
+        for wm in ("wmaskButton", "wmaskCoarseButton", "wmaskMidButton", "wmaskFineButton"):
+            if wm not in orev["visible"]:
+                fail("%s is not visible on the output-mask canvas" % wm)
+        if data.get("outputAudit"):
+            fail("audit() cries wolf on the output-mask canvas, where style.css "
+                 "suppresses the chrome on purpose and the audit must skip the "
+                 "visibility half:\n  %s" % "\n  ".join(data["outputAudit"][:6]))
 
     # 6. THE AUDIT MUST BE QUIET when nothing is wrong. This is the regression
     #    that offsetParent caused: 14 false alarms on every attach.

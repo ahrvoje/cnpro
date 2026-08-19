@@ -52,17 +52,24 @@ global.window = {};
 
 const UUID = 'testuuid';
 
+// The stub models a canvas inside one of CNPro's two group wrappers; SURFACE
+// names which one (scenarios switch it). Since the GCMF move (2026-08-02) the
+// registry scopes the G slot to BOTH surfaces via a comma list
+// ('.cnet-input-image-group, .cnet-output-mask-group') and C/M/F to the
+// output-mask group only - so closest() must EVALUATE the selector the way a
+// real DOM would for these class-only selectors. The exact string compare
+// that used to sit here silently un-scoped every button whose selector
+// gained a comma. Scenario `outOfScope` overrides closest with () => null to
+// model the host's own canvases (no group wrapper at all).
+let SURFACE = 'cnet-input-image-group';
+
 function fakeNode(key) {
     return {
         id: key,
         style: {display: 'none'},
         dataset: {},
-        // The stub models a canvas inside CNPro's INPUT group - the home
-        // container of the registry's `scope`d buttons (the weight-mask
-        // slots), so the reveal/audit contract is exercised where those
-        // buttons belong. Scenario `outOfScope` flips this to null to model
-        // the host's own canvases.
-        closest: (sel) => (sel === '.cnet-input-image-group' ? {className: 'cnet-input-image-group'} : null),
+        closest: (sel) => (SURFACE && String(sel).split(',').some((s) => s.trim() === '.' + SURFACE)
+            ? {className: SURFACE} : null),
         // audit() asks getComputedStyle via ownerDocument.defaultView; leaving
         // that undefined makes isHidden() fall back to the inline style, which
         // is exactly what this harness controls.
@@ -161,7 +168,8 @@ const isVisible = (id) => {
     return n ? n.style.display !== 'none' : false;
 };
 
-// 1. a clean attach: build the DOM, reveal, audit
+// 1. a clean attach on the INPUT canvas: build the DOM, reveal, audit. The
+//    output-side band masks (C/M/F) legitimately stay hidden here.
 buildDom(UUID, ownedIds);
 const shown = api.revealToolbar(UUID);
 scenarios.clean = {
@@ -173,6 +181,20 @@ scenarios.clean = {
     unresolved: toolbarIds.filter((id) => nodeFor(id) === null),
     audit: api.audit(UUID),
 };
+
+// 1b. the same attach on the OUTPUT-MASK canvas: all four mask slots are in
+//     scope there, and the audit must stay quiet - it suppresses the
+//     visibility half inside .cnet-output-mask-group (style.css hides the
+//     adjust chrome there on purpose, and this stub has no stylesheet).
+SURFACE = 'cnet-output-mask-group';
+buildDom(UUID, ownedIds);
+scenarios.outputSurface = {
+    shown: api.revealToolbar(UUID),
+    visible: toolbarIds.filter(isVisible),
+    hidden: toolbarIds.filter((id) => !isVisible(id)),
+    audit: api.audit(UUID),
+};
+SURFACE = 'cnet-input-image-group';
 
 // 2. a control that the reveal missed (the exact shape of the mask-button bug)
 buildDom(UUID, ownedIds);
@@ -229,6 +251,9 @@ process.stdout.write(JSON.stringify({
     renderedClasses: renderedClasses,
     deferred: deferred,
     scoped: Object.keys(registry.scopes ? registry.scopes() : {}),
+    // the full {buttonId: selector} map, so the python side can DERIVE the
+    // per-surface expectations from the registry instead of restating them
+    scopesMap: registry.scopes ? registry.scopes() : {},
     inject: {returned: injected, error: injectError},
     selfCheck: api.selfCheck(),
     selfCheckErrors: selfCheckErrors,

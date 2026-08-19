@@ -2300,10 +2300,10 @@
     align-items: stretch;
     gap: 2px;
     flex: 0 1 auto;
-    /* room for the label + the four buttons + `Opacity ◂ nnn ▸`; the layer
+    /* room for the label + the five buttons + `Opacity ◂ nnn ▸`; the layer
        name is the flexible part and ellipsises first when the canvas is
        narrower than this */
-    min-width: 250px;
+    min-width: 270px;
     max-height: 132px;
     overflow-y: auto;
 }
@@ -2339,7 +2339,7 @@
     padding-right: 2px;
 }
 
-/* the four per-layer buttons: same square discipline as the toolbar, one step
+/* the five per-layer buttons: same square discipline as the toolbar, one step
    down. The explicit size beats the generic menu-button rule above by
    specificity, so layer chips stay compact however the toolbar is scaled. */
 .forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-btn {
@@ -2352,6 +2352,15 @@
 .forge-layer-btn:disabled {
     opacity: 0.35;
     cursor: default;
+}
+
+/* focus view engaged on this row: the button carries the same magenta as the
+   canvas frame the overlay draws, so the cause of the isolated display is
+   findable from the list at a glance */
+.forge-layer-btn.forge-layer-focus-on {
+    background-color: rgba(255, 46, 200, 0.3) !important;
+    outline: 1px solid #ff2ec8;
+    outline-offset: -1px;
 }
 
 /* PER-LAYER OPACITY: `Opacity ◂ nnn ▸` at the right of each layer row.
