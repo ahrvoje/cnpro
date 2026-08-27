@@ -20,7 +20,7 @@ generates, and the result was made from a different picture. No error, no
 warning, and the screenshot in the bug report looks correct.
 
 This test decodes BOTH sides and compares every channel of every pixel across
-layers (moved, scaled, rotated, flipped, lighten-blended, partly off-stage,
+layers (moved, scaled, rotated, flipped, lighten/darken/average-blended, duplicated, partly off-stage,
 per-layer gamma/invert), global adjustments, geometry, crop, pen strokes and
 drops. There is no tolerance: both sides are PNG and no resampling happens
 between them, so the only correct answer is zero differing pixels.
@@ -176,6 +176,17 @@ def main():
         if not (targeting.get("erase") or {}).get("erase"):
             fail("eraser stroke was not recorded as an erase on the selected layer")
 
+    commute = (cases.get("layer-average-commute") or {}).get("commute")
+    if not commute:
+        fail("the average-blend order case did not report its comparison")
+    elif not commute.get("total"):
+        fail("the average-blend order case compared empty pictures - nothing was verified")
+    elif not commute.get("sameSize") or commute.get("diffValues") != 0:
+        fail("AVERAGE BLEND IS NOT ORDER-FREE: the same three average layers "
+             "upside down produced %r differing channel values (same size: %r). "
+             "The mode's one promise is that a stack of average layers means "
+             "the same in any order." % (commute.get("diffValues"), commute.get("sameSize")))
+
     return report(data)
 
 
@@ -200,6 +211,10 @@ def report(data=None):
     if (cases.get("layer-selection-locked") or {}).get("layerTargeting"):
         print("     Layer selection stayed manual across overlap/outside drag, "
               "zoom, adjustment, pen, and eraser")
+    commute = (cases.get("layer-average-commute") or {}).get("commute")
+    if commute:
+        print("     Average blend: three layers upside down -> %d differing values "
+              "over %d pixels" % (commute["diffValues"], commute["total"]))
     return 0
 
 

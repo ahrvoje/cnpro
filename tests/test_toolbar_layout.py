@@ -167,11 +167,36 @@ def main():
         fail("--cnpro-menu-w was never published on the toolbar, so every menu "
              "is falling back to the percentage width that collapses to "
              "min-content in the real app")
+    #
+    #    THE ONE EXCEPTION is declared, not inferred: a menu the registry marks
+    #    `fit: 'content'` (the layers menu - a column beside a list, nothing in
+    #    it wraps) is as wide as its content and CAPPED at the usable width.
+    #    Pinned to the canvas it paid for nothing in height and covered the
+    #    picture with backdrop; so here, where the canvas is far wider than
+    #    that content, such a menu must be narrower than the canvas - and never
+    #    wider.
+    fits = []
     for menu in geo["menus"]:
+        if menu.get("fit") == "content":
+            fits.append(menu["id"])
+            if menu["w"] > usable + 1.5:
+                fail("content-fit menu %r is %gpx wide against %gpx of usable "
+                     "canvas - the cap is not holding, so it is clipped"
+                     % (menu["id"], menu["w"], usable))
+            elif menu["w"] > usable - 1.5:
+                fail("content-fit menu %r is pinned to the canvas (%gpx of "
+                     "%gpx): it is being sized like a wrapping menu, and its "
+                     "backdrop covers the picture for nothing"
+                     % (menu["id"], menu["w"], usable))
+            continue
         if abs(menu["w"] - usable) > 1.5:
             fail("menu %r is %gpx wide against %gpx of usable canvas. The "
                  "contract is exactly the usable width: wider is clipped, "
                  "narrower costs height." % (menu["id"], menu["w"], usable))
+    if "layersBox" not in fits:
+        fail("the layers menu is no longer rendered as a content-fit menu "
+             "(data-cnpro-fit) - it is back to the canvas width, covering the "
+             "picture with backdrop it does not use")
 
     # 5. HORIZONTAL ROWS, and MORE THAN ONE PER LINE. A row taller than ~28px
     #    means the label went back above the slider. But rows can be short and

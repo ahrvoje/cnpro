@@ -1029,16 +1029,23 @@ Core-side (would need monkey-patching or shipping-with the addon):
   the project memory / agent notes. Since 2026-07 `canvas_extra.js` opens the
   pipeline with a LAYER STACK (stage = first upload's dims, layers each with
   own bitmap/transform/stroke list, continuously editable: click-select,
-  drag-move, wheel-scale, reorder, delete, per-layer normal/lighten blend —
-  lighten is the union mode for bright-on-black control maps — and per-layer
-  OPACITY, `Opacity ◂ nnn ▸` at the right of each layer row, composed at
+  drag-move, wheel-scale, reorder, move to top/bottom, duplicate, delete
+  (the last four act on the ACTIVE layer from the column beside the list),
+  per-layer normal/lighten/darken/average blend cycled by one row button and
+  shown as a fixed-width nor/max/min/avr tag after the label — lighten is the
+  union mode for bright-on-black control maps, darken its complement for
+  dark-on-white ones, average a per-pixel weighted mean (weight = opacity)
+  computed as ONE mean over a run of average layers plus what lies beneath,
+  in integer arithmetic, so an all-average stack reads the same in any order
+  (`drawLayers`, shared by the composite and the focus view) — and per-layer
+  OPACITY, `Opacity − nnn +` at the right of each layer row, composed at
   flatten time via `globalAlpha` so the layer fades as ONE picture and the
   value stays freely reversible. The steppers are BESIDE the number, not the
   browser's own up/down spin buttons: those stack two 6px glyphs inside the
   field, and in a field narrow enough for a layer row they overlap the third
   digit, so "100" read as "10". Sideways they cost width the row can give —
   the label prints the layer SCALE only when it is not 100%, which is what paid
-  for them — instead of height the digits cannot. A stepper click is 10, the
+  for them — instead of height the digits cannot. A stepper click is 5, the
   wheel over the number is 1 (canvas_nodes.js `wireWheel` covers number inputs
   as well as sliders, and it must: an unhandled wheel there zooms the canvas
   behind the menu). `layerAlpha()` is the one reader of the field and defaults

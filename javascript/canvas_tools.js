@@ -144,18 +144,36 @@
             id: 'layers',
             button: {
                 id: 'layersButton', icon: '⧉', control: 'adjust',
-                title: 'Layers menu: compose multiple images on one stage - add an image as a layer, click to select, drag to move, wheel to scale, reorder and delete in any order, and fade one with the opacity field at the right of its row; every tool below (edges included) operates on the flattened composite',
+                title: 'Layers menu: compose multiple images on one stage - add an image as a layer, click to select, drag to move, wheel to scale, reorder, duplicate and delete in any order, and fade one with the opacity field at the right of its row; every tool below (edges included) operates on the flattened composite',
             },
             menu: {
                 id: 'layersBox', cls: 'forge-layers-box',
-                note: 'layers menu: the stack is armed while this menu is open - click selects the topmost layer under the pointer, drag moves the active layer, wheel scales it around the pointer. Rows run topmost-first; the pen/eraser draw into the active layer. The rightmost field of a row is that layer\'s opacity in percent (100 = opaque), applied when the stack is flattened. A row\'s ◎ button toggles focus view: only focused layers show, at 100%, inside a magenta canvas frame - a display aid on the overlay, never part of the composite.',
+                // SIZED TO ITS CONTENT, not to the canvas. Every other menu is
+                // wrapping rows that fill whatever width they get; this one is
+                // a fixed column beside a list and fills nothing, so at the
+                // canvas width the toolbar's backdrop covered the picture for
+                // nothing. canvas_nodes.js renders this as data-cnpro-fit, its
+                // syncMenuWidth CAPS such a menu at the canvas instead of
+                // pinning it there, and style.css keys `width: max-content`
+                // off the same attribute - one declaration, three readers.
+                fit: 'content',
+                note: 'layers menu: the stack is armed while this menu is open - click selects the topmost layer under the pointer, drag moves the active layer, wheel scales it around the pointer. Rows run topmost-first; the pen/eraser draw into the active layer. The rightmost field of a row is that layer\'s opacity in percent (100 = opaque), applied when the stack is flattened. A row\'s □ button toggles focus view: only focused layers show, at 100%, inside a magenta canvas frame - a display aid on the overlay, never part of the composite. Its ◍ button cycles the blend, shown as a fixed-width three-letter tag after the label: nor (over), max (per-pixel max), min (per-pixel min), avr (weighted mean, order-free - a stack of avr layers means the same in any order). The column at the left acts on the ACTIVE layer: duplicate, move to top, move to bottom, delete.',
                 rows: [
-                    raw('<div class="forge-cc-row">\n' +
-                        '    <button id="layerAddButton_forge_mixin" class="forge-btn forge-no-select" title="Add an empty layer on top and make it active - fill it any way an image ever gets in: drag &amp; drop, paste, the open button, the ControlNet insert buttons, or just paint on it">＋</button>\n' +
-                        '    <span class="forge-toolbar-label">add layer</span>\n' +
+                    raw('<div class="forge-layer-actions">\n' +
+                        '    <div class="forge-cc-row">\n' +
+                        '        <button id="layerAddButton_forge_mixin" class="forge-btn forge-no-select forge-layer-add" title="Add an empty layer on top and make it active - fill it any way an image ever gets in: drag &amp; drop, paste, the open button, the ControlNet insert buttons, or just paint on it">＋ add layer</button>\n' +
+                        '    </div>\n' +
+                        // the ACTIVE-layer actions: one column, not one button per row
+                        '    <div class="forge-cc-row">\n' +
+                        '        <button id="layerDupButton_forge_mixin" class="forge-btn forge-no-select" title="Duplicate the active layer: the copy lands directly above it and becomes active">❐</button>\n' +
+                        '        <button id="layerTopButton_forge_mixin" class="forge-btn forge-no-select" title="Move the active layer to the top of the stack">⤒</button>\n' +
+                        '        <button id="layerBottomButton_forge_mixin" class="forge-btn forge-no-select" title="Move the active layer to the bottom of the stack">⤓</button>\n' +
+                        '        <button id="layerDeleteButton_forge_mixin" class="forge-btn forge-no-select" title="Delete the active layer (deleting the last one clears the canvas)">✕</button>\n' +
+                        '    </div>\n' +
                         '</div>\n' +
                         '<div id="layerList_forge_mixin" class="forge-layer-list"></div>',
-                        ['layerAddButton', 'layerList']),
+                        ['layerAddButton', 'layerDupButton', 'layerTopButton', 'layerBottomButton',
+                         'layerDeleteButton', 'layerList']),
                 ],
             },
             overlays: [

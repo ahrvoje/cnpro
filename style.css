@@ -2294,13 +2294,41 @@
     gap: 8px;
 }
 
+/* A CONTENT-FIT MENU: as wide as its content, not as the canvas. The
+   menu-width contract (.forge-toolbar-box-c above) exists for menus of
+   wrapping rows, which fill whatever width they are given; the layers menu is
+   a fixed column beside a list and fills nothing. At the canvas width the
+   toolbar's dark backdrop spanned the whole picture while the layer chrome
+   used a third of it - the tool was covering a working surface it did not
+   use. The toolbar is max-content, so it now ends where the widest of the
+   button row and this box ends.
+   Keyed on the attribute the renderer writes for the registry's
+   `fit: 'content'` (canvas_tools.js), the same one syncMenuWidth reads to CAP
+   the box inline instead of pinning it - so the three cannot disagree about
+   which menu this is. The cap keeps the list ellipsising on a canvas narrower
+   than its content, as before. */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c[data-cnpro-fit="content"] {
+    width: max-content;
+    max-width: var(--cnpro-menu-w, 100%);
+}
+
+/* the column beside the list: the `+ add layer` button above the four
+   ACTIVE-layer actions (duplicate, to top, to bottom, delete) */
+.forge-layer-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
 .forge-image-container[data-cnpro-nodes="1"] .forge-layer-list {
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 2px;
     flex: 0 1 auto;
-    /* room for the label + the five buttons + `Opacity ◂ nnn ▸`; the layer
+    /* room for the label + the blend tag + the four buttons + `Opacity − nnn +`; the layer
        name is the flexible part and ellipsises first when the canvas is
        narrower than this */
     min-width: 270px;
@@ -2339,7 +2367,29 @@
     padding-right: 2px;
 }
 
-/* the five per-layer buttons: same square discipline as the toolbar, one step
+/* the blend tag after the label: nor / max / min / avr, ALWAYS present and
+   in a FIXED-width column. It used to be a suffix of the label that appeared
+   only for non-default modes, and every button in the row shifted whenever it
+   came or went. */
+.forge-layer-blend-tag {
+    flex: 0 0 26px;
+    width: 26px;
+    text-align: center;
+    font-size: var(--cnpro-label-fs, 12px);
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+/* `+ add layer` is ONE button (the glyph and the words were a button beside a
+   label): as wide as its text, the row's height */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-add {
+    width: auto;
+    padding: 0 8px 0 5px;
+    white-space: nowrap;
+    font-size: var(--cnpro-label-fs, 12px);
+}
+
+/* the four per-layer buttons: same square discipline as the toolbar, one step
    down. The explicit size beats the generic menu-button rule above by
    specificity, so layer chips stay compact however the toolbar is scaled. */
 .forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-btn {
@@ -2354,6 +2404,15 @@
     cursor: default;
 }
 
+/* the focus button's glyph is an EMPTY square, drawn larger than the other
+   row glyphs: at the row's 9px a filled square was a dot beside the blend
+   dot, and a hollow one a speck - the outline needs pixels to be an outline */
+.forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-btn.forge-layer-focus {
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+}
+
 /* focus view engaged on this row: the button carries the same magenta as the
    canvas frame the overlay draws, so the cause of the isolated display is
    findable from the list at a glance */
@@ -2363,7 +2422,7 @@
     outline-offset: -1px;
 }
 
-/* PER-LAYER OPACITY: `Opacity ◂ nnn ▸` at the right of each layer row.
+/* PER-LAYER OPACITY: `Opacity − nnn +` at the right of each layer row.
    The arrows are SIDEWAYS, and the native spin buttons are gone entirely: two
    stacked 6px glyphs inside a field this narrow overlap the third digit, so
    "100" read as "10". Sideways they take width - which the row can give, since
@@ -2397,7 +2456,7 @@
     border: 1px solid rgba(255, 255, 255, 0.18);
     background: rgba(0, 0, 0, 0.25);
     color: inherit;
-    /* no spin box at all - the ◂ ▸ buttons ARE the stepper */
+    /* no spin box at all - the − + buttons ARE the stepper */
     appearance: textfield;
     -moz-appearance: textfield;
 }
@@ -2410,13 +2469,16 @@
 }
 
 /* the two steppers: narrower than a layer button (they are half a control, not
-   a control), same height so the group sits on one baseline */
+   a control), same height so the group sits on one baseline. The glyphs are a
+   bold − and +, large for the box: the ◂ ▸ they replaced rendered as two
+   specks at 10px, and a stepper whose direction cannot be read is a coin. */
 .forge-image-container[data-cnpro-nodes="1"] .forge-toolbar-box-c .forge-layer-opacity-step {
     width: 14px;
     min-width: 14px;
     height: 18px;
     padding: 0;
-    font-size: 10px;
+    font-size: 13px;
+    font-weight: 700;
     line-height: 1;
 }
 

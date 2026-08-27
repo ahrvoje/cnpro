@@ -178,6 +178,9 @@ const UUID = 'lay0ut';
             const widestRow = rows.length ? Math.max(...rows.map((x) => x.w)) : 0;
             menus.push({
                 id: box.id.replace('_' + uuid, ''),
+                // the registry's `fit` as rendered: 'content' menus are sized
+                // to what they hold, every other menu to the canvas
+                fit: box.dataset.cnproFit || '',
                 ...r,
                 rowCount: rows.length,
                 groupedRows: groupedRows,

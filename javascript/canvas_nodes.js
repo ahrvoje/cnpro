@@ -214,8 +214,11 @@
         const cls = ['forge-toolbar-box-c'];
         if (m.cls) cls.push(m.cls);
         let out = note(m.note, '            ');
-        out += '            <div class="' + cls.join(' ') + '" id="' + id(m.id) +
-               '" style="display: none;">\n';
+        // `fit: 'content'` menus carry the attribute syncMenuWidth and
+        // style.css size them by (see the layers menu in canvas_tools.js)
+        out += '            <div class="' + cls.join(' ') + '" id="' + id(m.id) + '"' +
+               (m.fit === 'content' ? ' data-cnpro-fit="content"' : '') +
+               ' style="display: none;">\n';
         const sizer = sizerAttr(menuLabelMaxes(m));
         out += renderRows(m.rows || [], sizer, '                ');
         out += '            </div>\n';
@@ -441,6 +444,16 @@
         // resolves against an indefinite containing block in gradio.
         toolbar.style.maxWidth = width + 'px';
         toolbar.querySelectorAll('.forge-toolbar-box-c').forEach((box) => {
+            // A CONTENT-FIT menu (registry `fit: 'content'`) is CAPPED at the
+            // canvas, never pinned to it: its content does not wrap, so the
+            // canvas width would only be dark backdrop over the picture. The
+            // stylesheet gives it `width: max-content` by the same attribute.
+            if (box.dataset.cnproFit === 'content') {
+                box.style.width = '';
+                box.style.minWidth = '';
+                box.style.maxWidth = width + 'px';
+                return;
+            }
             box.style.width = width + 'px';
             // Any leftovers from the previous contract would still be in force:
             // an inline min-width of the old button-row measurement pins a menu

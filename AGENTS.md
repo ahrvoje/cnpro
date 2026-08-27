@@ -346,7 +346,7 @@ boundaries where the value can be produced twice and disagree:
 
 * **canvas → gradio channel.** `test_canvas_parity.py` decodes the displayed
   `<img>` and the `logical_image_background` value and compares every channel of
-  every pixel, across layers (moved, scaled, rotated, flipped, lighten-blended,
+  every pixel, across layers (moved, scaled, rotated, flipped, lighten/darken/average-blended - average also flipped upside down and required bit-identical - duplicated,
   partly off-stage, per-layer gamma/invert), global adjustments, geometry, crop,
   strokes and drops. No tolerance — both sides are PNG with no resampling
   between them. The crop tool being open is the contract's one stated exception

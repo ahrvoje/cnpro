@@ -75,12 +75,40 @@
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const FULL_CROP = () => ({x: 0, y: 0, w: 1, h: 1});
 
+    // per-layer BLEND, one table read by everything that draws a layer (the
+    // composite and the focus view, both through drawLayers) and by the row's
+    // ◍ button, which cycles the keys in this order. A mode is one entry here;
+    // a mode that exists in one drawer and not the other cannot be written.
+    // `tag` is the row's ALWAYS-shown three-letter code (fixed width, so the
+    // row never shifts when the mode changes); `op` is the canvas composite
+    // operation, or `mean` for the one mode the canvas cannot do itself.
+    //   normal   composites over (photos)
+    //   lighten  per-pixel max - the union semantics bright-on-black control
+    //            maps (canny, pose, depth) need, since their opaque black
+    //            background would otherwise occlude everything underneath
+    //   darken   per-pixel min - the complement, for dark-on-white maps
+    //            (scribble, line art on paper) whose white background would
+    //            otherwise occlude everything underneath
+    //   average  per-pixel WEIGHTED MEAN, weight = opacity x pixel alpha - the
+    //            order-free mode: `normal` at 10% over 90% is not 90% over 10%,
+    //            a mean of the two is. See drawLayers for the exact semantics.
+    const BLENDS = {
+        normal: {op: 'source-over', tag: 'nor',
+                 title: 'Blend: normal (opaque over) - click for lighten (per-pixel max), the union mode for bright-on-black control maps (canny/pose/depth)'},
+        lighten: {op: 'lighten', tag: 'max',
+                  title: 'Blend: lighten (per-pixel max) - the black background of a control map stays transparent to what lies below; click for darken'},
+        darken: {op: 'darken', tag: 'min',
+                 title: 'Blend: darken (per-pixel min) - the white background of a dark-on-white map (scribble, line art) stays transparent to what lies below; click for average'},
+        average: {mean: true, tag: 'avr',
+                  title: 'Blend: average (weighted mean, weight = opacity) - order-free: a run of average layers and what lies beneath them form ONE mean, so a stack that is all average is the plain mean of its layers in any order; click for normal'},
+    };
+    const BLEND_CYCLE = Object.keys(BLENDS);
+    // an unknown/absent mode (older sessions) draws as normal
+    const blendOf = (l) => BLENDS[l.blend] || BLENDS.normal;
+
     // a fresh layer at identity transform; x/y are the layer's top-left in
     // stage pixels, strokes are pen/eraser polylines in LAYER-LOCAL pixels.
-    // blend: 'normal' composites over (photos), 'lighten' takes the per-pixel
-    // max - the union semantics bright-on-black control maps (canny, pose,
-    // depth) need, since their opaque black background would otherwise
-    // occlude everything underneath.
+    // blend: a BLENDS key, see above.
     const newLayer = (src) => ({
         src: src, img: null, w: 0, h: 0,
         x: 0, y: 0, scale: 1,
@@ -331,6 +359,99 @@
         return isFinite(v) ? clamp(v, 0, 1) : 1;
     }
 
+    // draw layer l's raster at its STAGE placement: position, scale, and
+    // flip/rotate about the layer's center - the transform
+    // layerLocalToStage/stageToLayerLocal must mirror exactly
+    function placeOnStage(ctx, l) {
+        const lc = ensureLayerCanvas(l);
+        const cw = l.w * l.scale, ch = l.h * l.scale;
+        ctx.save();
+        ctx.translate(l.x + cw / 2, l.y + ch / 2);
+        if (l.flipH) ctx.scale(-1, 1);
+        ctx.rotate((l.rotate || 0) * Math.PI / 180);
+        ctx.drawImage(lc, -cw / 2, -ch / 2, cw, ch);
+        ctx.restore();
+    }
+
+    // Draws `layers` bottom-up onto ctx (W x H) by their blend modes. Both
+    // drawers of a stack come through here - the composite (stage space,
+    // placeOnStage) and the focus view (screen space) - so a mode means the
+    // same thing on screen and in what generates. `place(ctx, l)` draws one
+    // layer's raster at its placement in ctx's coordinate space, at full
+    // alpha; `weightOf(l)` is the whole-layer opacity, 0..1 (1 in the focus
+    // view, which shows at 100%).
+    //
+    // normal/lighten/darken are the canvas' own composite operations, drawn
+    // with the opacity as globalAlpha: composed once, over the layer's
+    // finished raster, so a semi-transparent layer fades as ONE picture
+    // instead of per stroke - what "layer opacity" means everywhere else.
+    //
+    // AVERAGE is a per-pixel WEIGHTED MEAN, weight = opacity x pixel alpha.
+    // A RUN of consecutive average layers, together with the composite so far
+    // beneath them, forms ONE mean - not a chain of pairwise averages, which
+    // would weigh the top layer 1/2 and the bottom 1/2^n and so depend on the
+    // order. Hence: a stack that is all average is the plain (weighted) mean
+    // of its layers whatever their order; a lone average layer averages with
+    // what lies below it. The sums are integers (alpha 0..255 x opacity in
+    // thousandths), so the result is BIT-IDENTICAL in any order, not merely
+    // close - tests/canvas_parity_js.js flips a stack and demands zero
+    // differing values. Output alpha is the largest member weight: covered as
+    // much as the most opaque member.
+    function drawLayers(ctx, W, H, layers, place, weightOf) {
+        let i = 0;
+        while (i < layers.length) {
+            const l = layers[i];
+            if (weightOf(l) <= 0) { i++; continue; } // fully transparent: nothing to draw
+            if (!blendOf(l).mean) {
+                ctx.save();
+                ctx.globalCompositeOperation = blendOf(l).op;
+                ctx.globalAlpha = weightOf(l);
+                place(ctx, l);
+                ctx.restore();
+                i++;
+                continue;
+            }
+            const n = W * H;
+            const sumW = new Float64Array(n), maxW = new Float64Array(n);
+            const sumR = new Float64Array(n), sumG = new Float64Array(n), sumB = new Float64Array(n);
+            const add = (data, wInt) => {
+                for (let p = 0, q = 0; p < n; p++, q += 4) {
+                    const w = data[q + 3] * wInt;
+                    if (!w) continue;
+                    sumW[p] += w;
+                    if (w > maxW[p]) maxW[p] = w;
+                    sumR[p] += w * data[q];
+                    sumG[p] += w * data[q + 1];
+                    sumB[p] += w * data[q + 2];
+                }
+            };
+            // the composite so far is a member at its own alpha (opacity 1)
+            add(ctx.getImageData(0, 0, W, H).data, 1000);
+            const tmp = document.createElement('canvas');
+            tmp.width = W;
+            tmp.height = H;
+            const tctx = tmp.getContext('2d', {willReadFrequently: true});
+            for (; i < layers.length && blendOf(layers[i]).mean; i++) {
+                const wInt = Math.round(weightOf(layers[i]) * 1000);
+                if (wInt <= 0) continue;
+                tctx.clearRect(0, 0, W, H);
+                place(tctx, layers[i]);
+                add(tctx.getImageData(0, 0, W, H).data, wInt);
+            }
+            const out = ctx.createImageData(W, H);
+            const d = out.data;
+            for (let p = 0, q = 0; p < n; p++, q += 4) {
+                const w = sumW[p];
+                if (!w) continue;
+                d[q] = Math.round(sumR[p] / w);
+                d[q + 1] = Math.round(sumG[p] / w);
+                d[q + 2] = Math.round(sumB[p] / w);
+                d[q + 3] = Math.round(maxW[p] / 1000);
+            }
+            ctx.putImageData(out, 0, 0);
+        }
+    }
+
     // the flattened stage: every layer drawn at its transform, in z-order.
     // THIS is the "image" the whole historical pipeline runs on.
     function ensureCompositeCanvas(st) {
@@ -339,29 +460,8 @@
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, st.stageW);
         canvas.height = Math.max(1, st.stageH);
-        const ctx = canvas.getContext('2d');
-        for (const l of st.layers) {
-            const alpha = layerAlpha(l);
-            if (alpha <= 0) continue; // fully transparent: nothing to draw
-            const lc = ensureLayerCanvas(l);
-            ctx.globalCompositeOperation = l.blend === 'lighten' ? 'lighten' : 'source-over';
-            // per-layer flip/rotate about the layer's center - the transform
-            // layerLocalToStage/stageToLayerLocal must mirror exactly
-            const cw = l.w * l.scale, ch = l.h * l.scale;
-            ctx.save();
-            // whole-layer opacity: composed here, once, over the layer's
-            // finished raster - so a semi-transparent layer fades as ONE
-            // picture instead of per stroke, which is what "layer opacity"
-            // means everywhere else it exists
-            ctx.globalAlpha = alpha;
-            ctx.translate(l.x + cw / 2, l.y + ch / 2);
-            if (l.flipH) ctx.scale(-1, 1);
-            ctx.rotate((l.rotate || 0) * Math.PI / 180);
-            ctx.drawImage(lc, -cw / 2, -ch / 2, cw, ch);
-            ctx.restore();
-        }
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1;
+        const ctx = canvas.getContext('2d', {willReadFrequently: true});
+        drawLayers(ctx, canvas.width, canvas.height, st.layers, placeOnStage, layerAlpha);
         st.compositeCanvas = canvas;
         st.compositeKey = key;
         return canvas;
@@ -1386,6 +1486,10 @@
         const layersBtn = el('layersButton_');
         const layersBox = el('layersBox_');
         const layerAddBtn = el('layerAddButton_');
+        const layerDupBtn = el('layerDupButton_');
+        const layerTopBtn = el('layerTopButton_');
+        const layerBottomBtn = el('layerBottomButton_');
+        const layerDeleteBtn = el('layerDeleteButton_');
         const layerList = el('layerList_');
         const layersOverlay = el('layersOverlay_');
         const overlay = el('cropOverlay_');
@@ -1416,6 +1520,8 @@
             'penOverlay': penOverlay, 'penCursor': penCursor, 'penPickButton': penPickBtn,
             'penEraserButton': penEraserBtn, 'layersButton': layersBtn,
             'layersBox': layersBox, 'layerAddButton': layerAddBtn,
+            'layerDupButton': layerDupBtn, 'layerTopButton': layerTopBtn,
+            'layerBottomButton': layerBottomBtn, 'layerDeleteButton': layerDeleteBtn,
             'layerList': layerList, 'layersOverlay': layersOverlay,
         };
         const missingNodes = Object.keys(REQUIRED).filter((k) => !REQUIRED[k]);
@@ -2720,21 +2826,24 @@
             // The magenta frame marks the canvas bounds for orientation, since
             // an isolated layer may leave most of the stage empty.
             if (focused.length) {
-                ctx.fillStyle = '#000';
-                ctx.fillRect(0, 0, w, h);
-                for (const l of st.layers) {
-                    if (!l.focus || !l.w || !(l.img || l.strokes.length)) continue;
+                const shown = st.layers.filter((l) => l.focus && l.w && (l.img || l.strokes.length));
+                drawLayers(ctx, w, h, shown, (c, l) => {
                     const lc = ensureLayerCanvas(l);
                     const fq = layerScreenQuad(view, l);
-                    ctx.save();
-                    ctx.globalCompositeOperation = l.blend === 'lighten' ? 'lighten' : 'source-over';
-                    ctx.setTransform(
+                    c.save();
+                    c.setTransform(
                         (fq[1].x - fq[0].x) / l.w, (fq[1].y - fq[0].y) / l.w,
                         (fq[3].x - fq[0].x) / l.h, (fq[3].y - fq[0].y) / l.h,
                         fq[0].x, fq[0].y);
-                    ctx.drawImage(lc, 0, 0);
-                    ctx.restore();
-                }
+                    c.drawImage(lc, 0, 0);
+                    c.restore();
+                }, () => 1); // focus view shows at 100%
+                // the opaque ground goes UNDER what was drawn, afterwards: an
+                // average layer must be a mean of layers, not of a layer and
+                // the black behind it
+                ctx.globalCompositeOperation = 'destination-over';
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, w, h);
                 ctx.globalCompositeOperation = 'source-over';
                 ctx.strokeStyle = '#ff2ec8';
                 ctx.lineWidth = 2;
@@ -2811,15 +2920,22 @@
                     // scale only when it is NOT 100%: it said nothing at the
                     // default, and the ~40px it took is what the opacity field
                     // now occupies - so the row did not have to get wider for
-                    // it. Everything else in this label already works that way
-                    // (blend, strokes and the adjustment marker all appear only
-                    // when they apply).
+                    // it. The strokes count and the adjustment marker work the
+                    // same way; the blend mode does NOT - it has its own
+                    // fixed-width column after the label, see below.
                     + (scale === 100 ? '' : ' @' + scale + '%')
-                    + (L.blend === 'lighten' ? ' max' : '')
                     + (L.strokes.length ? ' ✎' + L.strokes.length : '')
                     // the layer carries its own adjustments (flip/rotation/color)
                     + (L.flipH || L.rotate || layerColorAdjusted(L) ? ' ±' : '');
                 row.appendChild(label);
+                // the blend mode, ALWAYS shown (nor/max/min/avr) in a column of
+                // fixed width: a tag that came and went with the mode shifted
+                // every button in the row each time it changed
+                const tag = document.createElement('span');
+                tag.className = 'forge-layer-blend-tag';
+                tag.textContent = blendOf(L).tag;
+                tag.title = blendOf(L).title;
+                row.appendChild(tag);
                 const mkBtn = (txt, title, disabled, fn) => {
                     const b = document.createElement('button');
                     b.className = 'forge-btn forge-no-select forge-layer-btn';
@@ -2837,18 +2953,19 @@
                 // once): purely a view, drawn by updateLayersOverlay - the
                 // composite is untouched, so no scheduleRender here and the
                 // stored opacity keeps its value while being SHOWN at 100%.
-                mkBtn('◎', L.focus
+                const focusBtn = mkBtn('□', L.focus
                     ? 'Focus view is on: click to unfocus this layer; when no layer is focused the normal view returns'
                     : 'Focus view: show only this layer (and any other focused layers) at 100% opacity; all other layers are hidden and a magenta frame marks the canvas bounds. Display only - opacity settings and what gets generated do not change',
                     false, () => {
                     L.focus = !L.focus;
                     syncUI();
-                }).classList.toggle('forge-layer-focus-on', !!L.focus);
-                mkBtn('◍', L.blend === 'lighten'
-                    ? 'Blend: lighten (per-pixel max) - the black background of a control map stays transparent to what lies below; click for normal'
-                    : 'Blend: normal (opaque over) - click for lighten (per-pixel max), the union mode for bright-on-black control maps (canny/pose/depth)',
-                    false, () => {
-                    L.blend = L.blend === 'lighten' ? 'normal' : 'lighten';
+                });
+                focusBtn.classList.add('forge-layer-focus');
+                focusBtn.classList.toggle('forge-layer-focus-on', !!L.focus);
+                // BLEND cycles through BLENDS in table order on the one button
+                mkBtn('◍', blendOf(L).title, false, () => {
+                    const i = BLEND_CYCLE.indexOf(L.blend);
+                    L.blend = BLEND_CYCLE[(i + 1) % BLEND_CYCLE.length];
                     syncUI();
                     scheduleRender(st, false);
                 });
@@ -2872,20 +2989,9 @@
                     syncUI();
                     scheduleRender(st, false);
                 });
-                mkBtn('✕', 'Delete the layer (deleting the last one clears the canvas)', false, () => {
-                    st.layers.splice(idx, 1);
-                    // a stack with neither raster nor strokes left is an empty
-                    // canvas, not a pile of blank layers
-                    if (!st.layers.length || !stackOriginal(st)) {
-                        fc.removeImage();
-                        return;
-                    }
-                    if (st.activeLayer >= st.layers.length) st.activeLayer = st.layers.length - 1;
-                    st.original = stackOriginal(st);
-                    syncUI();
-                    scheduleRender(st, false);
-                });
-                // OPACITY, last in the row: `Opacity ◂ nnn ▸`, 0..100 whole
+                // (delete, duplicate and move-to-top/bottom act on the ACTIVE
+                // layer from the column beside the list, not from every row)
+                // OPACITY, last in the row: `Opacity − nnn +`, 0..100 whole
                 // percent, 100 = fully opaque.
                 //
                 // The arrows are BESIDE the number, not the browser's own
@@ -2894,7 +3000,7 @@
                 // the third digit - "100" rendered as "10" with an arrow over
                 // it. Sideways, they cost width the row can give (the label
                 // above already dropped its "@100%" scale for it) instead of
-                // height the digits cannot. A click steps 10; the wheel over
+                // height the digits cannot. A click steps 5; the wheel over
                 // the field steps 1 (canvas_nodes.js wireWheel covers number
                 // inputs too, and it must - an unhandled wheel here zooms the
                 // canvas behind the menu); typing works as well.
@@ -2915,7 +3021,7 @@
                 opacity.value = String(Math.round(layerAlpha(L) * 100));
                 const opTitle = 'Layer opacity in percent: 100 = fully opaque, 0 = invisible. '
                     + 'Applies to the whole layer as one picture (strokes included) and is '
-                    + 'freely reversible. Arrows step 10, the wheel over the number steps 1.';
+                    + 'freely reversible. Buttons step 5, the wheel over the number steps 1.';
                 opacity.title = opTitle;
                 opLabel.title = opTitle;
                 opacity.classList.toggle('forge-layer-opacity-faded', layerAlpha(L) < 1);
@@ -2952,9 +3058,9 @@
                     });
                     return b;
                 };
-                group.appendChild(step('◂', -10, 'Less opaque (-10)'));
+                group.appendChild(step('−', -5, 'Less opaque (-5)'));
                 group.appendChild(opacity);
-                group.appendChild(step('▸', 10, 'More opaque (+10)'));
+                group.appendChild(step('+', 5, 'More opaque (+5)'));
                 row.appendChild(group);
                 row.addEventListener('click', () => {
                     st.activeLayer = idx;
@@ -2963,6 +3069,13 @@
                 });
                 layerList.appendChild(row);
             }
+            // the action column beside the list follows the ACTIVE layer: a
+            // move that cannot go anywhere is disabled rather than a no-op
+            const active = activeLayerObj() ? st.activeLayer : -1;
+            layerDupBtn.disabled = active < 0;
+            layerDeleteBtn.disabled = active < 0;
+            layerTopBtn.disabled = active < 0 || active === st.layers.length - 1;
+            layerBottomBtn.disabled = active <= 0;
             if (keepFocus) {
                 const again = layerList.querySelector(
                     '.forge-layer-opacity[data-layer-index="' + keepFocus.layer + '"]');
@@ -3075,6 +3188,62 @@
                 rebuildLayerList();
                 updateLayersOverlay();
             });
+        });
+
+        // THE ACTION COLUMN beside the list. Every button here acts on the
+        // ACTIVE layer, which is why each exists once instead of once per row
+        // (the rows keep only what is meaningful per row: focus, blend, one
+        // step up/down, opacity). Disabled states are set by rebuildLayerList.
+        function moveActiveLayerTo(pos) {
+            const L = activeLayerObj();
+            if (!L || pos === st.activeLayer) return;
+            st.layers.splice(st.activeLayer, 1);
+            st.layers.splice(pos, 0, L);
+            st.activeLayer = pos;
+            st.original = stackOriginal(st);
+            syncUI();
+            scheduleRender(st, false);
+        }
+        layerTopBtn.addEventListener('click', () => moveActiveLayerTo(st.layers.length - 1));
+        layerBottomBtn.addEventListener('click', () => moveActiveLayerTo(0));
+
+        layerDupBtn.addEventListener('click', function () {
+            const L = activeLayerObj();
+            if (!L) return;
+            // Copy the layer's STATE, key by key from a fresh layer's own
+            // field list, so a field added to newLayer is copied without this
+            // code knowing about it. What stays fresh: the raster caches
+            // (rebuilt from src + strokes + adjustments), and focus, which is
+            // a view choice about one row. The decoded <img> is immutable and
+            // keyed on src, so the copy shares it instead of decoding again.
+            const FRESH = new Set(['img', 'focus', 'baseCanvas', 'baseKey', 'canvas', 'canvasKey']);
+            const C = newLayer(L.src);
+            for (const k of Object.keys(C)) {
+                if (FRESH.has(k) || !(k in L)) continue;
+                const v = L[k];
+                C[k] = (v && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;
+            }
+            C.img = L.img;
+            st.layers.splice(st.activeLayer + 1, 0, C);
+            st.activeLayer += 1;
+            st.original = stackOriginal(st);
+            syncUI();
+            scheduleRender(st, false);
+        });
+
+        layerDeleteBtn.addEventListener('click', function () {
+            if (!activeLayerObj()) return;
+            st.layers.splice(st.activeLayer, 1);
+            // a stack with neither raster nor strokes left is an empty
+            // canvas, not a pile of blank layers
+            if (!st.layers.length || !stackOriginal(st)) {
+                fc.removeImage();
+                return;
+            }
+            if (st.activeLayer >= st.layers.length) st.activeLayer = st.layers.length - 1;
+            st.original = stackOriginal(st);
+            syncUI();
+            scheduleRender(st, false);
         });
 
         function layerDragMove(e) {

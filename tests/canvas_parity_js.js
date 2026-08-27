@@ -108,6 +108,8 @@ const CASES = [
     'layer-rotated',
     'layer-flipped',
     'layer-blend-lighten',
+    'layer-blend-darken',
+    'layer-blend-average',
     'layer-opacity',
     'layer-partly-offstage',
     'per-layer-gamma',
@@ -117,6 +119,8 @@ const CASES = [
     'drop-onto-stack',
     'drop-onto-occluded-active-layer',
     'layer-deleted',
+    'layer-duplicated',
+    'layer-average-commute',
     'layer-selection-locked',
     'stack-then-global-adjust',
     'edges-feather-detail',
@@ -308,6 +312,7 @@ async function runCase(UUID, kase) {
 
     let edgeFeather = null;
     let layerTargeting = null;
+    let commute = null;
     switch (kase) {
         case 'single-layer-after-drop': await drop(mk(320, 240, 77)); break;
         case 'global-gamma':            await nudge(155); break;
@@ -333,6 +338,9 @@ async function runCase(UUID, kase) {
         case 'layer-rotated':        top.rotate = 27; await nudge(102); break;
         case 'layer-flipped':        top.flipH = true; await nudge(102); break;
         case 'layer-blend-lighten':  top.blend = 'lighten'; await nudge(102); break;
+        case 'layer-blend-darken':   top.blend = 'darken'; await nudge(102); break;
+        // a lone average layer: a mean with what lies below, at its opacity
+        case 'layer-blend-average':  top.blend = 'average'; top.opacity = 0.6; await nudge(102); break;
         // whole-layer opacity is composed at flatten time, so it is exactly the
         // kind of edit that can show on the canvas and never reach the control
         case 'layer-opacity':        top.opacity = 0.4; await nudge(102); break;
@@ -355,6 +363,38 @@ async function runCase(UUID, kase) {
                                      await drop(mk(320, 240, 91)); break;
         case 'layer-deleted':        st.layers.splice(0, 1); st.activeLayer = 0;
                                      await nudge(102); break;
+        // through the real button: the copy is a fresh object built from the
+        // active layer's fields, and a field the copy misses shows here first
+        case 'layer-duplicated':     top.x = 60; top.opacity = 0.7; top.blend = 'lighten';
+                                     el('layerDupButton_').click(); await sleep(600);
+                                     await nudge(102); break;
+        // THE ORDER-FREE PROMISE: three average layers at three opacities,
+        // partly overlapping, then the same stack upside down - the control
+        // must be bit-identical, not close (integer sums, see drawLayers)
+        case 'layer-average-commute': {
+            st.addLayerFromDataUrl(mk(260, 200, 63));
+            await sleep(900);
+            const ops = [1, 0.6, 0.35];
+            st.layers.forEach((l, k) => { l.blend = 'average'; l.opacity = ops[k]; l.x = 30 * k; l.y = 20 * k; });
+            await nudge(102);
+            const before = await pixels(bgTa().value);
+            st.layers.reverse();
+            st.activeLayer = 0;
+            // re-render at the SAME gamma: the nudge is only the trigger, and
+            // a different value would compare two colour pipelines, not two
+            // stack orders (102 vs 103 differed in 4718 channel values)
+            await nudge(103);
+            await nudge(102);
+            const after = await pixels(bgTa().value);
+            const sameSize = !!(before && after && before.w === after.w && before.h === after.h);
+            let diffValues = -1;
+            if (sameSize) {
+                diffValues = 0;
+                for (let i = 0; i < before.data.length; i++) if (before.data[i] !== after.data[i]) diffValues++;
+            }
+            commute = {sameSize, diffValues, total: before ? before.w * before.h : 0};
+            break;
+        }
         case 'layer-selection-locked': {
             const bottom = st.layers[0];
             const selected = st.layers[1];
@@ -459,6 +499,7 @@ async function runCase(UUID, kase) {
     const res = {case: kase, layers: st.layers.length, mode: st.mode || null};
     if (edgeFeather) res.edgeFeather = edgeFeather;
     if (layerTargeting) res.layerTargeting = layerTargeting;
+    if (commute) res.commute = commute;
     let displayed, control;
     try {
         displayed = await pixels(el('image_').src);
