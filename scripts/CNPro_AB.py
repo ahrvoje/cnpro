@@ -55,6 +55,15 @@ the first thing the panel asks. Four kinds:
   guessed weight is how a good LoRA gets rejected, which is why the list is
   a row control and not a constant. Two LoRAs at once means two rows - a row
   is one LoRA slot, and its list is the candidates for that slot.
+* **Canvas layer** - ONE layer of ONE canvas, at an opacity from the row's
+  list (percent, as the layer row's own field shows it: 100 is opaque, 0 is
+  the layer gone). The canvas is any of this tab's canvases that holds an
+  image - a unit's Input tabs, and on img2img the host's own init-image
+  canvas - and the layer is one of that canvas' layers. Nothing else about
+  the canvas is varied; to vary two layers, add two rows. The stack of a
+  canvas exists only in the browser (gradio receives the flattened
+  composite), so the row's choices come from the page and every duel side
+  asks the page for its composite - see THE CANVAS LAYER ROUND TRIP.
 
 WHAT AN ANSWER IS
 -----------------
@@ -290,6 +299,38 @@ the very duels the resumed observations came from, so clearing them would
 leave a record that starts mid-session. START opens a new record; RESUME
 never does.
 
+THE CANVAS LAYER ROUND TRIP
+---------------------------
+A Canvas layer row is the one kind whose value python cannot apply by
+itself: a canvas' layers, their blend modes, the levels, the edges tool and
+the crop all live in javascript/canvas_extra.js, and gradio only ever holds
+the flattened result. Re-compositing here would be a second copy of that
+pipeline, which drifts - so the page does it, through three hidden
+components of the panel (javascript/cnpro_ab.js is the other half):
+
+    inventory   the page lists this tab's canvases that hold an image and
+                each one's layers with their current opacity, once a second
+                and only when it changes; the row's canvas and layer
+                dropdowns are built from it, and Reset remembers the
+                opacity a search started from out of it.
+    request     before a side renders, run() writes the composites it needs
+    reply       - canvas, layer, opacity, for every Canvas layer row - into
+                the tick's request channel and BLOCKS; the page renders each
+                composite OFF-SCREEN (the live canvas does not change) and
+                writes the PNGs back; run() puts them where the generation
+                reads its image from - the unit's Input slot, or
+                `p.init_images` for the img2img canvas - and generates.
+    set         Set, Set GOOD and Reset hand a layer opacity to the page,
+                which writes it into the live canvas' layer, the one place
+                that holds it.
+
+The composite for a given opacity is part of the recipe (the
+`<canvas>.layer<n>.opacity=` token), so the render cache still keys on the
+whole generation, and a request is only ever made for a side that is about
+to be generated. The wait has a deadline, unlike a grade's: the page
+answers a request by itself, so silence means the page is gone or the
+script did not load, and the search stops saying so.
+
 WHAT IS DELIBERATELY NOT DONE HERE
 ----------------------------------
 Nothing is written back to the UI while searching. Every duel gets a shallow
@@ -350,7 +391,28 @@ GRADES = 11
 
 TARGET_PROMPT = "Prompt"
 TARGET_LORA = "LoRA"
-GLOBAL_TARGETS = [TARGET_PROMPT, TARGET_LORA]
+TARGET_CANVAS = "Canvas layer"
+GLOBAL_TARGETS = [TARGET_PROMPT, TARGET_LORA, TARGET_CANVAS]
+
+#: A canvas of this tab, named by WHERE IT LIVES - `u<unit>.in<slot>` for a
+#: unit's Input tab (slot 1-based, as the tabs are labelled), `img2img` for
+#: the host's own init-image canvas. Minted by javascript/cnpro_ab.js
+#: (keyOf) from the canvas' block id; read here for the row's label, the
+#: recipe token and the place the composite goes. A uuid would not do: it is
+#: new on every page load, and the row's choice has to outlive one.
+RE_CANVAS_KEY = re.compile(r"^(?:u(\d+)\.in(\d+)|img2img)$")
+
+#: The recipe token of one layer's opacity: `<canvas>.layer<n>.opacity`,
+#: n 1-based as the layer list labels it (L1, L2, ...). One expression,
+#: read by Set and written by the recipe, so the two cannot disagree.
+RE_LAYER_TOKEN = re.compile(r"^(u\d+\.in\d+|img2img)\.layer(\d+)\.opacity$")
+
+#: How long a duel side waits for the page to hand back a composite. A
+#: grade waits forever because a person answers it; this is answered by the
+#: page itself within a second, so silence means the page is closed or the
+#: script is not loaded, and a search that waits on it forever looks like
+#: a search that hung.
+CANVAS_WAIT_SECONDS = 60
 
 MODE_MODEL = "Model"
 MODE_PROFILE = "Profile"
@@ -424,7 +486,8 @@ CONFIG_HEADER = "DNA1"
 #: text) instead of v1's weight_low/weight_high/point and the panel-global
 #: weight step; the "field" key and the render_winner/weight_step tail
 #: entries are gone.
-EXPORT_VERSION = 2
+#: v3: rows carry "canvas" and "layer" (the Canvas layer row's choices).
+EXPORT_VERSION = 3
 
 RE_MODEL_HASH = re.compile(r"\s*\[[0-9a-fA-F]{6,}\]\s*$")
 RE_UNIT_LABEL = re.compile(r"^Unit\s+(\d+)")
@@ -711,6 +774,112 @@ def _target_choices(flags):
     return [_unit_label(i) for i, on in enumerate(flags) if on] + GLOBAL_TARGETS
 
 
+def _canvas_unit_slot(key):
+    """(unit index, input slot 1-based) of a unit canvas key, or None for
+    the host's img2img canvas."""
+    match = RE_CANVAS_KEY.match(str(key or ""))
+    if match is None:
+        raise ValueError(f"{WHO}: {key!r} is not a canvas key.")
+    if match.group(1) is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _canvas_label(key):
+    """What the row's dropdown shows for a canvas key."""
+    where = _canvas_unit_slot(key)
+    if where is None:
+        return "img2img image"
+    return f"Unit {where[0]} · Input {where[1]}"
+
+
+def _layer_index(text):
+    """The 0-based layer index behind a layer dropdown value ("L2" -> 1)."""
+    match = re.match(r"^L(\d+)", str(text or "").strip())
+    return int(match.group(1)) - 1 if match else None
+
+
+def _parse_inventory(text):
+    """The page's canvas inventory: [{key, layers: [{size, opacity}]}].
+
+    Only well-formed entries survive: the text crossed a browser boundary
+    and is read by dropdown builders and the run's validation, neither of
+    which should raise over a malformed line.
+    """
+    try:
+        entries = json.loads(text) if text else []
+    except (TypeError, ValueError):
+        return []
+    inventory = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) \
+                or not RE_CANVAS_KEY.match(str(entry.get("key", ""))):
+            continue
+        layers = []
+        for layer in entry.get("layers") or []:
+            if not isinstance(layer, dict):
+                continue
+            try:
+                opacity = int(layer.get("opacity", 100))
+            except (TypeError, ValueError):
+                opacity = 100
+            layers.append({"size": str(layer.get("size", "")),
+                           "opacity": min(max(opacity, 0), 100)})
+        if layers:
+            inventory.append({"key": entry["key"], "layers": layers})
+    return inventory
+
+
+#: The page's last inventory per tab, as _parse_inventory returns it. Read
+#: by the row's dropdown builders, by _setup to validate a Canvas layer row
+#: before a duel is spent, and by run() for the opacity Reset restores.
+_CANVAS_INVENTORY = {"txt2img": [], "img2img": []}
+
+
+def _canvas_choices(inventory):
+    return [(_canvas_label(entry["key"]), entry["key"]) for entry in inventory]
+
+
+def _layer_choices(inventory, key):
+    for entry in inventory:
+        if entry["key"] == key:
+            return [f"L{index + 1} · {layer['size']}"
+                    for index, layer in enumerate(entry["layers"])]
+    return []
+
+
+def _channel_html(message):
+    """A python -> page message as the body of a hidden gr.HTML.
+
+    Escaped into a <pre>, which the page reads back as textContent: the
+    JSON never becomes markup, and an HTML update is a DOM mutation the
+    page's observer sees at once - a textbox write would be neither (see
+    javascript/cnpro_ab.js).
+    """
+    if not message:
+        return ""
+    return ("<pre class='cnpro-ab-channel-body'>"
+            + html.escape(json.dumps(message, sort_keys=True)) + "</pre>")
+
+
+def _layer_message(seq, values):
+    """{key: {layer index: alpha}} out of `token: percent` pairs, wrapped
+    for the page. The page reads alpha 0..1 (the layer's own unit); the
+    recipe writes percent (the layer row's)."""
+    layers = {}
+    for token, value in values.items():
+        match = RE_LAYER_TOKEN.match(str(token))
+        if match is None:
+            continue
+        try:
+            alpha = min(max(float(value), 0.0), 100.0) / 100.0
+        except (TypeError, ValueError):
+            continue
+        layers.setdefault(match.group(1), {})[
+            str(int(match.group(2)) - 1)] = alpha
+    return {"seq": seq, "layers": layers}
+
+
 def _short_model(name):
     """Model name without its ` [hash]` suffix - trace summaries are narrow."""
     return RE_MODEL_HASH.sub("", str(name or "")).strip() or "None"
@@ -776,16 +945,22 @@ class Gene:
     KIND_POINT = "point"
     KIND_PROMPT = "prompt"
     KIND_LORA = "lora"
+    KIND_LAYER = "layer"
 
     def __init__(self, kind, row, unit_index=None, field=None, values=None,
                  line=None, point_indices=None, prompt_mode=PROMPT_REPLACE,
-                 loras=None, weights=None):
+                 loras=None, weights=None, canvas=None, layer=None):
         self.kind = kind
         self.row = row
         self.unit_index = unit_index
         self.field = field
         self.values = list(values or [])
         self.line = line
+        # A Canvas layer row: which canvas (a key, see RE_CANVAS_KEY) and
+        # which of its layers (0-based, bottom first, as the page holds
+        # them); `values` is then the opacity list, in percent.
+        self.canvas = canvas
+        self.layer = layer
         # The GROUP of drawn points a Profile-points row moves together -
         # one offset, several knots, which is what edits an interval of the
         # curve instead of one point of it.
@@ -816,7 +991,18 @@ class Gene:
             return f"U{self.unit_index} {self.line}[{indices}]"
         if self.kind == Gene.KIND_PROMPT:
             return f"Prompt ({self.prompt_mode.lower()})"
+        if self.kind == Gene.KIND_LAYER:
+            return f"{_canvas_label(self.canvas)} L{self.layer + 1}"
         return "LoRA"
+
+    @property
+    def layer_token(self):
+        """The recipe token a Canvas layer row writes - see RE_LAYER_TOKEN."""
+        return f"{self.canvas}.layer{self.layer + 1}.opacity"
+
+    def override(self, point):
+        """(canvas key, layer index, alpha 0..1) - what the page composites."""
+        return self.canvas, self.layer, float(self.chosen(point)) / 100.0
 
     def dimensions(self, ab_search):
         """The search dimensions this row declares.
@@ -842,8 +1028,12 @@ class Gene:
             # candidate learns its own weight curve from its own duels.
             weight.parent = pick
             return [pick, weight]
+        # Numeric labels for the numeric kinds: Dimension.choice keeps their
+        # metric, so evidence transfers between neighbouring factors,
+        # offsets and opacities.
         labels = ([f"{v:g}" for v in self.values]
-                  if self.kind in (Gene.KIND_PROFILE, Gene.KIND_POINT)
+                  if self.kind in (Gene.KIND_PROFILE, Gene.KIND_POINT,
+                                   Gene.KIND_LAYER)
                   else self.values)
         return [ab_search.Dimension.choice(self.name, labels)]
 
@@ -877,6 +1067,9 @@ class Gene:
         if self.kind == Gene.KIND_POINT:
             # The neutral offset: the profile exactly as drawn.
             return self.values[index] if 0 <= index < len(self.values) else 0.0
+        if self.kind == Gene.KIND_LAYER:
+            # Opaque: the layer as it composes with no row at all.
+            return self.values[index] if 0 <= index < len(self.values) else 100.0
         return self.values[index] if 0 <= index < len(self.values) else ""
 
     def describe(self, point):
@@ -896,6 +1089,8 @@ class Gene:
             # column of signed offsets already reads as "the profile
             # untouched", and the box's own header says what 0 means.
             return f"{self.name} {value:+g}" if value else f"{self.name} 0"
+        if self.kind == Gene.KIND_LAYER:
+            return f"{self.name} {value:g}%"
         if self.kind == Gene.KIND_SETTING and self.field == "model":
             return f"{self.name} = {_short_model(value)}"
         return f"{self.name} = {_elide(value)}"
@@ -1075,6 +1270,13 @@ def _config_string(genes, point, base_units, base_prompt, seed=None,
         for field in dict.fromkeys(f for f in fields if f != "enabled"):
             tokens.append(f"u{index}.{field}={_escape(getattr(unit, field, ''))}")
 
+    # A layer's opacity is what the page composited the canvas at for this
+    # image: without it the recipe reproduces the canvas as it is on screen,
+    # which is exactly the configuration the row exists to search away from.
+    for gene in genes:
+        if gene.kind == Gene.KIND_LAYER:
+            tokens.append(f"{gene.layer_token}={gene.chosen(point):g}")
+
     # ALWAYS, even when the search never touched them. A recipe that omits the
     # prompt because no row varied it is a recipe that reproduces nothing: the
     # person pasting it has some other prompt in the box, and one that omits
@@ -1222,6 +1424,10 @@ def _configuration_for_point(genes, point, initial_settings):
         unit = units[index]
         for field in fields:
             settings[f"u{index}.{field}"] = _jsonable(getattr(unit, field))
+
+    for gene in genes:
+        if gene.kind == Gene.KIND_LAYER:
+            settings[gene.layer_token] = float(gene.chosen(point))
 
     if any(gene.kind in (Gene.KIND_PROMPT, Gene.KIND_LORA) for gene in genes):
         settings["prompt"] = _compose_prompt(
@@ -1641,6 +1847,54 @@ def _data_uri_to_image(text):
         return None
 
 
+def _input_field(slot):
+    """The unit field holding Input `slot` (1-based, as the canvas key
+    names it): `image` for the first tab, `image_<slot>` after - the
+    dataclass' own naming (external_code.ControlNetUnit.input_images)."""
+    return "image" if slot == 1 else f"image_{slot}"
+
+
+def _layer_initial_settings(genes, tab):
+    """`token: percent` of every Canvas layer row's layer, as the page
+    last listed it - the opacity a search starts from, for Reset."""
+    inventory = {entry["key"]: entry for entry in _CANVAS_INVENTORY[tab]}
+    settings = {}
+    for gene in genes:
+        if gene.kind != Gene.KIND_LAYER:
+            continue
+        entry = inventory.get(gene.canvas)
+        if entry is not None and 0 <= gene.layer < len(entry["layers"]):
+            settings[gene.layer_token] = float(
+                entry["layers"][gene.layer]["opacity"])
+    return settings
+
+
+def _apply_composites(pc, args, base_args, cnpro, composites):
+    """The page's composites into the generation, by canvas key.
+
+    Decoded the way the host decodes a canvas channel
+    (modules_forge/forge_canvas/canvas.py, base64_to_image): PNG to RGBA,
+    as a numpy array for a unit's Input slot - the unit canvases are
+    numpy=True - and as a PIL image for `p.init_images`, which the img2img
+    canvas hands the host as PIL. Same bytes the live composite would have
+    produced, same decoding, so the generation cannot tell the two apart.
+    """
+    from PIL import Image
+    import numpy as np
+    for key, uri in composites.items():
+        image = Image.open(io.BytesIO(
+            base64.b64decode(uri.partition("base64,")[2]))).convert("RGBA")
+        where = _canvas_unit_slot(key)
+        if where is None:
+            pc.init_images = [image]
+            continue
+        unit_index, slot = where
+        index = cnpro.args_from + unit_index
+        if args[index] is base_args[index]:
+            args[index] = copy.copy(args[index])
+        setattr(args[index], _input_field(slot), np.array(image))
+
+
 def _space_signature(space):
     """What makes two searches comparable: the dimensions, exactly.
 
@@ -1809,9 +2063,7 @@ def _export_html(payload):
     row_count = int(payload.get("row_count", 1))
     row_lines = []
     for index, row in enumerate(payload.get("rows", [])[:row_count]):
-        parts = [f"{key} = {row.get(key)!r}" for key in (
-            "target", "mode", "choices", "line", "values",
-            "prompt_mode", "loras", "weights", "points")]
+        parts = [f"{key} = {row.get(key)!r}" for key in ROW_FIELDS]
         row_lines.append((f"row {index + 1}", " · ".join(parts)))
     sections.append("<h2>Search rows</h2>" + table(row_lines))
     sections.append("<h2>Settings</h2>" + table(
@@ -1999,8 +2251,72 @@ class _Session:
         # which is what keeps the button's count meaningful on a freshly
         # loaded page.
         self.capacity = None
+        # The canvas round trip - see THE CANVAS LAYER ROUND TRIP. A request
+        # is `{seq, overrides}` while run() waits for the page's composites
+        # and None otherwise; the tick paints it into the request channel,
+        # the page answers into `canvas_reply` with the same seq.
+        self.canvas_seq = 0
+        self.canvas_request = None
+        self.canvas_reply = None
 
     # -- written by run() ------------------------------------------------
+
+    def composites(self, overrides):
+        """The page's composites for `overrides` ({key: {index: alpha}}),
+        as {key: data URL}. Blocks until they arrive.
+
+        A deadline, unlike await_grade: nobody has to act for this answer,
+        so silence past CANVAS_WAIT_SECONDS means the page is closed or
+        javascript/cnpro_ab.js did not load, and the search is told so
+        rather than left waiting on a composite nothing will send. The
+        wait is a 0.25s poll for the same reason await_grade's is: the
+        host's Interrupt writes `shared.state`, not this condition.
+        """
+        with self.condition:
+            self.canvas_seq += 1
+            seq = self.canvas_seq
+            self.canvas_request = {"seq": seq, "overrides": overrides}
+            self.canvas_reply = None
+            deadline = time.monotonic() + CANVAS_WAIT_SECONDS
+            try:
+                while True:
+                    reply = self.canvas_reply
+                    if isinstance(reply, dict) and reply.get("seq") == seq:
+                        if reply.get("error"):
+                            raise RuntimeError(
+                                f"{WHO}: the page could not composite a "
+                                f"canvas - {reply['error']}.")
+                        images = reply.get("images")
+                        missing = [key for key in overrides
+                                   if not isinstance(images, dict)
+                                   or not images.get(key)]
+                        if missing:
+                            raise RuntimeError(
+                                f"{WHO}: the page returned no composite for "
+                                f"{', '.join(missing)}.")
+                        return images
+                    if self.stopping or state.interrupted \
+                            or getattr(state, "stopping_generation", False):
+                        return None
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(
+                            f"{WHO}: the page did not answer the canvas "
+                            f"request within {CANVAS_WAIT_SECONDS}s. A "
+                            f"Canvas layer row needs the page open with "
+                            f"javascript/cnpro_ab.js loaded (hard-refresh "
+                            f"the browser).")
+                    self.condition.wait(0.25)
+            finally:
+                self.canvas_request = None
+
+    def extend_initial(self, settings):
+        """More initial settings, learned after the press - the layer
+        opacities the page reported, which no component holds."""
+        with self.condition:
+            if not isinstance(self.initial_settings, dict):
+                self.initial_settings = {}
+            for token, value in (settings or {}).items():
+                self.initial_settings.setdefault(str(token), _jsonable(value))
 
     def start(self, resumed=False):
         # solver_state is deliberately NOT cleared: it is the tab's learned
@@ -2033,6 +2349,7 @@ class _Session:
             self.generation += 1
             self.image_a = self.image_b = None
             self.duel = self.graded = 0
+            self.canvas_request = self.canvas_reply = None
             self.status = "starting"
             if not resumed:
                 self.result = ""
@@ -2060,6 +2377,7 @@ class _Session:
             self.launching = False
             self.awaiting = False
             self.generating = None
+            self.canvas_request = None
             self.status = status
             self.generation += 1
 
@@ -2233,6 +2551,24 @@ class _Session:
 
     # -- written by the panel --------------------------------------------
 
+    def deliver_composites(self, text):
+        """The page's answer to the request channel - `{seq, images}` or
+        `{seq, error}` as JSON. A stale seq is dropped: the request it
+        answers is over, and its images belong to a side already rendered
+        or abandoned."""
+        try:
+            reply = json.loads(text) if text else None
+        except (TypeError, ValueError):
+            return False
+        with self.condition:
+            request = self.canvas_request
+            if not isinstance(reply, dict) or request is None \
+                    or reply.get("seq") != request.get("seq"):
+                return False
+            self.canvas_reply = reply
+            self.condition.notify_all()
+            return True
+
     def grade(self, score, disliked=False, similar=None):
         """An A-vs-B grade, 0..10. ONE click, whichever of the three rows it
         lands on.
@@ -2356,6 +2692,7 @@ class _Session:
                 "result": self.result,
                 "summary": self.summary,
                 "trace": "\n".join(self.trace),
+                "canvas_request": self.canvas_request,
             }
 
 
@@ -2459,7 +2796,15 @@ def _host_component(name, is_img2img):
 #: Components per row that run() reads. The LoRA picker and its two tool
 #: buttons are UI-only (they fill the textbox next to them and are never
 #: read), so they are not among them.
-ROW_ARGS = 9
+#: ONE ROW'S VALUES, IN ORDER - the order gradio hands them to run(), the
+#: order Export writes them and Import reads them, and the names the
+#: session file uses for them. Every enumeration of a row's controls goes
+#: through `_Row.args()`, which follows this tuple, so adding a control is
+#: one entry here plus one attribute on _Row: nothing else can be left at
+#: the old width.
+ROW_FIELDS = ("target", "mode", "choices", "line", "values", "prompt_mode",
+              "loras", "weights", "points", "canvas", "layer")
+ROW_ARGS = len(ROW_FIELDS)
 
 #: THE ROWS ARE THE WHOLE ARGUMENT LIST. There used to be two trailing
 #: switches - "New seed each duel" and "Resume search" - and both are gone:
@@ -2816,18 +3161,33 @@ class Script(scripts.Script):
         # per answer, and the controls change with the search phase.
         seen = gr.State({})
 
+        # The Canvas layer row's channels to and from the page - see THE
+        # CANVAS LAYER ROUND TRIP and javascript/cnpro_ab.js. The two the
+        # page WRITES are textboxes (updateInput reaches gradio); the two
+        # it READS are HTML, hidden by class rather than by visible=False
+        # so their content still updates in the DOM for the observer.
+        canvases = gr.Textbox(value="", visible=False,
+                              elem_id=f"{eid}_canvases")
+        canvas_reply = gr.Textbox(value="", visible=False,
+                                  elem_id=f"{eid}_canvas_reply")
+        canvas_request = gr.HTML(value="", elem_id=f"{eid}_canvas_request",
+                                 elem_classes=["cnpro-ab-channel"])
+        canvas_set = gr.HTML(value="", elem_id=f"{eid}_canvas_set",
+                             elem_classes=["cnpro-ab-channel"])
+
         targets, unreachable = _set_targets(groups, is_img2img)
         self._wire_rows(rows, row_count, headline, add, remove, rescan,
                         enables, type_filters, count)
+        self._wire_canvases(canvases, rows, tab)
         self._wire_duel(poller, seen, images_row, image_a, image_b,
                         config, trace,
                         (grade_buttons, similar_buttons, dislike_buttons),
                         (interesting_a, interesting_b), (good, n_good),
                         capacity_state, run_toggle, resume, rows, row_count,
-                        is_img2img, targets)
+                        is_img2img, targets, canvas_request, canvas_reply)
         self._wire_set(apply_button, set_good_button, reset_button,
                        config, set_note, targets, unreachable,
-                       rows, row_count, is_img2img)
+                       rows, row_count, is_img2img, canvas_set)
         self._wire_io(export_button, import_button, session_file, io_note,
                       rows, row_count, headline,
                       targets, _canvas_targets(groups), len(groups),
@@ -2836,9 +3196,7 @@ class Script(scripts.Script):
         # Returned in the order run() unpacks them - see _read_rows.
         controls = [row_count]
         for row in rows:
-            controls.extend([row.target, row.mode, row.choices,
-                             row.line, row.values, row.prompt_mode, row.loras,
-                             row.weights, row.point])
+            controls.extend(row.args())
         return controls
 
     # -- one row ---------------------------------------------------------
@@ -2860,6 +3218,18 @@ class Script(scripts.Script):
             mode = gr.Dropdown(
                 label="how", choices=MODES, value=MODE_MODEL, visible=False,
                 scale=2, elem_id=f"{rid}_mode")
+            # A Canvas layer row's two picks. Their CHOICES come from the
+            # page (see _wire_canvases): which canvases hold an image and
+            # how many layers each has is browser state, and the panel is
+            # built before any of it exists. The canvas value is its key
+            # (RE_CANVAS_KEY), shown under its label; the layer value is
+            # "L<n> · <size>", read back by _layer_index.
+            canvas = gr.Dropdown(
+                label="canvas", choices=[], value=None, visible=False,
+                scale=3, elem_id=f"{rid}_canvas")
+            layer = gr.Dropdown(
+                label="layer", choices=[], value=None, visible=False,
+                scale=2, elem_id=f"{rid}_layer")
             choices = gr.Dropdown(
                 label="models", choices=[], value=[], multiselect=True,
                 visible=False, scale=6, elem_id=f"{rid}_choices")
@@ -2918,7 +3288,7 @@ class Script(scripts.Script):
 
         row = _Row(container, target, mode, choices, line, values,
                    prompt_mode, lora_pick, loras, weights,
-                   lora_refresh, lora_dice, point)
+                   lora_refresh, lora_dice, point, canvas, layer)
 
         def visibility(target_value, mode_value):
             return [gr.update(**props) for props in _row_visibility(
@@ -2926,7 +3296,7 @@ class Script(scripts.Script):
 
         switches = [mode, choices, line, values, prompt_mode,
                     lora_pick, loras, weights,
-                    lora_refresh, lora_dice, point]
+                    lora_refresh, lora_dice, point, canvas, layer]
         for component in (target, mode):
             component.change(fn=visibility,
                              inputs=[target, mode],
@@ -3083,21 +3453,75 @@ class Script(scripts.Script):
                 inputs=[row.target, row.choices] + enables + type_filters,
                 outputs=[row.choices, row.lora_pick], show_progress=False)
 
+    def _wire_canvases(self, canvases, rows, tab):
+        """The page's canvas inventory into every row's canvas and layer
+        dropdowns.
+
+        Written by javascript/cnpro_ab.js whenever what it lists changes;
+        each write rebuilds the choices of all MAX_ROWS rows and keeps a
+        row's current pick when it is still on offer. A pick that is gone
+        (the canvas emptied, the layer deleted) is cleared rather than kept
+        as a value the dropdown can no longer show - the run would refuse it
+        anyway (_setup), and a visibly blank pick says why sooner.
+        """
+
+        def rebuild(text, *picks):
+            inventory = _parse_inventory(text)
+            _CANVAS_INVENTORY[tab] = inventory
+            keys = [key for _label, key in _canvas_choices(inventory)]
+            selected = list(picks[:MAX_ROWS])
+            layers = list(picks[MAX_ROWS:])
+            updates = []
+            for key in selected:
+                updates.append(gr.update(
+                    choices=_canvas_choices(inventory),
+                    value=key if key in keys else None))
+            for key, current in zip(selected, layers):
+                offered = _layer_choices(inventory, key)
+                updates.append(gr.update(
+                    choices=offered,
+                    value=current if current in offered else None))
+            return updates
+
+        inputs = ([canvases] + [row.canvas for row in rows]
+                  + [row.layer for row in rows])
+        outputs = [row.canvas for row in rows] + [row.layer for row in rows]
+        canvases.change(fn=rebuild, inputs=inputs, outputs=outputs,
+                        show_progress=False, queue=False)
+
+        # Picking a canvas narrows THAT row's layer list, from the
+        # inventory last written - no round trip through the page.
+        for row in rows:
+            def on_canvas(key, current):
+                offered = _layer_choices(_CANVAS_INVENTORY[tab], key)
+                return gr.update(choices=offered,
+                                 value=current if current in offered else None)
+
+            row.canvas.change(fn=on_canvas, inputs=[row.canvas, row.layer],
+                              outputs=[row.layer], show_progress=False,
+                              queue=False)
+
     def _wire_duel(self, poller, seen, images_row, image_a, image_b,
                    config, trace, grade_rows,
                    interesting_buttons, demo_buttons, capacity_state,
                    run_toggle, resume, rows, row_count, is_img2img,
-                   setting_targets):
+                   setting_targets, canvas_request, canvas_reply):
         """The poll, the three grade rows, the interesting toggles,
-        GOOD/N-GOOD and the count in its label, START/STOP and RESUME."""
+        GOOD/N-GOOD and the count in its label, START/STOP and RESUME -
+        and the canvas round trip's request and reply."""
         session = _session(is_img2img)
         tab = "img2img" if is_img2img else "txt2img"
         eid = f"cnpro_ab_{tab}"
         row_inputs = [row_count]
         for row in rows:
-            row_inputs.extend([row.target, row.mode, row.choices,
-                               row.line, row.values, row.prompt_mode,
-                               row.loras, row.weights, row.point])
+            row_inputs.extend(row.args())
+
+        # The page's composites, back into the session - see
+        # _Session.deliver_composites. queue=False like the grade buttons:
+        # the loop is blocked waiting for exactly this.
+        canvas_reply.change(fn=session.deliver_composites,
+                            inputs=[canvas_reply], outputs=None,
+                            show_progress=False, queue=False)
         # The tick's style channel: a <style> element whose rules paint the
         # PHASE onto chrome a gradio update cannot reach - the inference
         # fill on the interesting toggles, the grade-here nudge's opacity.
@@ -3200,6 +3624,9 @@ class Script(scripts.Script):
                 # is running, and there is something to continue.
                 "can_resume": (not busy) and resumable,
                 "css": _phase_css(eid, snap, progress, count),
+                # The canvas request, painted while run() waits on it and
+                # cleared after - one message per side that needs one.
+                "canvas_request": _channel_html(snap["canvas_request"]),
             }
 
             def when(key, value):
@@ -3253,12 +3680,13 @@ class Script(scripts.Script):
                 (gr.update(interactive=now["can_resume"])
                  if now["can_resume"] != last.get("can_resume")
                  else gr.update()),
+                when("canvas_request", now["canvas_request"]),
             ]
 
         good_button, n_good_button = demo_buttons
         tick_outputs = [seen, images_row, image_a, image_b, config, trace,
                         n_good_button, capacity_state, poller, phase_css,
-                        run_toggle, resume]
+                        run_toggle, resume, canvas_request]
         poller.tick(fn=tick, inputs=[seen] + row_inputs, outputs=tick_outputs,
                     show_progress=False, queue=False)
 
@@ -3472,7 +3900,7 @@ class Script(scripts.Script):
 
     def _wire_set(self, apply_button, set_good_button, reset_button,
                   config, note, targets, unreachable,
-                  rows, row_count, is_img2img):
+                  rows, row_count, is_img2img, canvas_set):
         """Set, Set GOOD and Reset onto the actual Forge Neo controls.
 
         Writes to the VISIBLE components, never to the unit gr.State. That is
@@ -3496,10 +3924,14 @@ class Script(scripts.Script):
         session = _session(is_img2img)
         target_tokens = [token for token, _component in targets]
         target_outputs = [component for _token, component in targets]
+        # Distinct per press: a repeated HTML value is no DOM change, and
+        # the page's observer would not see a second Set of the same
+        # opacity after the user moved the layer's spinner in between.
+        set_serial = [0]
 
         def no_updates(message):
             return [gr.update(value=message)] \
-                + [gr.update() for _ in targets]
+                + [gr.update() for _ in targets] + [gr.update()]
 
         def apply_values(values, action):
             updates, applied = [], []
@@ -3509,6 +3941,19 @@ class Script(scripts.Script):
                     continue
                 updates.append(gr.update(value=_coerce(token, values[token])))
                 applied.append(token)
+
+            # Layer opacities go to the PAGE - the layer is the only thing
+            # that holds one - through the set channel, and count as
+            # applied: the page's console names any it could not reach.
+            handed = sorted(token for token in values
+                            if RE_LAYER_TOKEN.match(str(token)))
+            if handed:
+                set_serial[0] += 1
+                updates.append(gr.update(value=_channel_html(_layer_message(
+                    set_serial[0], {token: values[token] for token in handed}))))
+                applied.extend(handed)
+            else:
+                updates.append(gr.update())
 
             missing = sorted(set(values) - set(applied))
             report = (f"**{action}** {', '.join(applied)}."
@@ -3550,9 +3995,7 @@ class Script(scripts.Script):
 
         row_inputs = [row_count]
         for row in rows:
-            row_inputs.extend([row.target, row.mode, row.choices,
-                               row.line, row.values, row.prompt_mode,
-                               row.loras, row.weights, row.point])
+            row_inputs.extend(row.args())
 
         def set_good(*row_values):
             payload = _retained_solver(tab)
@@ -3596,14 +4039,15 @@ class Script(scripts.Script):
 
         apply_button.click(
             fn=apply_config, inputs=[config],
-            outputs=[note] + target_outputs,
+            outputs=[note] + target_outputs + [canvas_set],
             show_progress=False)
         set_good_button.click(
             fn=set_good, inputs=row_inputs,
-            outputs=[config, note] + target_outputs,
+            outputs=[config, note] + target_outputs + [canvas_set],
             show_progress=False)
         reset_button.click(
-            fn=reset_initial, inputs=[], outputs=[note] + target_outputs,
+            fn=reset_initial, inputs=[],
+            outputs=[note] + target_outputs + [canvas_set],
             show_progress=False)
 
     def _wire_io(self, export_button, import_button, session_file, note,
@@ -3621,22 +4065,17 @@ class Script(scripts.Script):
         """
         tab = "img2img" if is_img2img else "txt2img"
         session = _session(is_img2img)
-        row_keys = ("target", "mode", "choices", "line", "values",
-                    "prompt_mode", "loras", "weights", "points")
 
         export_inputs = [row_count]
         for row in rows:
-            export_inputs.extend([row.target, row.mode,
-                                  row.choices, row.line, row.values,
-                                  row.prompt_mode, row.loras,
-                                  row.weights, row.point])
+            export_inputs.extend(row.args())
         export_inputs.extend(component for _token, component in targets)
         export_inputs.extend(component for _token, component in canvas_targets)
 
         def do_export(*values):
             it = iter(values)
             count = int(next(it) or 1)
-            row_values = [{key: _jsonable(next(it)) for key in row_keys}
+            row_values = [{key: _jsonable(next(it)) for key in ROW_FIELDS}
                           for _ in range(MAX_ROWS)]
             settings = {token: _jsonable(next(it)) for token, _c in targets}
             canvases = {}
@@ -3681,12 +4120,7 @@ class Script(scripts.Script):
         import_outputs = [note, row_count, headline]
         import_outputs.extend(row.container for row in rows)
         for row in rows:
-            import_outputs.extend([row.target, row.mode,
-                                   row.choices, row.line, row.values,
-                                   row.prompt_mode, row.lora_pick, row.loras,
-                                   row.weights,
-                                   row.lora_refresh, row.lora_dice,
-                                   row.point])
+            import_outputs.extend(row.import_components())
         import_outputs.extend(component for _token, component in targets)
         import_outputs.extend(component for _token, component in canvas_targets)
         # LAST: RESUME. An import that carries solver state makes it pressable,
@@ -3737,7 +4171,8 @@ class Script(scripts.Script):
                 data = (imported_rows[index]
                         if index < len(imported_rows) else None)
                 if not isinstance(data, dict):
-                    updates.extend(gr.update() for _ in range(12))
+                    updates.extend(gr.update()
+                                   for _ in rows[index].import_components())
                     resume_rows.extend([None] * ROW_ARGS)
                     continue
                 # Files from before the mode chooser slimmed down: "Setting"
@@ -3786,11 +4221,32 @@ class Script(scripts.Script):
                                         str(data.get("point", 0)))
                 updates.append(gr.update(**{**props[10],
                                             "value": str(points_value)}))
+                # The canvas and layer picks (v3), offered AS IMPORTED so
+                # they render before the page has listed its canvases; the
+                # inventory's next write re-offers whatever is really there
+                # (_wire_canvases) and blanks a pick that is not. A key an
+                # older file never wrote, or one this build does not parse,
+                # is left blank.
+                canvas_value = data.get("canvas")
+                if not RE_CANVAS_KEY.match(str(canvas_value or "")):
+                    canvas_value = None
+                layer_value = data.get("layer")
+                if _layer_index(layer_value) is None:
+                    layer_value = None
+                updates.append(gr.update(**{
+                    **props[11],
+                    "choices": ([(_canvas_label(canvas_value), canvas_value)]
+                                if canvas_value else []),
+                    "value": canvas_value}))
+                updates.append(gr.update(**{
+                    **props[12],
+                    "choices": [layer_value] if layer_value else [],
+                    "value": layer_value}))
                 resume_rows.extend([
                     target_value, mode_value, selected, data.get("line"),
                     data.get("values"), data.get("prompt_mode"),
                     data.get("loras"), data.get("weights"),
-                    str(points_value)])
+                    str(points_value), canvas_value, layer_value])
 
             # A v2 file's "tail" - the two switches this panel no longer has
             # - is deliberately not read: there is nothing to put it in.
@@ -3921,6 +4377,57 @@ class Script(scripts.Script):
                     f"unit is dropped before the search is applied, so every "
                     f"duel would be identical. Enable it first.")
             base_units[gene.unit_index] = unit
+
+        # A Canvas layer row, against what the page last listed and what
+        # the generation holds - before a duel is spent on a canvas that
+        # emptied, a layer that was deleted, or a unit that is off. The page
+        # checks again when asked to composite (the inventory is a second
+        # old at most), but that answer arrives inside the loop, where it
+        # can only stop the search rather than refuse the start.
+        inventory = {entry["key"]: entry
+                     for entry in _CANVAS_INVENTORY[
+                         "img2img" if self.is_img2img else "txt2img"]}
+        for gene in genes:
+            if gene.kind != Gene.KIND_LAYER:
+                continue
+            entry = inventory.get(gene.canvas)
+            if entry is None:
+                raise RuntimeError(
+                    f"{WHO}: row {gene.row + 1} varies a layer of "
+                    f"{_canvas_label(gene.canvas)}, which holds no image "
+                    f"(or the page has not listed it yet). Put an image "
+                    f"there, or pick another canvas.")
+            if not 0 <= gene.layer < len(entry["layers"]):
+                raise RuntimeError(
+                    f"{WHO}: row {gene.row + 1} varies layer "
+                    f"{gene.layer + 1} of {_canvas_label(gene.canvas)}, "
+                    f"which has {len(entry['layers'])} layer(s).")
+            where = _canvas_unit_slot(gene.canvas)
+            if where is None:
+                if not self.is_img2img:
+                    raise RuntimeError(
+                        f"{WHO}: row {gene.row + 1} varies the img2img "
+                        f"canvas, which the txt2img tab does not generate "
+                        f"from.")
+                continue
+            unit_index, slot = where
+            if cnpro is None or cnpro.args_from is None:
+                raise RuntimeError(
+                    f"{WHO}: row {gene.row + 1} varies a ControlNet unit's "
+                    f"canvas, but the ControlNet Pro script is not running.")
+            if cnpro.args_from + unit_index >= cnpro.args_to:
+                raise RuntimeError(
+                    f"{WHO}: row {gene.row + 1} targets unit {unit_index}, "
+                    f"which does not exist.")
+            unit = base_args[cnpro.args_from + unit_index]
+            if not getattr(unit, "enabled", False):
+                raise RuntimeError(
+                    f"{WHO}: row {gene.row + 1} varies a canvas of unit "
+                    f"{unit_index}, which is not enabled. Enable it first.")
+            if getattr(unit, _input_field(slot), None) is None:
+                raise RuntimeError(
+                    f"{WHO}: row {gene.row + 1} varies unit {unit_index}'s "
+                    f"Input {slot}, which reached the generation empty.")
         module = _profile_scale()
         for gene in genes:
             if gene.kind in (Gene.KIND_PROFILE, Gene.KIND_POINT) \
@@ -4035,6 +4542,11 @@ class Script(scripts.Script):
         base_seed = int(p.seed)
         base_prompt = p.prompt
         base_extras = _generation_extras(p)
+        # What Reset restores for a Canvas layer row: the opacity the page
+        # listed for that layer, which the press could not capture because
+        # no component holds it. `extend_initial` never overwrites - a
+        # RESUME's own saved snapshot stays the one that counts.
+        session.extend_initial(_layer_initial_settings(genes, tab))
 
         # A GOOD/N-GOOD press with no search running: render those samples
         # from the retained solver state. The search does not restart,
@@ -4598,6 +5110,25 @@ class Script(scripts.Script):
             if args[slot] is base_args[slot]:
                 args[slot] = copy.copy(args[slot])
             gene.apply_unit(args[slot], point)
+        # The Canvas layer rows: ask the page for each canvas' composite at
+        # this point's opacities, and put it where the generation reads
+        # the canvas from. One request for all of them - several rows on
+        # one canvas are one composite - and only for a side that is about
+        # to be generated (the cache hit above never asks).
+        overrides = {}
+        for gene in genes:
+            if gene.kind == Gene.KIND_LAYER:
+                key, index, alpha = gene.override(point)
+                overrides.setdefault(key, {})[str(index)] = alpha
+        if overrides:
+            if session is None:
+                raise RuntimeError(
+                    f"{WHO}: a Canvas layer row needs the panel session to "
+                    f"reach the page.")
+            composites = session.composites(overrides)
+            if composites is None:
+                return Processed(p, [])   # stopped or interrupted mid-wait
+            _apply_composites(pc, args, base_args, cnpro, composites)
         pc.script_args = args
         pc.prompt = _compose_prompt(genes, point, base_prompt)
         # Every image carries its own recipe, so a picture pulled out of the
@@ -4629,7 +5160,7 @@ class _Row:
 
     def __init__(self, container, target, mode, choices, line, values,
                  prompt_mode, lora_pick, loras, weights,
-                 lora_refresh, lora_dice, point):
+                 lora_refresh, lora_dice, point, canvas, layer):
         self.container = container
         self.target = target
         self.mode = mode
@@ -4643,6 +5174,27 @@ class _Row:
         self.lora_refresh = lora_refresh
         self.lora_dice = lora_dice
         self.point = point
+        self.canvas = canvas
+        self.layer = layer
+
+    #: ROW_FIELDS name -> the attribute holding that field's component.
+    #: "points" is the one name that differs from its attribute: the session
+    #: file has called it that since v2.
+    ATTRIBUTES = {"points": "point"}
+
+    def args(self):
+        """The row's value-carrying components, in ROW_FIELDS order."""
+        return [getattr(self, self.ATTRIBUTES.get(name, name))
+                for name in ROW_FIELDS]
+
+    def import_components(self):
+        """Every component Import repaints, in one fixed order: the value
+        components plus the visibility-only ones (the LoRA picker and its
+        two buttons). `_row_visibility` is the other half of this list."""
+        return [self.target, self.mode, self.choices, self.line,
+                self.values, self.prompt_mode, self.lora_pick, self.loras,
+                self.weights, self.lora_refresh, self.lora_dice, self.point,
+                self.canvas, self.layer]
 
 
 def _profile_lines():
@@ -4661,7 +5213,8 @@ def _read_rows(args, row_count):
     for index in range(min(row_count, MAX_ROWS)):
         base = 1 + index * ROW_ARGS
         (target, mode, choices, line, values, prompt_mode, loras,
-         weights_text, points_text) = args[base:base + ROW_ARGS]
+         weights_text, points_text, canvas, layer_text) = \
+            args[base:base + ROW_ARGS]
 
         def weight_list(default):
             # The row's own weight list, interval notation included; an
@@ -4684,6 +5237,24 @@ def _read_rows(args, row_count):
             if names:
                 genes.append(Gene(Gene.KIND_LORA, index, loras=names,
                                   weights=weight_list(LORA_WEIGHTS)))
+            continue
+
+        if target == TARGET_CANVAS:
+            # Canvas, layer AND at least one opacity, or the row declares
+            # nothing - like a Profile row with an empty factors box.
+            layer_index = _layer_index(layer_text)
+            if not RE_CANVAS_KEY.match(str(canvas or "")) \
+                    or layer_index is None:
+                continue
+            opacities = [float(v) for v in _numbers(values)]
+            bad = [v for v in opacities if not 0 <= v <= 100]
+            if bad:
+                raise ValueError(
+                    f"{WHO}: row {index + 1}: {bad[0]:g} is not an opacity "
+                    f"- the list is in percent, 0 to 100.")
+            if opacities:
+                genes.append(Gene(Gene.KIND_LAYER, index, canvas=canvas,
+                                  layer=layer_index, values=opacities))
             continue
 
         unit_index = _unit_index(target)
@@ -4811,7 +5382,8 @@ def _coerce(token, value):
             return int(float(value))
         except (TypeError, ValueError):
             return value
-    if token in ("cfg_scale", "denoising_strength"):
+    if token in ("cfg_scale", "denoising_strength") \
+            or RE_LAYER_TOKEN.match(token):
         try:
             return float(value)
         except (TypeError, ValueError):
@@ -4865,14 +5437,15 @@ def _row_visibility(target_value, mode_value):
     points = is_unit and mode_value == MODE_POINTS
     is_lora = target_value == TARGET_LORA
     is_prompt = target_value == TARGET_PROMPT
+    is_canvas = target_value == TARGET_CANVAS
     weighted = is_lora or is_prompt
     return [
         {"visible": is_unit},                                   # mode
         {"visible": model},                                     # choices
         {"visible": profile or points},                         # line
         # ONE update carries visibility, label and placeholder together: the
-        # values box is shared by three kinds of row.
-        {"visible": profile or points or is_prompt,
+        # values box is shared by four kinds of row.
+        {"visible": profile or points or is_prompt or is_canvas,
          "label": _values_label(target_value, mode_value),
          "placeholder": _values_placeholder(target_value,
                                             mode_value)},       # values
@@ -4889,12 +5462,16 @@ def _row_visibility(target_value, mode_value):
         {"visible": is_lora},                                   # refresh
         {"visible": is_lora},                                   # dice
         {"visible": points},                                    # point
+        {"visible": is_canvas},                                 # canvas
+        {"visible": is_canvas},                                 # layer
     ]
 
 
 def _values_label(target, mode):
     if target == TARGET_PROMPT:
         return "prompts (one per line)"
+    if target == TARGET_CANVAS:
+        return "opacities (%)"
     if _unit_index(target) is not None and mode == MODE_PROFILE:
         return "factors"
     if _unit_index(target) is not None and mode == MODE_POINTS:
@@ -4905,6 +5482,8 @@ def _values_label(target, mode):
 def _values_placeholder(target, mode):
     if target == TARGET_PROMPT:
         return "a house on a hill\na house in a storm\n…"
+    if target == TARGET_CANVAS:
+        return "0, 50, 100   or   0:100:5"
     if _unit_index(target) is not None and mode == MODE_PROFILE:
         return "0.5, 0.75, 1, 1.5   or   0.5:1.5:5"
     if _unit_index(target) is not None and mode == MODE_POINTS:

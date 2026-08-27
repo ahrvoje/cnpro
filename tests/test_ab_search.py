@@ -174,6 +174,15 @@ def load_script():
     return mod
 
 
+def row_args(dna, **fields):
+    """One row's values in ROW_FIELDS order, by name - so a field added to
+    the row widens every test row here without a positional list to fix."""
+    unknown = set(fields) - set(dna.ROW_FIELDS)
+    if unknown:
+        raise KeyError("not row fields: %s" % sorted(unknown))
+    return [fields.get(name) for name in dna.ROW_FIELDS]
+
+
 # ---------------------------------------------------------------------------
 # 1-3. The search
 # ---------------------------------------------------------------------------
@@ -1505,31 +1514,33 @@ def test_recipe(dna, search):
               "value that Export cannot read and Set cannot apply" % name)
 
     # -- reading the panel back -------------------------------------------
-    # Row slots: target, mode, choices, line, values, prompt_mode, loras,
-    # weights, points - see ROW_ARGS.
+    # Row slots in ROW_FIELDS order - see row_args.
     args = [1] + [None] * (dna.MAX_ROWS * dna.ROW_ARGS) + [False, True]
-    args[1:1 + dna.ROW_ARGS] = ["Unit 0", dna.MODE_PROFILE, [],
-                                "Main", "0.5:1.5:3", dna.PROMPT_REPLACE, "",
-                                "", "0"]
+    args[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target="Unit 0", mode=dna.MODE_PROFILE, choices=[],
+        line="Main", values="0.5:1.5:3", prompt_mode=dna.PROMPT_REPLACE,
+        loras="", weights="", points="0")
     rows = dna._read_rows(args, 1)
     check(len(rows) == 1 and rows[0].kind == Gene.KIND_PROFILE,
           "a Profile row did not read back as one: %r" % (rows,))
     check([round(v, 4) for v in rows[0].values] == [0.5, 1.0, 1.5],
           "'0.5:1.5:3' expanded to %r" % (rows[0].values,))
 
-    args[1:1 + dna.ROW_ARGS] = ["Unit 0", dna.MODE_MODEL,
-                                ["canny_xl", "depth_xl"], "Main", "",
-                                dna.PROMPT_REPLACE, "", "", "0"]
+    args[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target="Unit 0", mode=dna.MODE_MODEL,
+        choices=["canny_xl", "depth_xl"], line="Main", values="",
+        prompt_mode=dna.PROMPT_REPLACE, loras="", weights="", points="0")
     rows = dna._read_rows(args, 1)
     check(len(rows) == 1 and rows[0].kind == Gene.KIND_SETTING
           and rows[0].field == "model"
           and rows[0].values == ["canny_xl", "depth_xl"],
           "a Model row did not read back as a model gene: %r" % (rows,))
 
-    args[1:1 + dna.ROW_ARGS] = ["LoRA", dna.MODE_MODEL, [], "Main",
-                                "", dna.PROMPT_REPLACE,
-                                "<lora:add_detail:0.8>\nfilm_grain",
-                                "0.2, 0.9", "0"]
+    args[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target="LoRA", mode=dna.MODE_MODEL, choices=[], line="Main",
+        values="", prompt_mode=dna.PROMPT_REPLACE,
+        loras="<lora:add_detail:0.8>\nfilm_grain", weights="0.2, 0.9",
+        points="0")
     rows = dna._read_rows(args, 1)
     check(len(rows) == 1 and rows[0].loras == ["add_detail", "film_grain"],
           "a pasted LoRA tag did not reduce to its name: %r"
@@ -1980,9 +1991,10 @@ def test_resume_matches_visible_rows(dna, search):
                  "visible search can continue"):
         return
     values = [1] + [None] * (dna.MAX_ROWS * dna.ROW_ARGS)
-    values[1:1 + dna.ROW_ARGS] = [
-        dna.TARGET_PROMPT, dna.MODE_MODEL, [], "Main", "first\nsecond",
-        dna.PROMPT_REPLACE, "", "", "0"]
+    values[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target=dna.TARGET_PROMPT, mode=dna.MODE_MODEL, choices=[],
+        line="Main", values="first\nsecond", prompt_mode=dna.PROMPT_REPLACE,
+        loras="", weights="", points="0")
     genes = dna._build_genes(dna._read_rows(values, 1), search)
     state = {
         "signature": dna._space_signature(dna._space(genes, search)),
@@ -2538,6 +2550,298 @@ def test_field_table(dna):
 
 # ---------------------------------------------------------------------------
 
+def test_layer_row(dna, search):
+    """The Canvas layer row - the one kind whose value lives in the page.
+
+    What has to hold: the page's inventory becomes the row's two dropdowns
+    (and nothing malformed survives the parse); the row reads back as a
+    layer gene with an ORDERED opacity dimension; the recipe names the
+    opacity (a recipe without it reproduces the canvas as it is on screen -
+    the configuration the row exists to search away from) and Set GOOD's
+    settings carry the same token; the round trip through the session
+    answers the request it asked and nothing else, surfaces the page's
+    error, and does not wait forever; a composite lands where the
+    generation reads that canvas from; and Reset knows the opacity a
+    search started from.
+    """
+    import base64
+    import html as html_module
+    import io
+    import json
+    import re
+    import threading
+    import time
+    import types
+    Gene = dna.Gene
+
+    # -- the inventory, into choices ----------------------------------------
+    inventory = dna._parse_inventory(json.dumps([
+        {"key": "u0.in1", "layers": [{"size": "1024×768", "opacity": 100},
+                                     {"size": "512×512", "opacity": 40}]},
+        {"key": "img2img", "layers": [{"size": "640×640", "opacity": 100}]},
+        {"key": "bogus", "layers": [{"size": "1×1", "opacity": 1}]},
+        {"key": "u1.in2", "layers": []},
+        "not an entry",
+    ]))
+    check([entry["key"] for entry in inventory] == ["u0.in1", "img2img"],
+          "the inventory parse kept a malformed or empty canvas: %r"
+          % ([entry["key"] for entry in inventory],))
+    check(dna._parse_inventory("{not json") == []
+          and dna._parse_inventory("") == [],
+          "an unreadable inventory did not parse as empty")
+    check(dna._canvas_choices(inventory)
+          == [("Unit 0 · Input 1", "u0.in1"), ("img2img image", "img2img")],
+          "canvas choices are not (label, key) pairs in inventory order: %r"
+          % (dna._canvas_choices(inventory),))
+    check(dna._layer_choices(inventory, "u0.in1")
+          == ["L1 · 1024×768", "L2 · 512×512"]
+          and dna._layer_choices(inventory, "u9.in1") == [],
+          "layer choices do not follow the picked canvas: %r"
+          % (dna._layer_choices(inventory, "u0.in1"),))
+    check(dna._layer_index("L2 · 512×512") == 1
+          and dna._layer_index("L1") == 0
+          and dna._layer_index("") is None
+          and dna._layer_index(None) is None,
+          "a layer dropdown value does not read back as its index")
+
+    # -- the row, read back ---------------------------------------------------
+    args = [1] + [None] * (dna.MAX_ROWS * dna.ROW_ARGS)
+    args[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target=dna.TARGET_CANVAS, values="0, 50, 100",
+        canvas="u0.in1", layer="L2 · 512×512")
+    rows = dna._read_rows(args, 1)
+    check(len(rows) == 1 and rows[0].kind == Gene.KIND_LAYER
+          and rows[0].canvas == "u0.in1" and rows[0].layer == 1
+          and rows[0].values == [0.0, 50.0, 100.0],
+          "a Canvas layer row did not read back as a layer gene: %r"
+          % ([(r.kind, r.canvas, r.layer, r.values) for r in rows],))
+    args[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target=dna.TARGET_CANVAS, values="0, 50")
+    check(dna._read_rows(args, 1) == [],
+          "a Canvas layer row with no canvas picked declared a gene")
+    args[1:1 + dna.ROW_ARGS] = row_args(
+        dna, target=dna.TARGET_CANVAS, values="0, 150",
+        canvas="u0.in1", layer="L1")
+    try:
+        dna._read_rows(args, 1)
+        fail("an opacity of 150% was accepted - the list is in percent, 0 "
+             "to 100, and a value outside it would clamp silently in the page")
+    except ValueError:
+        pass
+
+    # -- the gene ---------------------------------------------------------------
+    gene = Gene(Gene.KIND_LAYER, 0, canvas="u0.in1", layer=1,
+                values=[0.0, 50.0, 100.0])
+    genes = dna._build_genes([gene], search)
+    dims = gene.dimensions(search)
+    check(len(dims) == 1 and dims[0].numeric,
+          "a layer row's opacities are not an ordered dimension - evidence "
+          "then cannot transfer between 40% and 50%")
+    check(gene.override((1,)) == ("u0.in1", 1, 0.5),
+          "the override is not (key, 0-based layer, alpha 0..1): %r"
+          % (gene.override((1,)),))
+    recipe = dna._config_string(genes, (1,), {}, "prompt", seed=1, extras={})
+    check("u0.in1.layer2.opacity=50" in recipe,
+          "the recipe does not name the layer opacity - pasting it back "
+          "reproduces the canvas as it is on screen: %r" % (recipe,))
+    check(gene.describe((2,)).endswith("100%")
+          and "Unit 0 · Input 1 L2" in gene.describe((0,)),
+          "the trace line does not say which canvas, layer and opacity a "
+          "duel chose: %r" % (gene.describe((2,)),))
+    settings = dna._configuration_for_point(genes, (0,), {"prompt": "p"})
+    check(settings.get("u0.in1.layer2.opacity") == 0.0
+          and settings.get("prompt") == "p",
+          "Set GOOD's settings do not carry the layer opacity: %r"
+          % (settings,))
+    check(dna._coerce("u0.in1.layer2.opacity", "50") == 50.0,
+          "the layer token is not coerced to a number")
+    signature = dna._space_signature(dna._space(genes, search))
+    check("Unit 0 · Input 1 L2" in signature[0][0],
+          "the solver signature does not name the canvas and layer - a "
+          "state learned on another layer would resume onto this one")
+
+    # -- tokens, to the page -----------------------------------------------------
+    message = dna._layer_message(3, {"u0.in1.layer2.opacity": 50,
+                                     "img2img.layer1.opacity": "25",
+                                     "prompt": "x", "u0.in1.layer2": 1})
+    check(message == {"seq": 3, "layers": {"u0.in1": {"1": 0.5},
+                                           "img2img": {"0": 0.25}}},
+          "layer tokens did not become the page's {key: {index: alpha}}: %r"
+          % (message,))
+    body = dna._channel_html(message)
+    inner = re.search(r"<pre class='cnpro-ab-channel-body'>(.*)</pre>",
+                      body, re.S)
+    check(inner is not None
+          and json.loads(html_module.unescape(inner.group(1))) == message,
+          "the channel HTML does not carry the message back out: %r"
+          % (body,))
+    check(dna._channel_html(None) == "" and dna._channel_html({}) == "",
+          "an empty channel message is not an empty channel")
+
+    # -- the row's control lists agree with each other ---------------------------
+    class Component:
+        pass
+    row = dna._Row(*[Component() for _ in range(15)])
+    check(len(row.args()) == dna.ROW_ARGS == len(dna.ROW_FIELDS),
+          "_Row.args() and ROW_FIELDS disagree about the row's width")
+    canvas_props = dna._row_visibility(dna.TARGET_CANVAS, dna.MODE_MODEL)
+    check(len(canvas_props) == len(row.import_components()) - 1,
+          "_row_visibility and _Row.import_components() disagree about the "
+          "row's dependent controls (%d vs %d)"
+          % (len(canvas_props), len(row.import_components()) - 1))
+    check(canvas_props[11]["visible"] and canvas_props[12]["visible"]
+          and canvas_props[3]["visible"] and not canvas_props[0]["visible"]
+          and canvas_props[3]["label"] == "opacities (%)",
+          "a Canvas layer row does not show canvas, layer and the values "
+          "box (and nothing of the unit controls): %r" % (canvas_props,))
+    unit_props = dna._row_visibility("Unit 0", dna.MODE_MODEL)
+    check(not unit_props[11]["visible"] and not unit_props[12]["visible"],
+          "a unit row shows the canvas and layer dropdowns")
+    check(dna.TARGET_CANVAS in dna._target_choices([True]),
+          "the Canvas layer target is not offered by the target dropdown")
+
+    # -- the round trip -----------------------------------------------------------
+    def wait_request(session):
+        for _ in range(400):
+            with session.condition:
+                request = session.canvas_request
+            if request is not None:
+                return request
+            time.sleep(0.01)
+        return None
+
+    session = dna._Session()
+    session.running = True
+    overrides = {"u0.in1": {"1": 0.5}}
+    url = "data:image/png;base64,AAAA"
+
+    def answer():
+        request = wait_request(session)
+        check(request is not None and request["overrides"] == overrides,
+              "the request did not carry the overrides: %r" % (request,))
+        if request is None:
+            return
+        stale = json.dumps({"seq": request["seq"] + 100,
+                            "images": {"u0.in1": url}})
+        check(not session.deliver_composites(stale),
+              "a reply carrying another request's seq was accepted")
+        check(session.deliver_composites(
+            json.dumps({"seq": request["seq"], "images": {"u0.in1": url}})),
+              "the reply to the open request was refused")
+    thread = threading.Thread(target=answer)
+    thread.start()
+    images = session.composites(overrides)
+    thread.join()
+    check(images == {"u0.in1": url},
+          "composites() did not return the page's images: %r" % (images,))
+    check(session.snapshot()["canvas_request"] is None,
+          "the request stayed painted after its answer")
+
+    def erring():
+        request = wait_request(session)
+        if request is not None:
+            session.deliver_composites(json.dumps(
+                {"seq": request["seq"], "error": "u0.in1 holds no image any more"}))
+    thread = threading.Thread(target=erring)
+    thread.start()
+    try:
+        session.composites(overrides)
+        fail("the page's error reply did not stop the render")
+    except RuntimeError as exc:
+        check("holds no image" in str(exc),
+              "the page's error is not in the message: %r" % (str(exc),))
+    thread.join()
+
+    def short():
+        request = wait_request(session)
+        if request is not None:
+            session.deliver_composites(json.dumps(
+                {"seq": request["seq"], "images": {}}))
+    thread = threading.Thread(target=short)
+    thread.start()
+    try:
+        session.composites(overrides)
+        fail("a reply missing the requested canvas was accepted - the "
+             "generation would then run on the live composite")
+    except RuntimeError as exc:
+        check("u0.in1" in str(exc),
+              "the missing canvas is not named: %r" % (str(exc),))
+    thread.join()
+
+    def stopper():
+        if wait_request(session) is not None:
+            session.request_stop()
+    thread = threading.Thread(target=stopper)
+    thread.start()
+    check(session.composites(overrides) is None,
+          "STOP during the canvas wait did not end it")
+    thread.join()
+
+    patient = dna.CANVAS_WAIT_SECONDS
+    dna.CANVAS_WAIT_SECONDS = 0.3
+    try:
+        session = dna._Session()
+        session.running = True
+        started = time.monotonic()
+        try:
+            session.composites(overrides)
+            fail("an unanswered canvas request waited forever")
+        except RuntimeError as exc:
+            check("did not answer" in str(exc)
+                  and time.monotonic() - started < 5,
+                  "the deadline did not fire as such: %r" % (str(exc),))
+    finally:
+        dna.CANVAS_WAIT_SECONDS = patient
+
+    # -- a composite, into the generation ------------------------------------------
+    try:
+        from PIL import Image
+        import numpy as np
+    except Exception as exc:
+        SKIPS.append("PIL/numpy unavailable (%s): _apply_composites unchecked"
+                     % (exc,))
+    else:
+        buffer = io.BytesIO()
+        Image.new("RGB", (2, 2), (255, 0, 0)).save(buffer, format="PNG")
+        uri = ("data:image/png;base64,"
+               + base64.b64encode(buffer.getvalue()).decode("ascii"))
+        unit = types.SimpleNamespace(image=None, image_2=None)
+        base_args = [unit]
+        render_args = list(base_args)
+        pc = types.SimpleNamespace(init_images=[None])
+        dna._apply_composites(pc, render_args, base_args,
+                              types.SimpleNamespace(args_from=0),
+                              {"img2img": uri, "u0.in2": uri})
+        check(render_args[0] is not unit and unit.image_2 is None,
+              "the live unit was written to instead of a copy")
+        placed = getattr(render_args[0], "image_2", None)
+        check(isinstance(placed, np.ndarray) and placed.shape == (2, 2, 4)
+              and placed[0, 0].tolist() == [255, 0, 0, 255],
+              "Input 2's composite did not land as the host's RGBA array: %r"
+              % (None if placed is None else placed.shape,))
+        check(render_args[0].image is None,
+              "the composite for Input 2 touched Input 1")
+        init = pc.init_images[0]
+        check(getattr(init, "mode", None) == "RGBA"
+              and getattr(init, "size", None) == (2, 2),
+              "the img2img composite did not land in init_images as RGBA")
+
+    # -- what Reset restores ------------------------------------------------------
+    dna._CANVAS_INVENTORY["txt2img"] = inventory
+    check(dna._layer_initial_settings(genes, "txt2img")
+          == {"u0.in1.layer2.opacity": 40.0},
+          "the initial opacity is not the one the page listed: %r"
+          % (dna._layer_initial_settings(genes, "txt2img"),))
+    session = dna._Session()
+    session.remember_initial({"prompt": "p"})
+    session.extend_initial({"u0.in1.layer2.opacity": 40.0})
+    session.extend_initial({"prompt": "q"})
+    check(session.initial_settings == {"prompt": "p",
+                                       "u0.in1.layer2.opacity": 40.0},
+          "extend_initial overwrote a captured setting, or dropped the "
+          "layer's: %r" % (session.initial_settings,))
+
+
 def main():
     sys.path.insert(0, EXTENSION)
     try:
@@ -2572,6 +2876,7 @@ def main():
     test_persistence(dna, ab_search, numpy)
     test_phase_css(dna)
     test_field_table(dna)
+    test_layer_row(dna, ab_search)
     return report()
 
 

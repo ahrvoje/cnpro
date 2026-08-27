@@ -247,3 +247,262 @@
         event.stopPropagation();
     }, true);
 })();
+
+/* ----------------------------------------------------------------------
+ * The "Canvas layer" row - the browser's half.
+ *
+ * The layer stack of a canvas exists ONLY here (canvas_extra.js): gradio
+ * receives the flattened composite and nothing else, so python can neither
+ * list a canvas' layers nor re-composite one at another opacity. Three
+ * channels, all through hidden components of the A/B panel, so the python
+ * side keeps its one-blocking-run()-plus-a-poll shape (CNPro_AB.py, HOW IT
+ * RUNS):
+ *
+ *   inventory   JS -> python   `_canvases` textbox. Which canvases of this
+ *                              tab hold an image, and each one's layers with
+ *                              their current opacity - what the row's two
+ *                              dropdowns offer. Polled once a second while
+ *                              the panel is on screen, written only when it
+ *                              CHANGES (a textbox write is a gradio round
+ *                              trip and a re-render).
+ *   request     python -> JS   `_canvas_request` HTML. A duel side about to
+ *   reply       JS -> python   render asks for the composite of each named
+ *                              canvas with the named layers at the named
+ *                              opacities; the answer goes back through the
+ *                              `_canvas_reply` textbox, with the request's
+ *                              sequence number so a stale answer is ignored.
+ *                              The composite is rendered OFF-SCREEN by
+ *                              forgeCanvasComposite - the live canvas does
+ *                              not change, which is the "nothing is written
+ *                              back to the UI while searching" rule.
+ *   set         python -> JS   `_canvas_set` HTML. Set / Set GOOD / Reset
+ *                              write a layer's opacity INTO the live canvas
+ *                              - the one path that is meant to change it.
+ *
+ * The two python -> JS channels are gr.HTML, not textboxes: a value-only
+ * textbox write makes no DOM mutation and no event (MAINTENANCE invariant
+ * 18), while an HTML update replaces child nodes, which a MutationObserver
+ * sees at once - no second poll for a request that arrives at most once per
+ * generation.
+ *
+ * A canvas is named by WHERE IT LIVES, not by its uuid: the uuid is minted
+ * per page load, and the row's choice has to survive a reload, an Export
+ * and a recipe. `u0.in1` is unit 0's Input 1 canvas (1-based, as the tabs
+ * are labelled); `img2img` is the host's own img2img canvas - the init
+ * image. The python side derives the label from the same key (_canvas_label)
+ * and applies the composite by the same key (_apply_composites).
+ * ---------------------------------------------------------------------- */
+(function () {
+    "use strict";
+
+    const TABS = ["txt2img", "img2img"];
+    const UNIT_CANVAS = /^(txt2img|img2img)_controlnet_ControlNet-(\d+)_input_image(?:_(\d+))?$/;
+    /* The host's own canvases this panel can vary, by block id: only the
+       img2img init image. The sketch/inpaint canvases composite their
+       foreground into the init image on the host side, which a background
+       composite from here would silently drop. */
+    const HOST_CANVAS = {img2img_image: "img2img"};
+
+    function keyOf(container) {
+        /* Walk up to the gr.HTML block that ForgeCanvas built, whose elem_id
+           says which unit input - or which host canvas - this is. */
+        for (let el = container.parentElement; el; el = el.parentElement) {
+            if (!el.id) continue;
+            const unit = UNIT_CANVAS.exec(el.id);
+            if (unit) {
+                const slot = unit[3] ? parseInt(unit[3], 10) : 0;
+                return {tab: unit[1], key: "u" + unit[2] + ".in" + (slot + 1)};
+            }
+            if (HOST_CANVAS[el.id]) return {tab: "img2img", key: HOST_CANVAS[el.id]};
+        }
+        return null;
+    }
+
+    /* Every canvas of `tab` that holds an image: key -> uuid, with its
+       layers. Rebuilt on every use - a canvas can appear (a new Input tab)
+       or empty at any time, and the walk is a few hundred nodes. */
+    function inventory(tab) {
+        const found = [];
+        if (typeof window.forgeCanvasDebugLayers !== "function") return found;
+        for (const container of document.querySelectorAll("[id^='imageContainer_uuid_']")) {
+            const where = keyOf(container);
+            if (!where || where.tab !== tab) continue;
+            const uuid = container.id.slice("imageContainer_".length);
+            const snap = window.forgeCanvasDebugLayers(uuid);
+            if (!snap || !snap.layers.length) continue;
+            found.push({
+                key: where.key, uuid: uuid,
+                layers: snap.layers.map(l => ({
+                    size: l.w && l.h ? l.w + "×" + l.h : "empty",
+                    opacity: Math.round(l.opacity * 100),
+                })),
+            });
+        }
+        found.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+        return found;
+    }
+
+    function textareaOf(id) {
+        const box = document.getElementById(id);
+        return box ? box.querySelector("textarea") : null;
+    }
+
+    function send(id, value) {
+        const textarea = textareaOf(id);
+        if (!textarea) return false;
+        textarea.value = value;
+        /* Through updateInput, so the value reaches gradio and not only the
+           DOM - see appendLine above. */
+        if (typeof updateInput === "function") {
+            updateInput(textarea);
+        } else {
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        return true;
+    }
+
+    function panelVisible(tab) {
+        const duel = document.getElementById("cnpro_ab_" + tab + "_duel");
+        return !!(duel && duel.offsetParent);
+    }
+
+    /* ---- inventory: once a second, only what changed ------------------ */
+
+    const lastSent = {};
+
+    function publishInventory(tab) {
+        if (!panelVisible(tab)) return;
+        const list = inventory(tab).map(c => ({key: c.key, layers: c.layers}));
+        const text = JSON.stringify(list);
+        if (text === lastSent[tab]) return;
+        if (send("cnpro_ab_" + tab + "_canvases", text)) lastSent[tab] = text;
+    }
+
+    setInterval(function () {
+        for (const tab of TABS) {
+            try {
+                publishInventory(tab);
+            } catch (err) {
+                console.warn("[cnpro A/B] canvas inventory failed", err);
+            }
+        }
+    }, 1000);
+
+    /* ---- the python -> JS channels: a gr.HTML each, observed ----------- */
+
+    function channelText(element) {
+        const body = element.querySelector(".cnpro-ab-channel-body");
+        return body ? body.textContent : "";
+    }
+
+    function watch(id, handler) {
+        const element = document.getElementById(id);
+        if (!element || element.dataset.cnproAbWatched === "1") return;
+        element.dataset.cnproAbWatched = "1";
+        let last = null;
+        const look = function () {
+            const text = channelText(element);
+            if (!text || text === last) return;
+            last = text;
+            let message;
+            try {
+                message = JSON.parse(text);
+            } catch (err) {
+                console.warn("[cnpro A/B] unreadable channel message in " + id, err);
+                return;
+            }
+            try {
+                handler(message);
+            } catch (err) {
+                console.warn("[cnpro A/B] channel handler failed for " + id, err);
+            }
+        };
+        new MutationObserver(look).observe(
+            element, { childList: true, subtree: true, characterData: true });
+        /* A page reloaded mid-search already holds the request. */
+        look();
+    }
+
+    /* A render request: {seq, overrides: {key: {index: alpha}}} -> a reply
+       {seq, images: {key: dataUrl}} or {seq, error}. Every named canvas has
+       to answer, or the generation would run on the live composite for the
+       one that did not - which is the silent miss the error exists to
+       prevent. */
+    function serveRequest(tab, message) {
+        const overrides = message.overrides || {};
+        const known = {};
+        for (const canvas of inventory(tab)) known[canvas.key] = canvas;
+        const images = {};
+        const keys = Object.keys(overrides);
+        let pending = keys.length;
+        let error = null;
+        const finish = function () {
+            const reply = error ? {seq: message.seq, error: error}
+                                : {seq: message.seq, images: images};
+            send("cnpro_ab_" + tab + "_canvas_reply", JSON.stringify(reply));
+        };
+        if (!pending) {
+            finish();
+            return;
+        }
+        for (const key of keys) {
+            const canvas = known[key];
+            const layers = overrides[key] || {};
+            const bad = Object.keys(layers).find(
+                i => !canvas || !(parseInt(i, 10) < canvas.layers.length));
+            if (!canvas || bad !== undefined) {
+                error = !canvas
+                    ? key + " holds no image any more"
+                    : key + " has " + canvas.layers.length + " layer(s), not a layer "
+                      + (parseInt(bad, 10) + 1);
+                if (--pending === 0) finish();
+                continue;
+            }
+            window.forgeCanvasComposite(canvas.uuid, layers, function (url) {
+                if (url) images[key] = url;
+                else error = error || (key + " rendered nothing");
+                if (--pending === 0) finish();
+            });
+        }
+    }
+
+    /* Set / Set GOOD / Reset: {seq, layers: {key: {index: alpha}}}. Applied
+       to the LIVE canvas, and the inventory is republished at once so the
+       row's dropdown and the next Reset see the new value. */
+    function serveSet(tab, message) {
+        const known = {};
+        for (const canvas of inventory(tab)) known[canvas.key] = canvas;
+        const missed = [];
+        for (const key of Object.keys(message.layers || {})) {
+            const layers = message.layers[key];
+            for (const index of Object.keys(layers)) {
+                const canvas = known[key];
+                if (!canvas || !window.forgeCanvasSetLayerOpacity(
+                        canvas.uuid, parseInt(index, 10), layers[index])) {
+                    missed.push(key + " layer " + (parseInt(index, 10) + 1));
+                }
+            }
+        }
+        if (missed.length) {
+            console.warn("[cnpro A/B] Set could not reach: " + missed.join(", "));
+        }
+        lastSent[tab] = null;
+        publishInventory(tab);
+    }
+
+    function bind() {
+        for (const tab of TABS) {
+            watch("cnpro_ab_" + tab + "_canvas_request", m => serveRequest(tab, m));
+            watch("cnpro_ab_" + tab + "_canvas_set", m => serveSet(tab, m));
+        }
+    }
+
+    if (typeof onUiUpdate === "function") {
+        /* The panel's blocks may not be mounted at load time, and gradio
+           can rebuild them; `watch` binds once per element and skips what
+           it has already bound. */
+        onUiUpdate(bind);
+    } else {
+        document.addEventListener("DOMContentLoaded", bind);
+    }
+})();

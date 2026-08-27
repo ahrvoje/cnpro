@@ -1061,8 +1061,15 @@ Core-side (would need monkey-patching or shipping-with the addon):
   `javascript/insert_image.js` — plus `window.forgeCanvasAddLayer(uuid,
   dataUrl)` (add on top as a new editable layer) and
   `window.forgeCanvasDebugLayers(uuid)` (read-only state snapshot for
-  Playwright/jsdom diagnosis); an addon build must ship or re-create these
-  hooks.
+  Playwright/jsdom diagnosis), `window.forgeCanvasComposite(uuid,
+  {index: alpha}, callback)` (the composite the canvas WOULD hand gradio
+  with those layers at those opacities, rendered off-screen through the
+  same pipeline on a shallow twin of the state — the live canvas does not
+  change) and `window.forgeCanvasSetLayerOpacity(uuid, index, alpha)` (the
+  live setter, as if typed into the row's spinner) — both consumed by
+  `javascript/cnpro_ab.js` for the A/B panel's Canvas layer row, which
+  varies one layer's opacity per duel; an addon build must ship or re-create
+  these hooks.
   **CANVAS CLIPBOARD** (2026-07-30) — `Ctrl+C` over a canvas copies its
   composite, and a right-click opens a two-item menu, `Copy image` /
   `Paste image`. Both halves live at module scope in `canvas_extra.js`, not in

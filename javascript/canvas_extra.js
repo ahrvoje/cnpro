@@ -3129,6 +3129,19 @@
         }
         st.addLayerFromDataUrl = addLayer;
 
+        // one layer's whole-layer opacity, set from outside (CNPro A/B's Set
+        // and Reset - see window.forgeCanvasSetLayerOpacity). The same three
+        // steps as the row's own spinner: the value, the list (through
+        // syncUI, so an open layer menu shows the new number), the picture.
+        st.setLayerOpacity = function (index, alpha) {
+            const L = st.layers[index];
+            if (!L) return false;
+            L.opacity = clamp(+alpha, 0, 1);
+            syncUI();
+            scheduleRender(st, false);
+            return true;
+        };
+
         // replace the ACTIVE layer's raster (the patched uploadBase64 routes
         // every inflow here while the layer tool is open). The layer keeps its
         // z-position and blend; its strokes go with the old raster. The new
@@ -3632,6 +3645,64 @@
             if (inst.uuid === uuid) {
                 const st = inst.fc.__adjust;
                 return !!(st && st.addLayerFromDataUrl && st.addLayerFromDataUrl(dataUrl));
+            }
+        }
+        return false;
+    };
+
+    // THE COMPOSITE THIS CANVAS WOULD HAND GRADIO if some layers had other
+    // opacities - rendered OFF-SCREEN, through the very pipeline the live
+    // canvas uses, without touching the live state. `opacities` maps layer
+    // index (bottom = 0, as in st.layers) to 0..1; every other layer keeps its
+    // own. The callback gets a PNG data URL, or null when the canvas holds no
+    // image.
+    //
+    // For CNPro A/B, whose "Canvas layer" row varies one layer's opacity per
+    // duel: the layer stack exists only here, in the browser (gradio receives
+    // the flattened composite and nothing else), so the search cannot
+    // re-composite server-side without a second copy of drawLayers, levels,
+    // edges, crop... - a copy that would drift from what the user sees. One
+    // compositor, asked twice.
+    //
+    // A shallow TWIN of the state does it: the same layer objects, except the
+    // overridden ones (copied with the new opacity - their cached rasters are
+    // shared by reference, since opacity is applied at composite time and is
+    // not baked into them), and the twin's own composite/geom/leveled caches,
+    // so the live canvas' caches stay valid and its display never changes.
+    // The crop-tool exception of the parity contract holds here too: what the
+    // channel holds is the cropped result, and that is what this returns.
+    window.forgeCanvasComposite = function (uuid, opacities, callback) {
+        for (const inst of instances) {
+            if (inst.uuid !== uuid) continue;
+            const st = inst.fc.__adjust;
+            if (!st || !st.original || !st.layers.length) {
+                callback(null);
+                return true;
+            }
+            const twin = Object.assign({}, st, {
+                layers: st.layers.map((l, i) => (opacities && i in opacities)
+                    ? Object.assign({}, l, {opacity: clamp(+opacities[i], 0, 1)})
+                    : l),
+                compositeCanvas: null, compositeKey: null,
+                geomCanvas: null, geomKey: null,
+                leveledCanvas: null, leveledKey: null,
+            });
+            ensureSource(twin, () => {
+                ensureLeveledCanvas(twin);
+                callback(cropFromCanvas(twin.leveledCanvas, twin.crop).toDataURL('image/png'));
+            });
+            return true;
+        }
+        return false;
+    };
+
+    // set one layer's opacity (0..1) on the LIVE canvas, as if typed into the
+    // row's spinner - list and picture follow. For CNPro A/B's Set / Reset.
+    window.forgeCanvasSetLayerOpacity = function (uuid, index, alpha) {
+        for (const inst of instances) {
+            if (inst.uuid === uuid) {
+                const st = inst.fc.__adjust;
+                return !!(st && st.setLayerOpacity && st.setLayerOpacity(index, alpha));
             }
         }
         return false;

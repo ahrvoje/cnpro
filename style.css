@@ -3699,6 +3699,13 @@
     display: none !important;
 }
 
+/* The Canvas layer row's python -> page channels (javascript/cnpro_ab.js):
+   gr.HTML blocks whose content the page observes. Hidden by class, not by
+   visible=False, so their DOM still updates. */
+.cnpro-ab-channel {
+    display: none !important;
+}
+
 /* The duel images are the point of the panel, so they get ALL of the width:
    two halves, back to back, no gap and no padding. Everything gradio puts
    around an image block - padding, border, the row's gap - is picture the
